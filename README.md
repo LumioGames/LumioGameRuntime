@@ -26,19 +26,21 @@ Server/Client Host 负责 Wall Clock、进程和连接；Runtime 不声明 Tick 
 
 ## 子模块
 
+模块架构总入口见 [modules/README.md](modules/README.md)（模块地图、依赖方向、线程/队列拓扑、核心流程与决策门）；各模块边界契约在各自 README。
+
 | 子模块 | 责任 | 首批状态 |
 | --- | --- | --- |
-| `ecs` | Entity、Component、Query、Storage、Change Tracking | P0 |
-| `simulation` | Logical TickId、Phase Graph、Processor Scheduler、Determinism | P0 |
-| `command` | CommandBuffer、Deferred Token、稳定合并和结构提交 | P0 |
-| `coordination` | CrossWorldTxn、Reservation、Revision、Snapshot Cut | P0 |
-| `replication` | Projection、Mapping Runtime、Baseline/Delta Apply、Dirty Set | P0 |
-| `gas` | Ability/Effect/Attribute/Tag Core 和 Prediction Context | P1 |
-| `persistence` | Snapshot/WAL 接口、Canonical Serializer、恢复协作 | P1 |
-| `config` | Schema 编译产物、配置层级和不可变 Tick Snapshot | P1 |
-| `observability` | Event Schema、Metrics、Trace、Failure Bundle API | P1 |
-| `hot-reload` | ModuleScope、Quiesce/Cancel/Drain/Unload 协议 | P1 |
-| `testing` | Reference Host、Replay/Hash、Scenario Adapter | P1 |
+| [`ecs`](modules/ecs/README.md) | Entity、Component、Query、Storage、Change Tracking | P0 |
+| [`simulation`](modules/simulation/README.md) | Logical TickId、Phase Graph、Processor Scheduler、Determinism | P0 |
+| [`command`](modules/command/README.md) | CommandBuffer、Deferred Token、稳定合并和结构提交 | P0 |
+| [`coordination`](modules/coordination/README.md) | CrossWorldTxn、Reservation、Revision、Snapshot Cut | P0 |
+| [`replication`](modules/replication/README.md) | Projection、Mapping Runtime、Baseline/Delta Apply、Dirty Set | P0 |
+| [`gas`](modules/gas/README.md) | Ability/Effect/Attribute/Tag Core 和 Prediction Context | P1 |
+| [`persistence`](modules/persistence/README.md) | Snapshot/WAL 接口、Canonical Serializer、恢复协作 | P1 |
+| [`config`](modules/config/README.md) | Schema 编译产物、配置层级和不可变 Tick Snapshot | P1 |
+| [`observability`](modules/observability/README.md) | Event Schema、Metrics、Trace、Failure Bundle API | P1 |
+| [`hot-reload`](modules/hot-reload/README.md) | ModuleScope、Quiesce/Cancel/Drain/Unload 协议 | P1 |
+| [`testing`](modules/testing/README.md) | Reference Host、Replay/Hash、Scenario Adapter | P1 |
 
 ## 职责
 
