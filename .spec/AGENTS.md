@@ -9,7 +9,7 @@
 
 `LumioGameRuntime` 是 Server 与 Client 共用的稳定 C# ECS Runtime，拥有逻辑 Tick、Processor/CommandBuffer、Coordinator、Replication、GAS、Persistence 与 Hot Reload 机制。
 
-- 当前架构基线是 `LGE-V1.0-2026-08-27`；公共架构与契约的唯一来源是 `LumioGameEngineArchitecture`，本仓只保存只读镜像。
+- 当前架构基线是 `LGE-V1.3-2026-08-27`；公共架构与契约的唯一来源是 `LumioGameEngineArchitecture`，本仓只保存只读镜像。
 - 本仓拥有模拟语义与 World 状态机，不拥有 Host Wall Clock/进程/连接、Voxel 内部或具体 Gameplay 内容。
 - 开工前先读 [`repository-architecture.md`](knowledge/standards/repository-architecture.md)；详细模块边界见根 [`README.md`](../README.md)。
 

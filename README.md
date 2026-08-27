@@ -4,9 +4,9 @@
 
 ## 架构基线
 
-- Baseline：`LGE-V1.2-2026-08-27`
+- Baseline：`LGE-V1.3-2026-08-27`
 - 唯一架构源：`LumioGameEngineArchitecture`
-- 本地镜像：[`docs/architecture/LumioGameEngine_Architecture_v1.2.md`](docs/architecture/LumioGameEngine_Architecture_v1.2.md)
+- 本地镜像：[`docs/architecture/LumioGameEngine_Architecture_v1.3.md`](docs/architecture/LumioGameEngine_Architecture_v1.3.md)
 
 Runtime 位于 Native/领域库之上、具体游戏内容之下。它拥有逻辑模拟语义和 ECS World，但不拥有 Server 进程时钟、Socket、Voxel 内部或具体玩法。稳定 Runtime 与从 `LumioGame` 加载的 Role-specific Gameplay Assembly 必须分开。
 
@@ -18,7 +18,7 @@ Tick/Processor、Revision、Txn、Replication、Mapping、Snapshot 和 Failure B
 
 - 每个 Role/World 独立的 Entity、Component Storage、Query、CommandBuffer 和 Change Tracking。
 - `GameWorld`、`ReplicaWorld` 的逻辑创建、Tick Phase、结构提交、Snapshot Projection 和销毁。
-- `SimulationSession` 的 Logical TickId、Revision Vector、Determinism Context 和 Coordinator 状态。
+- `SimulationSession` 对外聚合/暴露 Logical Tick 与 Coordinator Facade：`simulation` 唯一拥有 Logical TickId、Phase 与 Determinism Context；Revision、Txn、Reservation、SnapshotCut 唯一归 `coordination`；Facade 只转发查询或命令，不缓存第二份可变状态。
 - GAS Ability/Effect/Attribute/Tag 状态、Handle、Prediction Context、Snapshot/Restore。
 - Replication Projection/History/Apply 的通用语义和 Hot Gameplay ModuleScope 契约。
 
@@ -73,20 +73,20 @@ IngressCapture -> DecodeAndCanonicalize -> ApplyInputs
 -> SnapshotHashMetrics -> EgressPublish
 ```
 
-Processor 必须声明 `ProcessorId/Role/Phase/Query/ReadSet/WriteSet/StructuralWrites/Dependencies/DeterminismClass/Budget/DiagnosticName`。V1 权威 World 单线程写入；只有无共享写集和稳定归并规则的任务可并行。所有队列有界，Native Completion 只能在 Barrier 应用。
+Processor 必须声明 `ProcessorId/Role/Phase/Query/ReadSet/WriteSet/MayEmitStructuralCommands/Dependencies/DeterminismClass/Budget/DiagnosticName`。声明 `MayEmitStructuralCommands` 的业务 Phase Processor 只发出结构命令；结构变化仅由 Runtime Commit Executor 在 `EcsCommandBufferCommit` 实际应用。V1 权威 World 单线程写入；只有无共享写集和稳定归并规则的任务可并行。所有队列有界，Native Completion 只能在 Barrier 应用。
 
 ## Entity 与非对称 Mapping
 
 - `NetEntityId` 为 128 位不透明组合 ID，预留 AuthorityDomain、WorldEpoch、Sequence、Generation；Session 内不复用。
 - `LocalEntityId` 为当前 World 的 Index+Generation，不能作为网络身份。
-- Destroy 产生 Tombstone，保留到 Baseline Ack/失效；Respawn 默认新 ID；预测临时 ID 在确认时重映射。
+- Destroy 产生 Tombstone，保留窗口不小于未确认 Baseline 窗口、保留 Delta History、断线重连窗口、Prediction 回滚窗口和 Migration/Replay pin 的最大值（下界公式见 replication 模块）；Respawn 默认新 ID；预测临时 ID 在确认时重映射。
 - Mapping 声明 Source/Target Entity、Component、Field、Role、Owner、AOI、Initial/Continuous、Reliability、Quantization、Prediction 和 Add/Remove/Tombstone。
 
 ## CrossWorldTxnV1 与 Revision
 
-Runtime 是 Coordinator 语义所有者。事务携带 `SessionId/TxnId/TickId/CommandId/PredictionKey/ExpectedGameRevision/ExpectedVoxelRevision/DeadlineTick`，状态为 `Created -> Prepared -> CommitIntent -> Committed` 或 `Aborted/Indeterminate`。
+Runtime 是 Coordinator 语义所有者。事务携带 `SessionId/TxnId/TickId/CommandId/PredictionKey/ExpectedGameRevision/ExpectedVoxelRevision/DeadlineTick`，状态为 `Created -> Prepared -> CommitIntent -> Committed`；`Prepared -> Aborted/Expired`；`Indeterminate` 仅能从已持久化 `CommitIntent` 的 Apply 阶段进入。
 
-Prepare 只做验证和有租约 Reservation；Commit 在固定 Barrier 按 `VoxelCommit -> EcsCommandBufferCommit` 顺序幂等 Apply，并在首个 Apply 前写入 `CommitIntent`、每步追加结果、最后写入 `Committed` 标记。`SessionRevisionVector` 同时记录 `TickId、GameRevision、VoxelWorldRevision、ChunkRevisionSet、ReplicationRevision、ConfigRevision、SchemaEpoch`。结果丢失和崩溃由 Txn Journal/状态查询处理，不在 Rust 锁内调用 C#。
+Prepare 只做验证和有租约 Reservation：ECS 参与者在 Prepare 完成全部业务校验并生成不可变 `PreparedGameDelta`；`CommitIntent` 之后 ECS Apply 只能返回 `Applied/AlreadyApplied/Indeterminate/Faulted`，不得业务拒绝。Commit 在固定 Barrier 按 `VoxelCommit -> EcsCommandBufferCommit` 顺序幂等 Apply，并在首个 Apply 前写入 `CommitIntent`、每步追加结果、最后写入 `Committed` 标记。`SessionRevisionVector` 同时记录 `TickId、GameRevision、VoxelWorldRevision、ChunkRevisionSet、ReplicationRevision、ConfigRevision、SchemaEpoch`。结果丢失和崩溃由 Txn Journal/状态查询处理，不在 Rust 锁内调用 C#。
 
 ## GAS Framework
 
@@ -107,7 +107,7 @@ LocalEmbedded 的两 Role 使用不同 World、不同 LocalEntityId 和完整序
 
 ## 日志与观测
 
-Runtime 只定义统一 Event Schema 和关联 API；具体 Sink 由 Host 提供。Managed 侧使用成熟日志框架，通过有界异步队列、批量写入、Error/Fatal 应急路径输出 Diagnostic/Audit/Txn/Command/Metric/Trace 事件。所有事件携带 Release、Session、World、Tick、Txn、Entity、Prediction 和 Trace 关联字段。
+Runtime 只定义统一 Event Schema 和关联 API；具体 Sink 由 Host 提供。Managed 侧使用成熟日志框架：Diagnostic/Trace/Metrics 使用有界异步队列、批量写入和 Error/Fatal 应急路径；Audit/TxnJournal/CommandLog 使用独立耐久路径，不得静默丢失。所有事件携带 Release、Session、World、Tick、Txn、Entity、Prediction 和 Trace 关联字段。
 
 ## Hot Reload 与故障隔离
 
