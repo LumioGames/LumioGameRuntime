@@ -1,117 +1,168 @@
 # LumioGameRuntime
 
-> 客户端与服务器共用的稳定 C# ECS Runtime、GameWorld 编排层与 GAS Framework。
+> Server 与 Client 共用的稳定 C# ECS Runtime、逻辑 Tick、Coordinator、Replication 语义和 GAS Framework。
 
-## 定位
+## 架构基线
 
-`LumioGameRuntime` 是托管运行时的通用边界，位于 Native/领域库之上、具体游戏内容之下。它拥有 ECS 存储和 Tick 生命周期，提供 `GameWorld`、Client `ReplicaWorld`、Processor 调度、跨 World Coordinator、稳定 Managed API、GAS Framework 和 Hot Reload Host。
+- Baseline：`LGE-V1.0-2026-08-27`
+- 唯一架构源：`LumioGameEngineArchitecture`
+- 本地镜像：[`docs/architecture/LumioGameEngine_Architecture_v1.0.md`](docs/architecture/LumioGameEngine_Architecture_v1.0.md)
 
-GAS Framework 属于本仓库；具体 Ability、Effect、Formula、Targeting 和玩法规则属于 `LumioGame`。
+Runtime 位于 Native/领域库之上、具体游戏内容之下。它拥有逻辑模拟语义和 ECS World，但不拥有 Server 进程时钟、Socket、Voxel 内部或具体玩法。稳定 Runtime 与从 `LumioGame` 加载的 Role-specific Gameplay Assembly 必须分开。
 
-总架构基线见 [`docs/architecture/LumioGameEngine_Architecture_v0.3.md`](docs/architecture/LumioGameEngine_Architecture_v0.3.md)。
+## Architecture Gate
 
-本仓库的稳定 Runtime、GAS Framework、Processor 和 Hot Reload Host 使用 C#；从 `LumioGame` 加载的 Server/Client Gameplay 热更程序集也必须使用 C#。
+Tick/Processor、Revision、Txn、Replication、Mapping、Snapshot 和 Failure Bundle Schema 只维护在 `LumioGameEngineArchitecture`。Runtime API 或 Phase 变更必须带状态机、正向/失败 Fixture 和 SchemaEpoch 说明，并在架构源执行 `python3 tools/lumio_contract.py validate`；实现仓库不得自行扩展公共字段。
 
 ## 拥有的状态与生命周期
 
-- 每个 Role/World 独立的 ECS Entity、Component Storage、Archetype、Query、CommandBuffer 和 Change Tracking。
-- `GameWorld` 与 Client `ReplicaWorld` 的创建、Tick 阶段、结构提交、Snapshot Projection 和销毁生命周期。
-- GAS 的 Ability/Effect/Attribute/Tag 状态、Handle、生命周期、状态机、Prediction/Authority/Correction/Rollback 上下文。
-- `SimulationSession` 的 Tick Clock、Determinism Context、Typed Channel、Coordinator Transaction 和 Snapshot Metadata。
-- Hot Gameplay Assembly 的 Load/Activate/Pause/Migrate/Unload、异常隔离和回滚状态。
+- 每个 Role/World 独立的 Entity、Component Storage、Query、CommandBuffer 和 Change Tracking。
+- `GameWorld`、`ReplicaWorld` 的逻辑创建、Tick Phase、结构提交、Snapshot Projection 和销毁。
+- `SimulationSession` 的 Logical TickId、Revision Vector、Determinism Context 和 Coordinator 状态。
+- GAS Ability/Effect/Attribute/Tag 状态、Handle、Prediction Context、Snapshot/Restore。
+- Replication Projection/History/Apply 的通用语义和 Hot Gameplay ModuleScope 契约。
 
-Runtime 不保存完整 VoxelWorld；只持有 `IVoxelWorldPort`、Revision 和结果批次。
+Server/Client Host 负责 Wall Clock、进程和连接；Runtime 不声明 Tick Clock 的驱动所有权。Game 只提供初始化、内容注册和语义 Migration Hook。
+
+## 子模块
+
+| 子模块 | 责任 | 首批状态 |
+| --- | --- | --- |
+| `ecs` | Entity、Component、Query、Storage、Change Tracking | P0 |
+| `simulation` | Logical TickId、Phase Graph、Processor Scheduler、Determinism | P0 |
+| `command` | CommandBuffer、Deferred Token、稳定合并和结构提交 | P0 |
+| `coordination` | CrossWorldTxn、Reservation、Revision、Snapshot Cut | P0 |
+| `replication` | Projection、Mapping Runtime、Baseline/Delta Apply、Dirty Set | P0 |
+| `gas` | Ability/Effect/Attribute/Tag Core 和 Prediction Context | P1 |
+| `persistence` | Snapshot/WAL 接口、Canonical Serializer、恢复协作 | P1 |
+| `config` | Schema 编译产物、配置层级和不可变 Tick Snapshot | P1 |
+| `observability` | Event Schema、Metrics、Trace、Failure Bundle API | P1 |
+| `hot-reload` | ModuleScope、Quiesce/Cancel/Drain/Unload 协议 | P1 |
+| `testing` | Reference Host、Replay/Hash、Scenario Adapter | P1 |
 
 ## 职责
 
-- 提供 ECS Storage、Query、CommandBuffer、Change Tracking、Snapshot Projection、Tick 阶段和结构变更边界。
-- 以 `Processor/Handler` 为主要执行抽象；传统 `System` 只是可选的 Processor 实现，不强制使用。
-- 提供 `NetEntityId + LocalEntityId` 双层实体身份、Role Capability 和 Replication Mapping 接口。
-- 提供 Cross-World Coordinator，在 Tick 内以 Prepare/Commit 协调 GameWorld 与 VoxelWorld 的变更。
-- 提供 GAS Framework：Ability/Effect/Attribute/Tag、Handle、状态机、Tick、Snapshot、Replication、Prediction、Correction 和 Rollback 接口。
-- 提供 `HostApiV1`、`ManagedApiV1`、Typed Input/Output Batch、稳定错误和能力校验。
-- 承载 CoreCLR/AssemblyLoadContext 无关的 Hot Reload 生命周期契约、Migration Hook、旧 ALC 回收监测和诊断。
-
-GAS 只表达 Gameplay 事件和状态语义，不直接操作 Socket 或原始字节；Server/Client Host 负责传输。
+- 提供 ECS 语义、Processor Descriptor、Query、CommandBuffer、Change Tracking 和 Snapshot Projection。
+- 拥有 Logical Tick/Phase Graph、确定性排序、Barrier、错误和取消语义。
+- 提供 `NetEntityId + LocalEntityId`、生命周期、Tombstone、Ownership Revision 和 Mapping 接口。
+- 在 Tick Barrier 通过 `IVoxelWorldPort` 协调 GameWorld/VoxelWorld 的 `CrossWorldTxnV1`。
+- 提供宿主无关 GAS Core、PredictionFrame、Authority Confirmation、Rollback 和 Snapshot/Restore。
+- 提供持久化、配置、日志/Trace/Failure Bundle 的稳定抽象，不把具体 Sink、数据库或云平台绑定进 Runtime。
+- 提供 Hot Reload ModuleScope、资源注册、取消、泄漏验证和 Migration Hook。
 
 ## 明确不负责什么
 
-- 不拥有 Voxel Chunk/Block/Revision 权威数据，不直接依赖 `LumioVoxelEngine` 内部实现。
-- 不实现 Socket、Connection、Session、端口监听、DS 进程治理或平台 UI/Renderer。
-- 不包含具体技能、Buff 数值、任务、经济、关卡、内容资产或产品规则。
-- 不把 Server/Client 合并成一个 ECS World；Local 模式也必须创建独立的 Server 和 Client Entity。
-- 不要求 Server/Client Component 对称，也不替玩法作者判断版本语义兼容。
-- 不允许 Hot Gameplay 长期持有 Native Handle、裸指针、Timer Delegate 或后台 Task。
+- 不拥有 Voxel Chunk/Block/Revision 权威数据，不依赖 VoxelEngine 内部源码。
+- 不实现 Socket、Connection、Endpoint、Server 进程、WorldSlot Host 或平台 Renderer。
+- 不驱动 Wall Clock，不拥有 Release Pool 或生产滚动更新编排。
+- 不包含具体 Ability、Formula、经济、任务、关卡、UI 或内容资产。
+- 不把 Server/Client 合并成一个 World，也不要求 Component 对称。
+- 不允许 Hot Gameplay 长期持有 Native Handle、裸指针、Timer Delegate 或未登记 Task。
 
-## 对外产物与契约
+## World 与 Tick 契约
 
-- `LumioGameRuntime.<version>.dll`：ECS、Tick、GAS、Coordinator、Role 和 Snapshot API。
-- `HostApiV1`/`ManagedApiV1`、`IVoxelWorldPort`、Typed Channel、Error/Capability Schema。
-- `RuntimeManifest.json`：Runtime API、GAS Schema、Serialization、Hot Reload 和 Migration 版本。
-- Headless Host、Determinism Harness、Replay/State Hash/Metrics API 与测试工具包。
+每个 World 有独立 Storage 和 Entity 命名空间。Host 调用 Runtime 的单一 Tick 入口；Runtime 按以下阶段执行：
+
+```text
+IngressCapture -> DecodeAndCanonicalize -> ApplyInputs
+-> ProcessorPlan -> CrossWorldPrepare -> NativeJobBarrier
+-> CommitDecision -> VoxelCommit -> EcsCommandBufferCommit
+-> GasAndEventFinalize -> ReplicationProjection
+-> SnapshotHashMetrics -> EgressPublish
+```
+
+Processor 必须声明 `ProcessorId/Role/Phase/Query/ReadSet/WriteSet/StructuralWrites/Dependencies/DeterminismClass/Budget/DiagnosticName`。V1 权威 World 单线程写入；只有无共享写集和稳定归并规则的任务可并行。所有队列有界，Native Completion 只能在 Barrier 应用。
+
+## Entity 与非对称 Mapping
+
+- `NetEntityId` 为 128 位不透明组合 ID，预留 AuthorityDomain、WorldEpoch、Sequence、Generation；Session 内不复用。
+- `LocalEntityId` 为当前 World 的 Index+Generation，不能作为网络身份。
+- Destroy 产生 Tombstone，保留到 Baseline Ack/失效；Respawn 默认新 ID；预测临时 ID 在确认时重映射。
+- Mapping 声明 Source/Target Entity、Component、Field、Role、Owner、AOI、Initial/Continuous、Reliability、Quantization、Prediction 和 Add/Remove/Tombstone。
+
+## CrossWorldTxnV1 与 Revision
+
+Runtime 是 Coordinator 语义所有者。事务携带 `SessionId/TxnId/TickId/CommandId/PredictionKey/ExpectedGameRevision/ExpectedVoxelRevision/DeadlineTick`，状态为 `Created -> Prepared -> CommitIntent -> Committed` 或 `Aborted/Indeterminate`。
+
+Prepare 只做验证和有租约 Reservation；Commit 在固定 Barrier 按 `VoxelCommit -> EcsCommandBufferCommit` 顺序幂等 Apply，并在首个 Apply 前写入 `CommitIntent`、每步追加结果、最后写入 `Committed` 标记。`SessionRevisionVector` 同时记录 `TickId、GameRevision、VoxelWorldRevision、ChunkRevisionSet、ReplicationRevision、ConfigRevision、SchemaEpoch`。结果丢失和崩溃由 Txn Journal/状态查询处理，不在 Rust 锁内调用 C#。
+
+## GAS Framework
+
+Runtime 定义 Ability/Effect/Attribute/Tag 生命周期、TypeId/InstanceId/Handle、Stack/Duration/Cancel、Modifier 求值、PredictionKey、确认/拒绝和回滚上下文；Game 定义具体 Formula、Cost、Cooldown、Targeting 和表现事件。GAS 状态与 ECS 的单一真相、Snapshot Projection、State Hash 和热更迁移必须在 API Contract 中明确。复杂 Trigger Graph、Formula VM 和跨 Ability 求解器为 P2。
+
+## Replication、Prediction 与 LocalEmbedded
+
+Runtime 拥有复制语义；Server/Client 拥有传输适配。权威 Delta 处理顺序为验证 Baseline/Revision → 恢复 Confirmed PredictionFrame → 原子应用 ECS/GAS/Voxel → 删除已确认命令 → 重放未确认命令 → 输出表现差异。
+
+LocalEmbedded 的两 Role 使用不同 World、不同 LocalEntityId 和完整序列化/反序列化路径；InMemoryTransport 可绕过 Socket，但不能绕过 Schema、Envelope、权限、大小限制、队列和 Tick 交付。ReferenceVoxelPort 用于 PureHeadless 语义测试。
+
+## 持久化、序列化与配置
+
+- Runtime 定义 Snapshot Cut、Canonical Serializer、WAL/Command Log Adapter、Checkpoint 和恢复接口；领域 Schema 由 Voxel/Game 提供。
+- Snapshot/Replay 使用版本、长度、Hash/Checksum、压缩和可选加密元数据；对象地址和运行时遍历顺序不得进入 Hash。
+- 配置源经 Schema 编译为 typed binary table；Engine→Platform→Server→Product→Environment→User/Session 优先级固定。
+- Tick 使用不可变配置快照；开发可热载，生产通过签名版本显式切换。
+
+## 日志与观测
+
+Runtime 只定义统一 Event Schema 和关联 API；具体 Sink 由 Host 提供。Managed 侧使用成熟日志框架，通过有界异步队列、批量写入、Error/Fatal 应急路径输出 Diagnostic/Audit/Txn/Command/Metric/Trace 事件。所有事件携带 Release、Session、World、Tick、Txn、Entity、Prediction 和 Trace 关联字段。
+
+## Hot Reload 与故障隔离
+
+每个 Gameplay Assembly 使用独立 `GameplayModuleScope` 登记 Timer、Task、Subscription、Native Lease 和 Channel Registration。卸载顺序为 `Quiesce -> Cancel -> Drain -> Dispose -> ValidateRoots -> Unload`，超时进入失败/回滚或 Session 重启。可捕获 Gameplay Exception 可降级为 Session Fault；CoreCLR 崩溃、Stack Overflow、OOM 按进程级故障处理。
 
 ## Source / Compile-Time Dependencies
 
-- .NET SDK、C# 编译器和经审核的托管基础包。
-- `LumioCoreEngine` 生成的 Native Contract/Manifest，仅通过稳定 Managed Adapter 使用。
-- 不得对 `LumioVoxelEngine` Rust 源码、`LumioServer`、`LumioClient` 或 `LumioGame` 实现建立编译期依赖。
+- .NET SDK、C# 编译器和经过供应链审查的托管基础包。
+- `LumioCoreEngine` 生成的 Native Contract/Manifest，仅经稳定 Managed Adapter 使用。
+- Voxel 只通过 `IVoxelWorldPort`/Generated Contract；不依赖 Server、Client 或 Game 实现源码。
+- 第三方库通过 Adapter 隔离，不能进入公共 Runtime 类型。
 
 ## Generated Contract Dependencies
 
-消费 Native/Core/Voxel 生成的 Handle、Batch、Capability 和 ABI Metadata；由 `LumioGame` 生成的 Gameplay Schema、RPC 和 Mapping 通过公开接口注册，不把具体内容编译进 Runtime。
+消费 Native/Voxel ABI、Handle、Batch、Capability 和 Error 元数据；注册 Game 生成的 Component/RPC/Mapping Schema。生成物记录 Compiler、Input Hash、Output Hash，只读且可从干净来源重建。
 
 ## Runtime Loading Relationships
 
 ```text
-LumioServer or LumioClient Host
-  -> LumioGameRuntime stable host
-  -> GameWorld / ReplicaWorld (independent ECS worlds)
+Server/Client Host
+  -> stable LumioGameRuntime
+  -> role-specific GameWorld/ReplicaWorld
   -> ServerGameplay.dll or ClientGameplay.dll
-  -> IVoxelWorldPort / GAS / generated contracts
+  -> Voxel Port / GAS / generated contracts
 ```
 
-同一进程 LocalEmbedded 的两个 Role 仍各自拥有 World、Entity 和 Component Storage，通过 Typed InMemoryTransport 交换命令、事件和快照。
+Runtime 不实际创建 CoreCLR；Host 负责 CoreCLR/ALC。LocalEmbedded 的 Server/Client Gameplay 使用独立可回收 ALC，共享稳定 Runtime。
 
 ## Release Composition Relationships
 
-Runtime 作为稳定基础包被 `LumioServer`、`LumioClient` 和 `LumioGame` 锁定。生产发布时 Server/Client 使用同一 `GameReleaseId` 的不同 Gameplay Assembly；Runtime 只校验 API/Schema/ABI 和 Migration Hook，不替玩法决定兼容性。
+Runtime 发布 `RuntimeApiSchemaVersion`、GAS/Serialization/HotReload Contract 和 Artifact Hash；Server/Client/Game Manifest 必须锁定这些版本。Runtime 不决定 ProductId、GameRelease 语义或滚动路由。
 
 ## Room Modes / Host Profiles
 
-Runtime 不暴露 `IsOffline` 分支给 Gameplay，而是由 `RoomMode`、`HostProfile`、`Role` 和 Capability 注入环境：
-
-| RoomMode | Host Profile | Runtime 形态 |
-| --- | --- | --- |
-| `Online` | `PublicDedicatedServer` / `PlayerHostedDedicatedServer` / `LocalhostDedicatedServer` | 分离 Server/Client 进程，各自 World。 |
-| `Singleplayer` | `LocalEmbedded` | 同进程双 Role、双 ECS World、InMemoryTransport。 |
-
-移动端第一阶段同样走完整双 Role 的 LocalEmbedded 或远程 DS，不实现启动 Player-hosted DS。
+Runtime 只消费正交 Capability：Role、Native、Voxel、Transport、Clock、Replay、Renderer、AOT、Resource Budget。Preset 包括 `PureHeadless`、`NativeHeadless`、`LocalEmbedded`、`LocalSplitProcess`、`RemoteDS`、`MobileLocal`；Gameplay 不读取模式布尔值。
 
 ## Headless Test Surface
 
-- ECS Entity/Component/Query/CommandBuffer/结构变更与 Tick 阶段单测。
-- GAS Framework 生命周期、Handle、状态机、预测/校正/回滚、Snapshot 和确定性测试。
-- Cross-World Prepare/Commit、Revision、失败回滚和 Replay/State Hash 测试。
-- Hot Reload Load/Unload/Migration/ALC 回收和异常隔离测试。
-- `PureHeadless`、`NativeHeadless`、`LocalEmbedded`、`LocalSplitProcess`、`RemoteDS`、`MobileLocal` Host Smoke Test。
+- ECS/Query/CommandBuffer/Processor/Determinism/Revision/Entity Property 和 Golden Test。
+- CrossWorldTxn 的 Duplicate、Timeout、Conflict、Lost Result、Crash Fixture。
+- GAS 生命周期、PredictionFrame、Authority Confirm、Rollback、Snapshot/Hash。
+- ReferenceVoxelPort 与 Native Voxel Differential、Local Transport Fidelity、Replay 首差异。
+- Hot Reload 100 次 Soak、ALC/Task/Timer/Handle 泄漏和异常隔离。
+- 日志背压、配置优先级、Snapshot/WAL 恢复和 Failure Bundle 重建。
 
 ## Version / Manifest
 
-- Runtime API、GAS Framework、Serialization 和 Host Contract 各自记录版本；破坏性变更提升主版本。
-- Manifest 列出 Runtime Commit、API/Schema、依赖 Core Engine、目标平台、Artifact Hash 和能力矩阵。
-- Host 启动时拒绝不兼容的 Game Release、Generated Contract 或 Native ABI。
+Manifest 至少包含 Runtime Commit、API/Schema、Serialization、GAS、HotReload、平台、Artifact Hash、Capability 和依赖 CoreEngine。结构不匹配时 Host 拒绝加载；语义兼容由 Game 显式声明。
 
-## 开发规范
+## 开源优先与供应链
 
-- 所有结构变更通过 CommandBuffer，在固定 Tick 阶段统一提交；Processor 不直接修改迭代中的 Archetype。
-- `NetEntityId` 用于跨端/快照身份，`LocalEntityId` 只在单个 ECS World 内有效；禁止混用。
-- Processor 通过 Query/Typed Channel/Port 协作；只有需要注册调度语义时才实现传统 `System`。
-- GAS Framework 保持宿主无关；Socket、序列化字节和连接状态留在 Host Adapter。
-- 跨 World 事务必须可重试、可记录、可回放，并在 Commit 失败时产生明确结果。
-- Hot Gameplay 只能使用受控 API；卸载前必须清理 Handle、订阅、Timer 和异步任务。
+优先复用成熟 ECS 辅助、并发、序列化、日志和测试框架；通过 Adapter、锁定版本/Commit、许可证审查、SBOM、漏洞、AOT、确定性和性能门槛管理。默认优先宽松许可证，不能把未验证依赖写成稳定 API。
 
-## 当前阶段任务
+## 当前阶段与开发节奏
 
-- 冻结 ECS、Role、双层 Entity、Typed Channel、Coordinator 和 GAS Framework v0.3 API。
-- 建立两个独立 World 的 LocalEmbedded Headless Host 与确定性回放。
-- 提供 Hot Reload/Migration 骨架和 Server/Client Gameplay Assembly 加载校验。
+1. **Architecture Gate**：冻结 ECS/Tick/Entity/Revision/Replication/HotReload 语义和失败矩阵。
+2. **Foundation**：实现 `ecs/simulation/command/coordination` 单线程闭环和 Reference Host。
+3. **Vertical Slice**：接入 GAS、Voxel Port、LocalEmbedded、Persistence、Config、Replay 和日志证据。
+4. **Production Hardening**：预测校正、故障注入、热更 Soak、性能和跨平台 Host Matrix。
+5. **P2**：复杂 GAS、可替换 Storage、Mod 挂接和更多并行优化。
