@@ -1,4 +1,4 @@
-# LumioGameEngine V3 (v0.3) - Deprecated Compatibility Pointer
+# LumioGameEngine V3 (v1.1) - Deprecated Compatibility Pointer
 
 This path is retained only for consumers that still reference the historical filename.
 The normative architecture baseline is [LumioGameEngine_Architecture_v1.2.md](LumioGameEngine_Architecture_v1.2.md).
