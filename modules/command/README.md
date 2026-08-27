@@ -4,7 +4,7 @@
 
 **优先级**：P0
 **实施阶段**：Foundation
-**架构基线**：`LGE-V1.0-2026-08-27`
+**架构基线**：`LGE-V1.3-2026-08-27`
 
 ## 模块定位与目标
 
@@ -12,7 +12,7 @@
 
 ## 负责什么
 
-- 为每个 Processor 创建独立的 CommandBuffer，并校验其声明的 StructuralWrites。
+- 为每个 Processor 创建独立的 CommandBuffer，并校验其声明的 `MayEmitStructuralCommands`。
 - 表达 Create、Add/Remove Component、Set Field、Destroy 等结构命令和 Deferred Entity Token。
 - 按 `Phase + ProcessorId + LocalSequence` 稳定合并，解决跨 Buffer 的可见顺序。
 - 在 `EcsCommandBufferCommit` 应用结构变化，返回映射后的 Entity、Change Set 和幂等结果。
@@ -27,7 +27,7 @@
 
 ## 拥有的状态与资源
 
-- 当前 Tick/Phase/Processor 的 Open、Sealed、Merged、Applied/Discarded Buffer。
+- 当前 Tick/Phase/Processor 的 Open、Sealed、Merged、Prepared、Applied/Discarded Buffer。
 - Deferred Token 到实际 LocalEntityId 的临时映射和失效状态。
 - 命令序列号、容量/字节预算、合并结果和拒绝原因。
 - 结构提交期间的幂等键与诊断摘要；不保存跨 Tick 的未登记可变引用。
@@ -36,7 +36,7 @@
 
 - **输入**：Processor Context、Query 结果、结构命令、Tick/Phase、目标 Entity Token 和预算。
 - **输出**：Sealed Buffer、稳定合并批、Commit Result、Deferred Token 映射、Change Set 和错误。
-- **候选接口**：`open_buffer`、`append`、`seal`、`merge`、`commit`、`discard`；具体签名随 ECS/Runtime API Schema 冻结。
+- **候选接口**：`open_buffer`、`append`、`seal`、`merge`、`prepare`、`commit`、`discard`；具体签名随 ECS/Runtime API Schema 冻结。
 - Buffer 的所有权在 `seal` 后转移给 Runtime 提交路径；调用方不能在提交后继续写入或重用旧序列号。
 
 ## 上游与下游依赖
@@ -48,12 +48,12 @@
 ## 生命周期与状态机
 
 ```text
-Open -> Sealed -> Merged -> Applied
+Open -> Sealed -> Merged -> Prepared -> Applied
 Open/Sealed -> Discarded
 任一状态 -> Faulted（保持原始 Buffer 证据）
 ```
 
-一个 Buffer 只属于一个 Tick/Phase/Processor；`Applied` 或 `Discarded` 后 Token 和写入权限失效。
+一个 Buffer 只属于一个 Tick/Phase/Processor；`Applied` 或 `Discarded` 后 Token 和写入权限失效。`Prepared` 表示 Generation、目标存在性、容量、命令冲突、权限、预算等一切业务校验已全部完成并固定为不可变结果；`Prepared` 之后不再发生业务拒绝。
 
 ## 线程、队列与并发所有权
 
@@ -67,15 +67,16 @@ Open/Sealed -> Discarded
 1. `simulation` 为 Processor 打开 Buffer，Processor 写入字段/结构命令并分配稳定 LocalSequence。
 2. `seal` 校验目标、权限范围、预算和结构规则；Deferred Token 只在同一提交域内有效。
 3. `merge` 按固定键排序，处理同目标冲突、重复 Destroy 和 Create 后引用。
-4. `commit` 调用 `ecs` 应用结构变化，发布映射/Change Set；失败则整批拒绝或按架构源定义的原子边界回滚。
+4. `prepare` 完成 Generation、目标存在性、容量、命令冲突、权限和预算等全部业务校验，生成不可变的已验证批；一切业务拒绝在本步或之前发生。
+5. `commit` 调用 `ecs` 应用已 `Prepared` 的结构变化，发布映射/Change Set；参与 CrossWorldTxn 的 Buffer 在 `CommitIntent` 后 Apply 只能返回 `Applied`/`AlreadyApplied` 或基础设施级 `Indeterminate/Faulted`，不得业务拒绝。
 
 无效目标、重复命令、超预算、跨 Tick Token、Buffer 篡改和提交后回调都必须可诊断，不能产生半个结构操作。
 
 ## 错误分类、恢复与降级
 
-- **可拒绝**：目标 Generation 不匹配、命令类型未声明、依赖顺序非法、重复或超限。
+- **可拒绝（仅 `Prepared` 前生效）**：目标 Generation 不匹配、命令类型未声明、依赖顺序非法、重复或超限；`Prepared` 之后不再出现业务拒绝。
 - **可重试**：等待的 Deferred Token 尚未解析且仍在同一 Barrier；不能跨 Tick 静默等待。
-- **可致命**：合并排序不稳定、Commit 原子性不变量失败或 ECS Storage 损坏；进入 `Faulted` 并保留 Buffer 证据。
+- **可致命**：合并排序不稳定、Commit 原子性不变量失败或 ECS Storage 损坏；进入 `Faulted` 并保留 Buffer 证据。Apply 阶段的基础设施故障表达为 `Indeterminate/Faulted`，由 TxnJournal/参与者查询恢复，不表达为业务拒绝。
 - 只能丢弃非权威/诊断命令；权威结构命令必须明确拒绝并让上层决定事务失败。
 
 ## 配置、Capability 与安全约束
@@ -97,11 +98,11 @@ Open/Sealed -> Discarded
 ## 对应 ADR、Schema 与 Fixture
 
 - 架构源 `docs/adr/ADR-002-tick-determinism.md`：`ProcessorId + Phase + LocalSequence` 合并顺序和结构提交边界。
-- 架构源 `schemas/processor-descriptor.schema.json`：`structuralWrites`、Budget 和依赖声明。
+- 架构源 `schemas/processor-descriptor.schema.json`：`mayEmitStructuralCommands`、Budget 和依赖声明。
 - CrossWorld 结果关联 `schemas/cross-world-txn.schema.json`；命令本身的内部载荷在 Runtime Contract 冻结前不另立公共 Schema。
 
 ## 尚未批准的决策门
 
-- **RT-D-003**：Deferred Token 编码、同目标冲突策略、Buffer 容量和取消竞态；必须有同 Tick 与 Crash/Replay Fixture。
+- **RT-D-003**：Deferred Token 编码、同目标冲突策略、Buffer 容量、`prepare` 校验批次边界和取消竞态；必须有同 Tick、「`Prepared` 后不可业务拒绝」与 Crash/Replay Fixture。
 - **RT-D-001**：`command` 是否独立程序集；无论物理布局如何，Processor 不得绕过本模块。
 - 任何新增命令类型若跨仓传输或进入持久化，必须先回到架构源登记 Schema/ID。

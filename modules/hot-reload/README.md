@@ -4,7 +4,7 @@
 
 **优先级**：P1
 **实施阶段**：Vertical Slice / Production Hardening
-**架构基线**：`LGE-V1.0-2026-08-27`
+**架构基线**：`LGE-V1.3-2026-08-27`
 
 ## 模块定位与目标
 
@@ -15,6 +15,7 @@
 - 创建/登记每个 Gameplay Assembly 的 `GameplayModuleScope` 和 Resource Lease。
 - 跟踪 Timer、Task、Subscription、Native Handle/Lease、Channel Registration、回调和取消令牌。
 - 执行 `Quiesce -> Cancel -> Drain -> Dispose -> ValidateRoots -> Unload`，报告超时、泄漏和未完成任务。
+- 维护热更的双 Scope 原子切换：新 Scope 在 Staging 创建、验证、迁移，旧 Scope 在 BarrierSwitch 之后才排空卸载；切换点前后失败各有唯一恢复动作。
 - 在 Schema/Release 允许时调用 Game 提供的语义 Migration Hook；保留旧 Scope 证据和失败回滚入口。
 - 为 Host/CoreCLR ALC 提供稳定的 Scope 状态、Unload Result、Root 验证和 Failure Bundle 片段。
 
@@ -47,6 +48,8 @@
 
 ## 生命周期与状态机
 
+单个 Scope 生命周期：
+
 ```text
 Created -> Loaded -> Active
 Active -> Quiescing -> Cancelling -> Draining
@@ -54,7 +57,18 @@ Draining -> Disposing -> ValidatingRoots -> Unloaded
 任一阶段 -> Faulted
 ```
 
-超时、Root 泄漏或迁移失败进入 `Faulted`；不得把未验证的旧 Scope 标记为 Unloaded，也不得在 Faulted 状态继续接收 Gameplay 调用。
+热更采用双 Scope 原子切换状态机：
+
+```text
+OldActive + NewStaging -> NewValidated -> BarrierSwitch -> OldQuiescing -> OldUnloaded
+```
+
+- `BarrierSwitch` 前任一失败（加载、验证、迁移）：丢弃 NewStaging，OldActive 不变，唯一恢复动作是保持旧 Scope 继续服务。
+- `BarrierSwitch` 后失败：不得重新激活已排空/Dispose 的旧 Scope；Session 进入 `Faulted`，从有效 Snapshot/Release 恢复。
+- Migration 只读不可变 Snapshot，在 Staging 生成结果，不修改 OldActive 的在用状态。
+- 所有入口、订阅、Timer、Task 和 Native Lease 在切换点按 Scope Generation 线性化；旧 Generation 的迟到结果被拒绝。
+
+排空阶段的超时或 Root 泄漏进入 `Faulted`；不得把未验证的旧 Scope 标记为 Unloaded，也不得在 Faulted 状态继续接收 Gameplay 调用。
 
 ## 线程、队列与并发所有权
 
@@ -67,9 +81,9 @@ Draining -> Disposing -> ValidatingRoots -> Unloaded
 
 1. Host 校验 Manifest/ABI/Capability 后创建 Scope，Gameplay 注册所有可持有资源。
 2. Active 期间资源通过 Scope 申请/释放，未登记的资源在诊断或根验证中报告。
-3. 热更或 Session 销毁先 Quiesce 停止新入口，再 Cancel/Drain，Dispose 资源并验证根引用。
-4. 验证通过后交给 Host 卸载 ALC；若提供 Migration Hook，则从不可变 Snapshot 读取并在 Staging 生成新 Scope/状态。
-5. 任一步骤超时或崩溃保留旧 Scope/证据，按 Host 策略回滚、隔离 Session 或重启进程。
+3. 热更先在 Staging 创建并加载新 Scope，OldActive 保持服务；Migration Hook 只读不可变 Snapshot，在 Staging 生成新 Scope 状态；全部验证通过后进入 NewValidated。
+4. 在声明的 Tick Barrier 原子切换入口/订阅到新 Scope（BarrierSwitch），随后旧 Scope 按 `Quiesce -> Cancel -> Drain -> Dispose -> ValidateRoots` 排空，验证通过后交给 Host 卸载 ALC。
+5. `BarrierSwitch` 前失败或超时丢弃 NewStaging、保留 OldActive 与证据；切换后失败不重新激活旧 Scope，Session 进入 Faulted 并按 Host 策略从有效 Snapshot/Release 恢复；Session 销毁（非热更）直接对当前 Scope 执行排空协议。
 
 ## 错误分类、恢复与降级
 
@@ -102,6 +116,6 @@ Draining -> Disposing -> ValidatingRoots -> Unloaded
 
 ## 尚未批准的决策门
 
-- **RT-D-010**：Drain/Root Validation 超时、强制回滚与 Session/Process 故障升级策略；必须通过 100 次 Soak 和 ALC/资源泄漏证据。
+- **RT-D-010**：Drain/Root Validation 超时参数与 Session/Process 故障升级策略（BarrierSwitch 前后失败的唯一恢复动作已在生命周期节冻结）；必须通过 100 次 Soak 和 ALC/资源泄漏证据。
 - HybridCLR/平台 AOT 仅作为 Capability 适配，不是 Runtime 稳定核心的实现依赖；Server HybridCLR 仍受架构源 D-006 约束。
 - 改变卸载顺序、Scope 资源种类或 Migration Hook 兼容语义必须新增 ADR 并更新 Release/Schema 说明。

@@ -4,7 +4,7 @@
 
 **优先级**：P1
 **实施阶段**：Vertical Slice
-**架构基线**：`LGE-V1.0-2026-08-27`
+**架构基线**：`LGE-V1.3-2026-08-27`
 
 ## 模块定位与目标
 
@@ -54,7 +54,31 @@ Unloaded -> Registered -> Ready -> Running -> Draining -> Unloaded
 任一状态 -> Faulted
 ```
 
-Ability/Effect 的具体状态机由 Content Schema 声明；Runtime 至少保证创建、激活、持续、取消/过期和终止路径可观察、可回滚。Hot Reload 时先停止新激活，再处理在途 Frame。
+Ability/Effect 使用 Runtime 冻结的 V1 通用状态机——状态名集合冻结，转移表细节以架构源 ADR-008 为准，Game 内容不得增删状态名。
+
+Ability 实例：
+
+```text
+Requested -> Activated -> Executing -> Completed
+Requested/Activated -> Rejected
+任一非终态 -> Cancelled
+Executing -> Expired
+预测实例被权威拒绝 -> RolledBack
+```
+
+终态（`Completed/Rejected/Cancelled/Expired/RolledBack`）即 Handle 失效。
+
+Effect 实例：
+
+```text
+Pending -> Active -> Expired | Removed
+Pending -> Rejected
+预测回滚 -> RolledBack
+```
+
+Stack/Duration/Refresh 是 `Active` 内事件，不是独立生命周期状态。
+
+Game 内容只能在 `Executing`/`Active` 内定义业务子状态，不得改变通用转移、终止语义、回滚窗口和 Handle 失效规则。Hot Reload 时先停止新激活，再处理在途 Frame。
 
 ## 线程、队列与并发所有权
 

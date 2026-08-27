@@ -4,7 +4,7 @@
 
 **优先级**：P1
 **实施阶段**：Vertical Slice / Production Hardening
-**架构基线**：`LGE-V1.0-2026-08-27`
+**架构基线**：`LGE-V1.3-2026-08-27`
 
 ## 模块定位与目标
 
@@ -16,7 +16,7 @@
 - 维护 Diagnostic、Audit、TxnJournal、CommandLog、Metrics、Trace、FailureBundle 的类别、级别、Durability 和关联字段；Txn/Command 的恢复游标与耐久提交由 `persistence` 负责。
 - 提供有界异步 Diagnostic 队列、独立持久队列的接口、采样/丢弃原因和 Error/Fatal 应急路径。
 - 关联 `ProductId`、`GameReleaseId`、`SessionId`、`WorldId`、`TickId`、`TxnId`、`NetEntityId`、`PredictionKey`、`SnapshotId`、`TraceId`、`ProducerId`、`EventSeq`。
-- 生成可校验的 Failure Bundle 元数据，引用 Manifest、Snapshot、Artifact Hash 和 Replay 命令。
+- 生成可校验的 Failure Bundle 元数据，引用 Manifest、Snapshot、Artifact Hash 和 Replay 命令；无有效 Snapshot 的故障以 `noSnapshotReason + bootstrapPhase + lastKnownRevision/manifest` 表达。
 
 ## 明确不负责什么
 
@@ -67,7 +67,7 @@ Running -> Degraded（采样/丢弃）-> Running
 1. 模块创建带公共 Correlation 的 Event/Metric/Trace，先做长度、字段和脱敏校验。
 2. 根据类别/级别写入对应有界队列，分配 EventSeq；Diagnostic 可采样并记录策略。
 3. Sink Worker 批量写出，保存每 Producer 顺序、Tick 关联和失败重试信息。
-4. 出现事务/崩溃/恢复时组装 Failure Bundle，验证 Manifest/Snapshot/Artifact Hash 后导出。
+4. 出现事务/崩溃/恢复时组装 Failure Bundle，验证 Manifest/Snapshot/Artifact Hash 后导出；尚无有效 Snapshot 时（如 ABI/Capability 启动失败、首个 Snapshot 前的故障）携带 `noSnapshotReason + bootstrapPhase + lastKnownRevision/manifest`，不得伪造 SnapshotId。
 
 事件字段缺失、超长、非法关联、队列满、Sink 失败和关闭竞态必须有可观察结果；不能用“日志写成功”代替事务提交。
 

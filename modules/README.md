@@ -1,7 +1,7 @@
 # LumioGameRuntime 模块架构（模块总入口）
 
-> **架构基线**：`LGE-V1.0-2026-08-27`
-> **唯一架构源**：`LumioGameEngineArchitecture`（本仓只保存只读镜像 [docs/architecture/LumioGameEngine_Architecture_v1.0.md](../docs/architecture/LumioGameEngine_Architecture_v1.0.md)）
+> **架构基线**：`LGE-V1.3-2026-08-27`
+> **唯一架构源**：`LumioGameEngineArchitecture`（本仓只保存只读镜像 [docs/architecture/LumioGameEngine_Architecture_v1.3.md](../docs/architecture/LumioGameEngine_Architecture_v1.3.md)）
 > **本文定位**：LumioGameRuntime 的模块文档总入口。公共语义引用架构源，本文只定义本仓的模块边界、依赖方向、状态所有权、线程/队列约束和文档维护规则。
 
 ## 1. 设计目标、范围与审核结论
@@ -69,9 +69,15 @@ LumioGameRuntime 是七仓库体系中的稳定 C# ECS Runtime（架构源 §2.1
 
 “首批状态”表示实现优先级，不表示代码已经存在或已经交付。
 
-### 3.2 依赖方向
+### 3.2 依赖三视图
 
-依赖箭头表示编译期/逻辑依赖（`A -> B` 表示 A 消费 B 的契约），不是运行时线程调用方向。基础模块不得依赖上层编排模块；`testing` 只能被测试工程消费，生产模块不得反向依赖它。
+模块间关系分三种视图分别维护，不得从一种视图推断另一种：
+
+1. **Assembly/编译依赖 DAG**（本节图）：`A -> B` 表示 A 的程序集消费 B 的契约，必须严格无环。
+2. **运行时调用方向**：Simulation 编排下游、Host 回调入队、Worker 返回 Completion；见 §4.1 Tick 主链，它可以与编译依赖不同。
+3. **状态所有权**：哪个模块持有可变真相；见 §3.3，不能从「谁调用谁」推断。
+
+Assembly/编译依赖 DAG 的归属规则：Port 契约类型（Journal Port、Observability Event Port、Voxel Port、TickContext、Replication confirmation 类型等）按「调用方或中立 generated-contract 程序集」归属，具体实现由 Composition Root 注入。例如 `coordination` 消费的耐久 Journal Port 契约不得定义在 `persistence` 程序集内，避免 `coordination <-> persistence` 编译环。基础模块不得依赖上层编排模块；`testing` 只能被测试工程消费，生产模块不得反向依赖它。
 
 ```mermaid
 graph TD
@@ -87,7 +93,10 @@ graph TD
     hotReload[hot-reload\n热更生命周期]
     testing[testing\n验证支持]
     voxel[Generated Voxel Contract\n外部契约]
+    voxelReplica[Generated Voxel Replica Contract\n外部契约]
+    voxelSnapshot[Generated Voxel Snapshot Contract\n外部契约]
 
+    ecs --> observability
     command --> ecs
     command --> observability
     simulation --> ecs
@@ -104,18 +113,22 @@ graph TD
     coordination --> observability
     gas --> ecs
     gas --> command
+    gas --> config
     gas --> observability
     replication --> ecs
     replication --> gas
     replication --> coordination
     replication --> config
     replication --> observability
+    replication --> voxelReplica
+    replication -.-> command
     persistence --> ecs
     persistence --> gas
     persistence --> replication
     persistence --> coordination
     persistence --> config
     persistence --> observability
+    persistence --> voxelSnapshot
     hotReload --> simulation
     hotReload --> gas
     hotReload --> config
@@ -131,6 +144,8 @@ graph TD
     testing --> hotReload
     testing --> observability
 ```
+
+图注：实线为编译期契约依赖；虚线 `replication -.-> command` 为仅逻辑消费边——`replication` 消费已确认命令序号，确认序号类型按中立 generated-contract 归属，不形成 Assembly 直接引用。`replication -> Generated Voxel Replica Contract` 与 `persistence -> Generated Voxel Snapshot Contract` 是外部生成契约边，Runtime 不依赖 VoxelEngine 实现源码。
 
 补充约定：
 
@@ -184,9 +199,11 @@ Host 只提供输入批次、Capability 和调用时机；Runtime 负责上述�
 ### 4.2 CrossWorldTxnV1
 
 1. `coordination` 读取 `SessionRevisionVector`，验证 `ExpectedGameRevision`、Voxel Revision、Deadline 和权限/资源前置条件。
-2. Game/ECS 与 Voxel Port 只产生不可见 Prepare/Reservation；失败不产生可见业务副作用。
+2. Game/ECS 与 Voxel Port 只产生不可见 Prepare/Reservation；ECS 参与者在此完成完整 Preflight/Reservation 并生成不可变 `PreparedGameDelta`，全部业务校验前置到本步；失败不产生可见业务副作用。
 3. 在固定 Barrier 写入 `CommitIntent` 后，按 `VoxelCommit -> EcsCommandBufferCommit` 顺序幂等 Apply。
 4. 每个参与者追加完成标记，双方完成后写入 `Committed`；结果丢失或崩溃由 `persistence`/TxnJournal 查询恢复。
+
+`CommitIntent` 之后参与者 Apply 不得业务拒绝，只能返回 `Applied/AlreadyApplied` 或基础设施级 `Indeterminate/Faulted`。
 
 ### 4.3 Replication 与 Prediction
 
@@ -226,6 +243,21 @@ Observability Producer(s)
 - 队列容量、优先级、满载动作、取消、超时和 Metrics 必须在对应模块 README 声明；可靠状态和持久化记录不得静默丢失。
 - 任何模块不得把可变 World 引用、Native 裸指针、Timer Delegate 或未登记 Task 放入异步队列。
 
+### 5.1 Queue Contract Matrix
+
+全 Runtime 的有界队列统一按下表声明契约。容量数值一律为 Config/Capability 参数（此处仅列参数名，参数名为候选、随 Config Schema 冻结），不写具体数字。
+
+| 队列 | Producer | Consumer / Barrier | 容量单位 | 配置来源 | 可靠性等级 | 满载动作 | Deadline/超时 | 顺序保证 | 幂等键 | Metric | 故障升级路径 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Ingress | Host/Transport/IO 回调 | Simulation Owner Thread 于 `IngressCapture` | 条目数+字节 | `IngressQueueCapacity`/`IngressQueueBytes` | BestEffort（按 ArrivalClass 分类） | 按 ArrivalClass 拒绝/丢弃并计数 | 迟到输入按 ArrivalClass 归入当前/下一 Tick 或拒绝 | 同来源 FIFO，跨来源 Canonical 排序 | `CommandId`/输入序号 | 队列深度、拒绝/丢弃计数 | 持续满载报告 Host（背压/断开策略） |
+| Native Completion | Native/IO Worker | Simulation Owner Thread 于 `NativeJobBarrier` | 条目数 | `NativeCompletionQueueCapacity` | 可靠（结果不得静默丢失） | 停止派发新 Job/反压 | 超时结果标记 stale，转入参与者查询 | Job 稳定归并顺序 | JobId/Token | 深度、Barrier 等待、超时计数 | 超时进入 Tick 失败分类/Session 处置 |
+| CommandBuffer | Processor（各写自有 Buffer） | Simulation Owner Thread 于 `EcsCommandBufferCommit` | Buffer 数+命令数+字节 | `ProcessorDescriptor.Budget`/`CommandBufferMaxCommands`/`CommandBufferMaxBytes` | 权威（拒绝必须显式） | `Prepared` 前按命令优先级显式拒绝 | 当前 Tick Barrier | `Phase + ProcessorId + LocalSequence` | 命令序号/`CommandId` | 命令/字节数、拒绝计数 | 权威命令被拒上报调用方/事务失败 |
+| Replication History | `replication` Projection | Delta 生成与 Ack/重传处理 | Revision 窗口+字节 | `ReplicationHistoryWindow`/`ReplicationHistoryBytes` | BestEffort（窗口内可靠） | 显式 Full Resync/断开 | Baseline Ack 窗口 | Revision 单调 | `SnapshotId + Revision` | History 命中率、Resync 率 | 反复 Resync 报告 Host 断开策略 |
+| Persistence WAL/Snapshot | Simulation Barrier 发起、`persistence` 编排 | Persistence Worker + Host Storage Adapter | 记录数+字节 | `PersistenceQueueCapacity`/Host Capability | 耐久（不可静默丢失） | 停止新权威接入或进入维护 | fsync/激活确认 | RecordSeq 追加序 | `RecordSeq`/IdempotencyKey | 队列深度、fsync 延迟 | 耐久不可写 → 停止权威接入/维护 |
+| Diagnostic | 全部模块 Producer | Observability Sink Worker | 事件数+字节 | `DiagnosticQueueCapacity` | BestEffort（可采样） | 采样/丢弃并记录丢弃摘要 | Flush Deadline | 每 Producer EventSeq 单调 | `ProducerId + EventSeq` | 丢弃率、队列水位 | 仅影响诊断，不升级权威路径 |
+| Audit/Txn/Command 耐久 | `coordination`/`command`/`observability` 路由 | `persistence` 耐久游标 + Host Sink | 记录数+字节 | `DurableLogQueueCapacity` | 耐久（不可静默丢失） | 停止接入或进入维护，不丢弃 | 持久确认 | RecordSeq/PreviousHash 链 | IdempotencyKey | 写入延迟、积压 | 不可写 → 停止权威接入/Session 维护 |
+| Hot Reload Completion | 旧 Scope 的 Task/Timer/IO Worker | Scope 状态机（Simulation/Host 发起端） | 条目数 | `HotReloadCompletionQueueCapacity` | BestEffort（按 Generation 过滤迟到结果） | 拒绝并计数 | Drain Deadline | 按 Scope Generation 线性化 | `ScopeId + Generation + ResourceId` | 未完成任务数、Drain 时长 | Drain 超时 → Faulted/Session 处置 |
+
 ## 6. 公共契约与架构来源
 
 下列契约只在 `LumioGameEngineArchitecture` 维护；本仓消费生成结果或通过接口适配，不在模块 README 中重定义字段：
@@ -236,8 +268,11 @@ Observability Producer(s)
 | Entity Identity | `schemas/entity-identity.schema.json`、架构源 §5 | ecs、replication |
 | `SessionRevisionVector` | `schemas/session-revision-vector.schema.json` / `schemas/common.schema.json` | coordination、persistence、replication |
 | `CrossWorldTxnV1` | `schemas/cross-world-txn.schema.json`、架构源 §6 | coordination、persistence |
+| `TxnJournalRecord` / `CommandLogRecord` / `WalRecordEnvelope` | 架构源 `schemas/txn-journal-record.schema.json`、`schemas/command-log-record.schema.json`、`schemas/wal-record-envelope.schema.json`（V1.3 已发布）、架构源 §6.2/§11/§12 | persistence、coordination |
 | Replication Envelope | `schemas/replication-envelope.schema.json`、架构源 §7 | replication（Transport 由 Host 适配） |
+| Replication typed message bodies | 架构源 `schemas/replication-envelope.schema.json`（V1.3 已拆分 Envelope 与 typed body，MessageType 1-8）、架构源 §7 | replication |
 | Replication Mapping | `schemas/replication-mapping.schema.json` | replication（源内容由 Game 提供） |
+| Generated Voxel Replica/Snapshot Contract | 架构源 `schemas/voxel-world-port.schema.json`（`role: Authority\|Replica`，含 `capture`/`restore`）、`schemas/voxel-query.schema.json`、`schemas/voxel-revision-stamp.schema.json`、`schemas/voxel-mutation-receipt.schema.json`、`schemas/voxel-chunk-page.schema.json`（V1.3 已发布） | replication、persistence、coordination |
 | `SnapshotHeader` | `schemas/snapshot-header.schema.json`、架构源 §11 | persistence |
 | Config Table | `schemas/config-table.schema.json` | config、simulation |
 | `LoggingEvent` / `FailureBundle` | `schemas/logging-event.schema.json`、`schemas/failure-bundle.schema.json` | observability、全部模块 |
@@ -277,12 +312,12 @@ Observability Producer(s)
 | --- | --- | --- | --- | --- |
 | RT-D-001 | 逻辑模块与 C# 程序集/项目如何映射 | 先按逻辑模块隔离命名空间和依赖，物理程序集可合并但不得形成反向边 | 全部 | `.csproj`/Assembly 方案与依赖检查通过 |
 | RT-D-002 | ECS Storage、Query 和 Change Tracking 的内部表示 | 只冻结 World-local 语义与稳定 View，不冻结 Archetype/Column 布局 | ecs | Entity/Query Property、Golden 和 Benchmark |
-| RT-D-003 | CommandBuffer 冲突、Deferred Token 和容量策略 | 按 `Phase + ProcessorId + LocalSequence` 稳定合并，结构写入固定 Barrier | command、simulation | 同 Tick Create/Write/Destroy 与冲突 Fixture |
+| RT-D-003 | CommandBuffer 冲突、Deferred Token 和容量策略 | 按 `Phase + ProcessorId + LocalSequence` 稳定合并，业务校验前置到 `Prepared`，结构写入固定 Barrier | command、simulation | 同 Tick Create/Write/Destroy 与冲突 Fixture |
 | RT-D-004 | TxnJournal 保留窗口与 Reservation 租约 | 由 `TxnId` 幂等，Prepare 不可见，恢复查询优先于补偿 | coordination、persistence | Partial-Commit、Lost-Result、Crash Fixture |
 | RT-D-005 | Dirty Set、History 窗口和 Baseline 内存预算 | 先用有界 History 与显式 Full Resync，数据结构通过 Adapter 隔离 | replication | 丢包/乱序/重连 Soak 与内存曲线 |
 | RT-D-006 | GAS 状态投影和 Modifier 求值边界 | ECS 是权威状态，GAS 保留 Framework Index/Execution Context | gas、ecs | GAS 生命周期、预测回滚和 State Hash Fixture |
 | RT-D-007 | Snapshot/WAL 后端与耐久级别 | Canonical bytes 与 Host Adapter 分离；本地文件优先，耐久参数待测量 | persistence | 损坏、原子激活、恢复和性能证据 |
-| RT-D-008 | Config 编译器、Reader 和开发热载策略 | typed binary table；Tick 使用不可变快照，生产只签名切换 | config、simulation | 层级/重复键/版本拒绝 Fixture |
+| RT-D-008 | Config Reader 实现栈与 Dev Capability Adapter 热载接入方式 | typed binary table 由 Game/Toolchain 编译生成（归属见本仓 ADR 0001）；Tick 使用不可变快照，生产只签名切换 | config、simulation | 层级/重复键/版本拒绝 Fixture |
 | RT-D-009 | 观测 Sink、PII 和队列背压参数 | Runtime 只发 Event；Diagnostic 可采样，Audit/Txn/Command 不可静默丢失 | observability | QueueFull、SinkFailure、脱敏和重建测试 |
 | RT-D-010 | Gameplay Scope 超时与 Root 验证策略 | 固定卸载顺序；超时进入 Faulted/Session 重启，不强行继续使用旧 Scope | hot-reload | 100 次 Soak、ALC/Task/Timer/Handle 泄漏测试 |
 | RT-D-011 | Reference Host 与 Replay 的保真级别 | PureHeadless 复现语义，Native/Host 差异通过 Differential 记录 | testing | Replay 首差异、Failure Bundle 和 Workload 基线 |

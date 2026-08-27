@@ -4,7 +4,7 @@
 
 **优先级**：P0
 **实施阶段**：Architecture Gate / Foundation
-**架构基线**：`LGE-V1.0-2026-08-27`
+**架构基线**：`LGE-V1.3-2026-08-27`
 
 ## 模块定位与目标
 
@@ -13,7 +13,7 @@
 ## 负责什么
 
 - 创建和推进 `SimulationSession` 的 Logical `TickId`、Phase Graph、暂停/排空状态。
-- 校验并排序 `ProcessorDescriptor` 的 Query、ReadSet、WriteSet、StructuralWrites、Dependencies、DeterminismClass、Budget 和 DiagnosticName。
+- 校验并排序 `ProcessorDescriptor` 的 Query、ReadSet、WriteSet、MayEmitStructuralCommands、Dependencies、DeterminismClass、Budget 和 DiagnosticName。
 - 执行架构源定义的 13 相：
 
   ```text
@@ -25,6 +25,8 @@
   ```
 
 - 固定输入归一化、迟到分类、Processor 依赖和有序归并规则，维护 Level 1/Level 2 Determinism 证据。
+- 冻结 V1 字段写入失败模型为 Fail-stop：Processor 对已有 Component 字段原地写；任一提交前故障（未捕获异常、取消、超预算中止）使当前 World 不可继续使用，Session 进入 `Faulted`，从 Tick 前 Snapshot/Journal 重建，不提供字段级撤销。
+- 声明 Tick 的唯一权威 Commit Point：`EcsCommandBufferCommit` 完成后、`GasAndEventFinalize` 之前的固定 Barrier（具体契约以架构源 §4 为准）；13 相逐相的输入、可写状态域、失败分类、取消点、超预算动作与可见性矩阵以架构源 §4 与 `schemas/tick-phase-contract.schema.json`（V1.3 已发布的权威矩阵，含逐相输入与幂等语义）为唯一来源，本文引用而不复制全表。
 - 在规定 Barrier 调用 `coordination`、`gas`、`replication`、`persistence` 和观测 Provider。
 
 ## 明确不负责什么
@@ -71,7 +73,7 @@ Running/Paused -> Draining -> Snapshotted -> Disposed
 - V1 每个权威 WorldSlot 一个 Simulation Owner Thread，负责计划、写入和 Barrier 提交。
 - Network、IO、Native Worker、平台回调只写有界 Queue/Batch；`NativeJobBarrier` 之前不得应用其结果。
 - 仅当 WriteSet 不重叠且存在稳定归并顺序时允许并行；Worker 数量和调度算法不属于公共契约。
-- Tick 超预算、队列满载和取消必须在当前阶段停止或按声明策略降级，不能部分应用结构写入。
+- Tick 超预算、队列满载和取消在当前阶段停止，处置区分两类：结构写入经 CommandBuffer 缓冲，不部分应用；Processor 已原地写入的字段不提供撤销，按 Fail-stop 使当前 World 作废，从 Tick 前 Snapshot/Journal 重建。
 
 ## 正常数据流与失败路径
 
@@ -86,8 +88,8 @@ Running/Paused -> Draining -> Snapshotted -> Disposed
 
 - **可拒绝**：Processor Schema 不完整、依赖环、Read/Write 冲突、错误 Role/Phase、迟到输入不可接受。
 - **可重试**：Native/IO Completion 暂未就绪、可恢复的 Queue 暂满；按 Deadline 重新排程而不重复提交。
-- **可致命**：Determinism 不变量、Barrier 顺序或 Session 状态损坏；进入 `Faulted`，由 Host 恢复/重建。
-- Budget overrun 只报告和按 Host 策略处置，不把未提交的结构操作伪装成成功。
+- **可致命**：Determinism 不变量、Barrier 顺序或 Session 状态损坏，以及 Processor 未捕获异常——按 Fail-stop 归入 Session/World 故障域；进入 `Faulted`，由 Host 从 Tick 前 Snapshot/Journal 恢复/重建。
+- Budget overrun 报告后按声明策略处置：若中止执行则按 Fail-stop 归入 World 故障域，不把未提交的结构操作伪装成成功。
 
 ## 配置、Capability 与安全约束
 

@@ -4,7 +4,7 @@
 
 **优先级**：P0
 **实施阶段**：Architecture Gate / Foundation
-**架构基线**：`LGE-V1.0-2026-08-27`
+**架构基线**：`LGE-V1.3-2026-08-27`
 
 ## 模块定位与目标
 
@@ -12,8 +12,8 @@
 
 ## 负责什么
 
-- 拥有 `SessionRevisionVector` 的读取、比较和 SnapshotCut 固定语义。
-- 实现 `CrossWorldTxnV1` 的 `Created -> Prepared -> CommitIntent -> Committed` 与 `Aborted/Indeterminate` 状态。
+- 拥有 `SessionRevisionVector` 的读取、比较和 SnapshotCut 固定语义；SnapshotCut 固定时必须包含 Voxel Snapshot Token/Revision（经 Generated Voxel Snapshot Contract 获取不可变引用），Runtime 不复制 Voxel Storage。
+- 实现 `CrossWorldTxnV1` 状态机：`Created -> Prepared -> CommitIntent -> Committed`；`Prepared -> Aborted/Expired`；`Indeterminate` 仅从已持久化 `CommitIntent` 的 Apply 阶段进入。
 - 编排 Game/ECS 与 Voxel Port 的 Prepare、租约 Reservation、Commit、Abort 和结果查询。
 - 在首个参与者写入前记录 `CommitIntent`，按 `VoxelCommit -> EcsCommandBufferCommit` 固定顺序幂等提交。
 - 处理 `TxnId` 重复、Deadline、取消、Revision Conflict、Lost Result 和 Crash Recovery 查询。
@@ -30,13 +30,13 @@
 
 - 每个 `SimulationSession` 的 `SessionRevisionVector`、SnapshotCut Pin/Token 和读取有效期。
 - Txn 元数据、Expected/Observed Revision、Reservation 租约、参与者 Token 和幂等结果。
-- `CommitIntent`、参与者完成标记、`Aborted`/`Indeterminate` 原因和恢复查询索引。
+- `CommitIntent`、参与者状态标记（枚举 `NotStarted / Unknown / Applied / Failed`，不使用 Boolean）、`Aborted/Expired`/`Indeterminate` 原因和恢复查询索引。
 - Barrier 内的 Commit 顺序、Deadline 和取消状态；不复制参与者的领域数据。
 
 ## 输入、输出与稳定接口
 
 - **输入**：Session/World Context、CommandId/PredictionKey、Expected Revision、Voxel Port Reservation、ECS CommandBuffer Result 和 DeadlineTick。
-- **输出**：Prepare/Commit/Abort Result、`SessionRevisionVector`、参与者标记、SnapshotCut Token、稳定失败原因。
+- **输出**：Prepare/Commit/Abort Result、`SessionRevisionVector`、参与者状态枚举、SnapshotCut Token、稳定失败原因。
 - **候选接口**：`read_revision`、`begin_snapshot_cut`、`prepare_txn`、`commit_txn`、`abort_txn`、`resolve_txn`；参数与持久化载荷以架构源 Schema 为准。
 - 所有结果都带 `TxnId`/`SessionId` 关联；重复请求必须返回原结果，不重复扣费或写入。
 
@@ -59,11 +59,11 @@ Created -> Ready -> Running -> Draining -> Disposed
 
 ```text
 Created -> Prepared -> CommitIntent -> Committed
-       \-> Aborted
-Prepared -> Indeterminate
+Prepared -> Aborted/Expired
+已持久化 CommitIntent 的 Apply 阶段 -> Indeterminate
 ```
 
-进入 `Draining` 后停止新 Prepare；在途事务必须完成、明确 Abort 或留下可查询的 `Indeterminate` 证据。
+`Indeterminate` 只能从已持久化 `CommitIntent` 的 Apply 阶段进入；尚未写入 `CommitIntent` 的事务只能走 `Aborted/Expired`。进入 `Draining` 后停止新 Prepare；在途事务必须完成、明确 Abort 或留下可查询的 `Indeterminate` 证据。
 
 ## 线程、队列与并发所有权
 
@@ -75,10 +75,10 @@ Prepared -> Indeterminate
 ## 正常数据流与失败路径
 
 1. Processor 以 Expected Revision 创建 Txn，协调器校验 Session、权限前置条件、容量和 Deadline。
-2. Game/ECS 与 Voxel Port 分别 Prepare，生成不可见 PreparedDelta/Reservation Token。
+2. Game/ECS 与 Voxel Port 分别 Prepare：ECS 参与者在 Prepare 完成全部业务校验（Generation、目标存在性、容量、命令冲突、权限、预算），产出不可变 `PreparedGameDelta`；Voxel Port 生成 Reservation Token；均不产生可见副作用。
 3. 所有前置检查成功后，在第一步 Apply 前写入 `CommitIntent`，再执行 Voxel Commit。
-4. 记录 Voxel 参与者结果后执行 ECS CommandBuffer Commit；两步完成后写 `Committed` 和新 Revision Vector。
-5. 结果丢失时按 TxnId 查询状态；崩溃恢复按 Journal 标记只重放尚未完成的幂等步骤。
+4. 记录 Voxel 参与者结果后执行 ECS CommandBuffer Commit；`CommitIntent` 后参与者 Apply 不得业务拒绝，只能返回 `Applied/AlreadyApplied` 或基础设施级 `Indeterminate/Faulted`；两步完成后写 `Committed` 和新 Revision Vector。
+5. 结果丢失时按 TxnId 查询状态；崩溃恢复按 Journal 标记只重放尚未完成的幂等步骤。参与者 Apply 成功但状态标记尚未落盘的崩溃窗口内，该参与者标记视为 `Unknown`，恢复通过幂等参与者查询确认真实结果后收敛为 `Applied/Failed`，不得猜测。
 
 Revision Conflict、Chunk Unloaded、权限/资源失败、超时、取消和重复 Txn 都必须在可见写入前结束；崩溃发生在两参与者之间时保持 `Indeterminate`，不得猜测成功或失败。
 

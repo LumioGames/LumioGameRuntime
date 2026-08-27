@@ -4,7 +4,7 @@
 
 **优先级**：P1
 **实施阶段**：Vertical Slice
-**架构基线**：`LGE-V1.0-2026-08-27`
+**架构基线**：`LGE-V1.3-2026-08-27`
 
 ## 模块定位与目标
 
@@ -12,10 +12,10 @@
 
 ## 负责什么
 
-- 接收不可变 `SnapshotCut + SessionRevisionVector`，协调 ECS/GAS/Replication/Config Provider 的一致读取。
-- 提供版本化 Canonical `Encode`/`Decode`、Snapshot Header、Hash/Checksum、Compression 和可选加密元数据校验。
+- 接收不可变 `SnapshotCut + SessionRevisionVector`，协调 ECS/GAS/Replication/Config Provider 的一致读取；Voxel 经 Generated Voxel Snapshot Contract 参与——获取不可变引用/Chunk Manifest（内容寻址），Runtime 不复制 Voxel Storage，Host 只提供耐久介质。
+- 提供版本化 Canonical `Encode`/`Decode`、Snapshot Header、Hash/Checksum、Compression 和可选加密元数据校验；Snapshot Manifest 记录所有参与者的 Revision、Hash、SchemaEpoch 和 Provider Result。
 - 编排 Snapshot Staging、验证、fsync/原子激活、Checkpoint 保留和旧版本读取。
-- 定义 WAL/Command Log/TxnJournal Adapter 的输入输出、恢复顺序和幂等重放边界。
+- 消费架构源 `TxnJournalRecord`/`CommandLogRecord` 记录契约（RecordVersion、RecordSeq、Session/Release/Tick/Txn/Command 关联、RecordKind、IdempotencyKey、PreviousHash、PayloadHash、Length、Durability 状态、Checksum），定义 WAL/Command Log/TxnJournal Adapter 的输入输出、恢复顺序和幂等重放边界；`LoggingEvent` 不得替代恢复记录。
 - 发现损坏、截断、未知必需字段、重复字段、版本不兼容或解压预算超限时拒绝激活，并保留 Failure Bundle 证据。
 
 ## 明确不负责什么
@@ -41,7 +41,7 @@
 
 ## 上游与下游依赖
 
-- **上游**：`coordination` 提供 SnapshotCut/Revision，`ecs`/`gas`/`replication`/`config` 提供稳定 Provider，`observability` 提供证据事件。
+- **上游**：`coordination` 提供 SnapshotCut/Revision（含 Voxel Snapshot Token/Revision），`ecs`/`gas`/`replication`/`config` 提供稳定 Provider，Voxel 经 Generated Voxel Snapshot Contract 提供不可变引用/Chunk Manifest，`observability` 提供证据事件。
 - **下游**：Host `PersistenceAdapter` 提供耐久介质；`testing` 消费 Canonical/Recovery 结果；Migration 工具消费 Staging Snapshot。
 - `persistence` 不依赖 Host 的具体生命周期实现，也不反向改变 `simulation`、`coordination` 或 Provider 的状态所有权。
 
@@ -104,7 +104,7 @@ Opening -> CheckpointVerified -> LogScanning -> Replaying -> Recovered
 ## 对应 ADR、Schema 与 Fixture
 
 - 架构源 `docs/adr/ADR-010-persistence-config.md`、`docs/adr/ADR-003-cross-world-txn.md`、`docs/adr/ADR-013-migration-dag.md`。
-- `schemas/snapshot-header.schema.json`、`schemas/common.schema.json`、`schemas/cross-world-txn.schema.json`。
+- `schemas/snapshot-header.schema.json`、`schemas/common.schema.json`、`schemas/cross-world-txn.schema.json`、`schemas/txn-journal-record.schema.json`、`schemas/command-log-record.schema.json`、`schemas/wal-record-envelope.schema.json`（V1.3 已发布，记录布局以架构源 Schema 为准）；Voxel 快照参与面见 `schemas/voxel-world-port.schema.json`（`capture`/`restore`）与 `schemas/voxel-chunk-page.schema.json`（内容寻址 Chunk Manifest）。
 - 正例：`fixtures/valid/snapshot-active.json`、`fixtures/valid/cross-world-txn-committed.json`；反例：`fixtures/invalid/snapshot-length-mismatch.json`、`fixtures/invalid/cross-world-txn-partial-commit.json`。
 
 ## 尚未批准的决策门

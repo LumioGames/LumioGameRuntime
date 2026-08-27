@@ -4,7 +4,7 @@
 
 **优先级**：P0
 **实施阶段**：Architecture Gate / Foundation
-**架构基线**：`LGE-V1.0-2026-08-27`
+**架构基线**：`LGE-V1.3-2026-08-27`
 
 ## 模块定位与目标
 
@@ -13,7 +13,7 @@
 ## 负责什么
 
 - 消费 Game 生成的 Mapping，校验 Source/Target Component/Field、Role、Owner、Visibility、Delivery、Lifecycle 和 Prediction。
-- 管理 NetEntityId 与 LocalEntityId 的映射、Tombstone、provisional remap 和生命周期窗口。
+- 管理 NetEntityId 与 LocalEntityId 的映射、Tombstone、provisional remap 和生命周期窗口；Tombstone 保留下界冻结为 `TombstoneHorizon >= max(未确认 Baseline 窗口, 保留 Delta History, 断线重连窗口, Prediction 回滚窗口, Migration/Replay pin)`，GC 前必须检查所有 ReplicationContext 的引用。
 - 生成 Projection、FullSnapshot、Delta、Baseline Ack、History 和 Dirty Set；按 Revision 截取稳定视图。
 - 校验 Baseline/Revision/Sequence，处理 Gap、Unknown Baseline、History Exhaustion 和 Full Resync。
 - 在 Client Apply 时恢复 Confirmed PredictionFrame，原子应用 ECS/GAS/Voxel 权威状态，删除已确认命令并按序重放未确认命令。
@@ -41,7 +41,8 @@
 
 ## 上游与下游依赖
 
-- **上游**：`ecs`/`gas` 的投影 Provider、`coordination` 的 Revision/SnapshotCut、`config` 的不可变快照和 Game Mapping Contract。
+- **上游**：`ecs`/`gas` 的投影 Provider、`coordination` 的 Revision/SnapshotCut、`config` 的不可变快照、Game Mapping Contract 和版本化 Voxel Replica Port（Generated Voxel Replica Contract）。
+- Voxel Replica Port 公共契约面已在 V1.3 发布：`schemas/voxel-world-port.schema.json`（`role: Authority|Replica`，含 `capture`/`restore`）、`schemas/voxel-query.schema.json`、`schemas/voxel-revision-stamp.schema.json`、`schemas/voxel-mutation-receipt.schema.json`。本模块候选操作 `PrepareAuthoritativeOverlay`、`ApplyPreparedOverlay`、`RollbackToPredictionFrame`、`CaptureReplicaRevision` 在实现前须映射到该契约面（命名以架构源为准）；只暴露 generated contract、Revision、Token 和幂等结果，不暴露 Chunk Storage。ECS/GAS/Voxel 的原子确认/回滚单元经该 Port 完成 Voxel 侧参与。
 - **下游**：Host 的网络/Local Transport Adapter、Client Presentation Adapter、`persistence` 的 Replay/Snapshot Provider。
 - `replication` 可以消费 `command` 的确认序号，但不依赖 Host Connection 或 `testing`；Transport ACK 与 Baseline ACK 分开。
 
