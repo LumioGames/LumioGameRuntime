@@ -8,13 +8,13 @@ namespace Lumio.GameRuntime.GeneratedContracts;
 public static class GeneratedContractManifest
 {
     public const string ArchitectureBaselineId = "LGE-V1.4-2026-08-27";
-    public const string ArchitectureSourceCommit = "7f6c0c6e6d9dd03cb310873db8abea1658744179";
+    public const string ArchitectureSourceCommit = "5f0682248f4baffa5847c2cee654d511640f8bef";
     public const int SchemaEpoch = 1;
-    public const string CompilerHash = "3b4230a30da1646f361ce2c87858b34ea6ee021b6724f38791e3d0f45216a9e1";
-    public const string InputHash = "054e958635f3b985890e8fbabbc6f6fc1bd0f4601da9178c49150b13be611959";
-    public const string SchemaRegistrySha256 = "7c2501b5b1cc9b237ba2c662ad2f0e78c3bb2918a174b397bd46c4b05c53fab8";
-    public const string IdRegistrySha256 = "0514df6d27a51d5de8a2bfa2f38a13c06f8543f33994d6c7ec2274ec7cc7d11c";
-    public const string FixtureRegistrySha256 = "ef16b5ce778407ee6986c194e7931021ded40eb30fe26875efc7305a88e56596";
+    public const string CompilerHash = "99a786e7241d6e8650b3bf17c8e9e731b483cc7096ee217c519ff24706d20b6b";
+    public const string InputHash = "84a2b4c80d3d2bc30be3a25a5f53a4380a9cd29a101d13fdf9688e561bfeeef1";
+    public const string SchemaRegistrySha256 = "d5e9a3bb45b4ca8bd0f280cecf32161e6328737b889e64962d620a9afbea08f7";
+    public const string IdRegistrySha256 = "9a85036399c39bb4cc639ccb1ae4b223b9ca2c30f3b304083a3ca4c3058706f8";
+    public const string FixtureRegistrySha256 = "6120e167efcd8a8b2031888d6818a6c382a44b353e03837db20d6615f4394c04";
     public static IReadOnlyList<string> ArtifactIds { get; } = new[] {
         "canonical-serializer-csharp",
         "contract-runtime-csharp",
