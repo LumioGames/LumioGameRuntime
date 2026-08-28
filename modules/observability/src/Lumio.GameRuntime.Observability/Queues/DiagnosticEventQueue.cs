@@ -7,8 +7,12 @@ namespace Lumio.GameRuntime.Observability;
 
 internal sealed class DiagnosticEventQueue
 {
+    // 掉包必须可被外部观测,否则背压对上层不可见(T05.S01)。
+    internal const string DroppedTotalMetricId = "runtime.diagnostic.dropped_total";
+
     private readonly object _gate = new();
     private readonly DiagnosticQueueBudget _budget;
+    private readonly IMetricPort? _metrics;
     private readonly Channel<RuntimeEventView> _channel;
     private int _count;
     private long _bytes;
@@ -16,11 +20,12 @@ internal sealed class DiagnosticEventQueue
     private long _droppedBytes;
     private bool _closed;
 
-    private DiagnosticEventQueue(DiagnosticQueueBudget budget)
+    private DiagnosticEventQueue(DiagnosticQueueBudget budget, IMetricPort? metrics)
     {
         if (!budget.IsValid) throw new ArgumentOutOfRangeException(nameof(budget));
 
         _budget = budget;
+        _metrics = metrics;
         _channel = Channel.CreateBounded<RuntimeEventView>(new BoundedChannelOptions(budget.Capacity)
         {
             FullMode = BoundedChannelFullMode.Wait,
@@ -30,7 +35,8 @@ internal sealed class DiagnosticEventQueue
         });
     }
 
-    internal static DiagnosticEventQueue Create(DiagnosticQueueBudget budget) => new(budget);
+    internal static DiagnosticEventQueue Create(DiagnosticQueueBudget budget, IMetricPort? metrics = null) =>
+        new(budget, metrics);
 
     internal DiagnosticWriteResult TryWrite(in RuntimeEventView value)
     {
@@ -40,6 +46,7 @@ internal sealed class DiagnosticEventQueue
         }
 
         var bytes = EstimateBytes(value);
+        bool dropped;
         lock (_gate)
         {
             if (_closed)
@@ -51,13 +58,24 @@ internal sealed class DiagnosticEventQueue
             {
                 _droppedCount++;
                 _droppedBytes += bytes;
-                return DiagnosticWriteResult.DroppedBestEffort();
+                dropped = true;
             }
+            else
+            {
+                _count++;
+                _bytes += bytes;
+                dropped = false;
+            }
+        }
 
-            _count++;
-            _bytes += bytes;
+        if (!dropped)
+        {
             return DiagnosticWriteResult.Accepted();
         }
+
+        // 在 _gate 之外发 metric:Port 是外部实现,不能在持锁时回调。
+        _metrics?.Record(new MetricSampleView(DroppedTotalMetricId, 1d, value.Correlation));
+        return DiagnosticWriteResult.DroppedBestEffort();
     }
 
     internal IReadOnlyList<RuntimeEventView> ReadBatch(int maxItems)

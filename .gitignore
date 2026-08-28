@@ -3,3 +3,8 @@ node_modules/
 *.log
 .env
 .env.*
+
+# .NET 构建与验证产物(eng/generate-sbom.* 与 verify-dependencies.* 写入 artifacts/)
+bin/
+obj/
+artifacts/

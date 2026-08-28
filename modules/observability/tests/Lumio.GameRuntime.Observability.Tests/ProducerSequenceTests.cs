@@ -43,6 +43,36 @@ public sealed class ProducerSequenceTests
     }
 
     [Fact]
+    public void SeparateProducerInstancesDoNotShareSequenceState()
+    {
+        var first = new ProducerSequence(0UL);
+        var second = new ProducerSequence(0UL);
+
+        Assert.Equal(1UL, first.Next().Value);
+        Assert.Equal(2UL, first.Next().Value);
+        Assert.Equal(1UL, second.Next().Value);
+        Assert.Equal(3UL, first.Next().Value);
+        Assert.Equal(2UL, second.Next().Value);
+    }
+
+    [Fact]
+    public void SeparateProducerIdsGetIndependentSequences()
+    {
+        var module = ObservabilityModule.Create(
+            new RecordingEventPort(),
+            new RecordingMetricPort(),
+            new RecordingTracePort());
+        Assert.True(module.Configure().Succeeded);
+        Assert.True(module.Start().Succeeded);
+
+        Assert.Equal(1UL, module.NextEventSequence("producer-a").Value);
+        Assert.Equal(2UL, module.NextEventSequence("producer-a").Value);
+        Assert.Equal(1UL, module.NextEventSequence("producer-b").Value);
+        Assert.Equal(3UL, module.NextEventSequence("producer-a").Value);
+        Assert.Equal(2UL, module.NextEventSequence("producer-b").Value);
+    }
+
+    [Fact]
     public void MissingCorrelationIsRejectedBeforePortIsCalled()
     {
         var eventPort = new RecordingEventPort();
