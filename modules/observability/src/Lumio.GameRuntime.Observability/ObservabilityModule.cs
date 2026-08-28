@@ -32,12 +32,15 @@ public sealed class ObservabilityModule
     private readonly object _stateGate = new();
     private readonly Dictionary<string, ProducerSequence> _producerSequences = new(StringComparer.Ordinal);
     private readonly ObservabilityServices _services;
+    private readonly EventRouter? _eventRouter;
     private ObservabilityState _state = ObservabilityState.Created;
 
     internal ObservabilityModule(
         IRuntimeEventPort eventPort,
         IMetricPort metricPort,
-        ITracePort tracePort)
+        ITracePort tracePort,
+        DiagnosticQueueBudget? diagnosticBudget,
+        int durableCapacity)
     {
 #if NET10_0_OR_GREATER
         ArgumentNullException.ThrowIfNull(eventPort);
@@ -49,6 +52,15 @@ public sealed class ObservabilityModule
         if (tracePort is null) throw new ArgumentNullException(nameof(tracePort));
 #endif
 
+        if (diagnosticBudget is DiagnosticQueueBudget budget)
+        {
+            // 有界队列与 durable 路由只有被模块持有才在集成路径上生效;
+            // 未配置预算时退回直通 Port,保持既有单 Port 用法可用。
+            _eventRouter = new EventRouter(
+                DiagnosticEventQueue.Create(budget, metricPort),
+                new DurableEvidenceRouter(durableCapacity));
+        }
+
         _services = new ObservabilityServices(
             new EventPortFacade(this, eventPort),
             new MetricPortFacade(this, metricPort),
@@ -59,7 +71,15 @@ public sealed class ObservabilityModule
         IRuntimeEventPort eventPort,
         IMetricPort metricPort,
         ITracePort tracePort) =>
-        new(eventPort, metricPort, tracePort);
+        new(eventPort, metricPort, tracePort, null, 0);
+
+    public static ObservabilityModule Create(
+        IRuntimeEventPort eventPort,
+        IMetricPort metricPort,
+        ITracePort tracePort,
+        DiagnosticQueueBudget diagnosticBudget,
+        int durableCapacity) =>
+        new(eventPort, metricPort, tracePort, diagnosticBudget, durableCapacity);
 
     public ObservabilityState State
     {
@@ -240,7 +260,8 @@ public sealed class ObservabilityModule
                 return RejectEvent();
             }
 
-            return _inner.Emit(in value);
+            EventRouter? router = _owner._eventRouter;
+            return router is null ? _inner.Emit(in value) : router.Route(in value);
         }
     }
 
