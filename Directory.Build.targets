@@ -1,0 +1,26 @@
+<Project>
+  <Target Name="ValidateRuntimeBuildProfile" BeforeTargets="PrepareForBuild">
+    <PropertyGroup>
+      <_RuntimePackageNames>@(PackageReference)</_RuntimePackageNames>
+      <_RuntimeHasTestPackage Condition="$([System.String]::Copy('$(_RuntimePackageNames)').ToLowerInvariant().Contains('xunit'))">true</_RuntimeHasTestPackage>
+      <_RuntimeHasTestPackage Condition="$([System.String]::Copy('$(_RuntimePackageNames)').ToLowerInvariant().Contains('nunit'))">true</_RuntimeHasTestPackage>
+      <_RuntimeHasTestPackage Condition="$([System.String]::Copy('$(_RuntimePackageNames)').ToLowerInvariant().Contains('mstest'))">true</_RuntimeHasTestPackage>
+      <_RuntimeHasTestPackage Condition="$([System.String]::Copy('$(_RuntimePackageNames)').ToLowerInvariant().Contains('microsoft.testing'))">true</_RuntimeHasTestPackage>
+      <_RuntimeHasTestPackage Condition="$([System.String]::Copy('$(_RuntimePackageNames)').ToLowerInvariant().Contains('microsoft.net.test'))">true</_RuntimeHasTestPackage>
+      <_RuntimeHasTestPackage Condition="$([System.String]::Copy('$(_RuntimePackageNames)').ToLowerInvariant().Contains('coverlet'))">true</_RuntimeHasTestPackage>
+      <_RuntimeHasTestPackage Condition="$([System.String]::Copy('$(_RuntimePackageNames)').ToLowerInvariant().Contains('cscheck'))">true</_RuntimeHasTestPackage>
+    </PropertyGroup>
+
+    <Error
+      Condition="'$(RuntimeProductionProject)' == 'true' and ('$(IsTestProject)' == 'true' or '$(_RuntimeHasTestPackage)' == 'true')"
+      Text="RUNTIME_BUILD_PROFILE_INVALID production projects cannot reference test packages or set IsTestProject=true." />
+
+    <Error
+      Condition="'$(RuntimeTestProject)' == 'true' and (('$(TargetFrameworks)' != '' and '$(TargetFrameworks)' != 'net10.0') or ('$(TargetFrameworks)' == '' and '$(TargetFramework)' != 'net10.0'))"
+      Text="RUNTIME_BUILD_PROFILE_INVALID test projects must target net10.0 only; multi-target or non-net10.0 targets are not allowed." />
+
+    <Error
+      Condition="('$(RuntimeProductionProject)' == 'true' or '$(RuntimeTestProject)' == 'true') and '$(LangVersion)' != '14.0'"
+      Text="RUNTIME_BUILD_PROFILE_INVALID LangVersion must remain 14.0 for runtime projects; actual value is $(LangVersion)." />
+  </Target>
+</Project>

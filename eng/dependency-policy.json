@@ -1,0 +1,48 @@
+{
+  "allowedLicenses": [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Zlib"
+  ],
+  "requiresLegalReview": [
+    "GPL-2.0",
+    "GPL-3.0",
+    "AGPL-3.0",
+    "LGPL-3.0"
+  ],
+  "forbiddenLicensePatterns": [
+    "GPL",
+    "AGPL",
+    "LGPL"
+  ],
+  "packageScopes": {
+    "Friflo.Engine.ECS": [
+      "Lumio.GameRuntime.Ecs.Adapters.Friflo"
+    ],
+    "MessagePack": [
+      "Lumio.GameRuntime.Persistence"
+    ],
+    "xunit.v3": [
+      "*.Tests",
+      "Lumio.GameRuntime.ReferenceHost"
+    ],
+    "CsCheck": [
+      "*.Tests"
+    ],
+    "coverlet.MTP": [
+      "*.Tests"
+    ],
+    "Microsoft.Testing.Platform": [
+      "*.Tests",
+      "Lumio.GameRuntime.ReferenceHost"
+    ]
+  },
+  "forbidFloatingVersions": true,
+  "requireLockFiles": true,
+  "vulnerabilityAudit": {
+    "enabled": true,
+    "failOnSeverity": "low"
+  }
+}
