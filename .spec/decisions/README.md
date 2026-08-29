@@ -29,3 +29,4 @@
 | 编号 | 决策 | 状态 |
 |------|------|------|
 | [0001](0001-config-compiler-ownership.md) | Config 编译器归 Game/Toolchain,Runtime 仅验证生成物并在 Tick 边界激活 | 生效 |
+| [0002](0002-generated-contract-gate-anchors-committed-objects.md) | generated-contract 的生成与校验锚定架构源已提交对象的原始字节,drift 闸门拆成「完整性」与「同步度」两条 | 生效 |
