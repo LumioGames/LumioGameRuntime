@@ -10,33 +10,29 @@ using Xunit;
 namespace Lumio.GameRuntime.Observability.Tests;
 
 /// <summary>
-/// durable 键是 <c>schemaId + KeySeparator + 记录键</c>(WAL 的记录键又是
-/// <c>recordSeq + KeySeparator + payloadHash</c>)。这种拼接式编码的单射性**不是编码给的,
-/// 是数据借的**,而借来的东西没有守护——守护是为编码写的,不是为借条写的。本组就是那张借条的守护。
+/// generated 重载的 durable 键是 <c>schemaId + KeySeparator + 记录键</c>(WAL 的记录键又是
+/// <c>recordSeq + KeySeparator + payloadHash</c>)。这种拼接式编码的单射性**不由编码保证,
+/// 而是借自数据当下的形态**;借来的性质没有守护,本组就是补上那道守护:上游改 schemaId
+/// 或有人改 <see cref="DurableEvidenceRouter.KeySeparator"/> 时,这里必须先红。
 ///
-/// <para>单射需要**两条**前提同时成立:</para>
+/// <para>单射需要**两条**前提同时成立,缺一不可:</para>
 /// <list type="number">
-/// <item><b>前提 0:分隔符无自重叠</b>——不存在真后缀等于真前缀。否则「分隔符之前的字段」的
-///       尾部可以与分隔符的头部拼出一个更早的分隔符,首次出现的位置就不再是字段边界。</item>
-/// <item><b>前提 1:出现在分隔符之前的字段不含分隔符</b>——落到本方案是 schemaId,
-///       以及 WAL 记录键里的 <c>recordSeq</c> 渲染。</item>
+/// <item><b>前提 0:分隔符无自重叠</b>(不存在真后缀等于真前缀)。否则前一个字段的尾部可与
+///       分隔符的头部拼出更早的分隔符,首次出现的位置不再是字段边界。实例:分隔符
+///       <c>"::"</c> 时 <c>("a", ":b")</c> 与 <c>("a:", "b")</c> 都拼成 <c>"a:::b"</c>,
+///       而两个前置字段都不含 <c>"::"</c>——只靠前提 1 挡不住。</item>
+/// <item><b>前提 1:出现在分隔符之前的字段不含分隔符</b>。落到本方案是 schemaId,以及 WAL
+///       记录键里的 <c>recordSeq</c> 渲染。实例:分隔符 <c>":"</c> 时 <c>("a", "b:c")</c> 与
+///       <c>("a:b", "c")</c> 都拼成 <c>"a:b:c"</c>。</item>
 /// </list>
 ///
-/// <para>分隔符**之后**的字段(<c>idempotencyKey</c>、<c>payloadHash</c>)含分隔符完全无害,
+/// <para>分隔符**之后**的字段(<c>idempotencyKey</c>、<c>payloadHash</c>)含分隔符无害,
 /// 不构成前提;schema 本来就允许 <c>idempotencyKey</c> 含冒号。</para>
 ///
-/// <para><b>两处更正记录</b>(留着,因为本仓那条 lesson 讲的正是「闭合到哪一步就只声称到哪一步」):</para>
-/// <list type="bullet">
-/// <item>最初报「三条前提」,把「没有 schemaId 是另一个的前缀」当作必要条件。错——带分隔符的
-///       方案按首次出现切分即可,前缀关系无关;那是**无分隔符纯拼接**的条件。</item>
-/// <item>改口后又把前提 1 单独当作**充分**条件。仍错,反例(已实跑):分隔符 <c>"::"</c> 时,
-///       <c>("a", ":b")</c> 与 <c>("a:", "b")</c> 都拼成 <c>"a:::b"</c>,而 <c>"a"</c> 与
-///       <c>"a:"</c> 都不含 <c>"::"</c>。缺的正是前提 0。</item>
-/// </list>
-///
-/// <para>因此本组不满足于断言前提,而是直接**搜索碰撞**:<see cref="FirstCollision"/> 在给定的
-/// (分隔符, schemaId 集合, 记录键集合) 上穷举拼接结果找重复。它对违规组合必须真的能红——
-/// 下面的负向用例就是拿来证明这一点的。</para>
+/// <para><b>覆盖边界</b>:本组只守 generated 重载这一族的键。公共
+/// <c>Enqueue(in DurableRecordView)</c> 用调用方的**裸键**(无前缀)写入**同一个** <c>_records</c>,
+/// 合并后的 keyspace 并不单射——一条 <c>IdempotencyKey</c> 恰为 <c>"txn-journal-record:abc"</c>
+/// 的记录会与已存的 txn 记录同键。该行为是基线行为,处置方式待裁决,**不在本组守护范围内**。</para>
 /// </summary>
 public sealed class DurableKeySchemeGuardTests
 {
@@ -127,10 +123,10 @@ public sealed class DurableKeySchemeGuardTests
         }
     }
 
-    // ---- 结论:在生产参数下真的单射 ----
+    // ---- 结论:generated 重载这一族在生产参数下真的单射 ----
 
     [Fact]
-    public void ProductionKeySchemeIsInjective()
+    public void PrefixedGeneratedKeysAreInjective()
     {
         Assert.Null(FirstCollision(Separator, PrefixedSchemaIds, RecordKeys));
     }
@@ -140,7 +136,7 @@ public sealed class DurableKeySchemeGuardTests
     [Fact]
     public void CollisionSearchCatchesASelfOverlappingSeparator()
     {
-        // reviewer 给的反例:("a", ":b") 与 ("a:", "b") 在分隔符 "::" 下同拼成 "a:::b"。
+        // ("a", ":b") 与 ("a:", "b") 在自重叠分隔符 "::" 下同拼成 "a:::b"。
         string? collision = FirstCollision("::", IdsWithTrailingColon, KeysAroundSeparator);
 
         Assert.NotNull(collision);
@@ -160,7 +156,7 @@ public sealed class DurableKeySchemeGuardTests
     [Fact]
     public void CollisionSearchIsQuietOnAWellFormedScheme()
     {
-        Assert.Null(FirstCollision(":", TwoPlainIds, RecordKeys));
+        Assert.Null(FirstCollision(Separator, TwoPlainIds, RecordKeys));
     }
 
     [Fact]
@@ -206,7 +202,7 @@ public sealed class DurableKeySchemeGuardTests
 
     /// <summary>
     /// 穷举 (schemaId × 记录键) 的拼接结果找重复。找到即返回两组来源与碰撞键;单射则返回 null。
-    /// 这是**查结论**而不是查前提——前提清单写错过两次,结论查不了假。
+    /// 这是**查结论**而不是查前提:前提清单可能列漏,而「单射」这个结论查不了假。
     /// </summary>
     private static string? FirstCollision(
         string separator, IReadOnlyList<string> schemaIds, IReadOnlyList<string> recordKeys)
