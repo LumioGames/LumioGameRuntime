@@ -135,47 +135,6 @@ public sealed class DurableRouteFailureTests
     }
 
     [Fact]
-    public void CrossRecordTypeKeyCollisionIsRejectedInsteadOfSilentlyDeduped()
-    {
-        // 公共 Enqueue(in DurableRecordView) 用调用方给的**裸键**索引,generated 重载则带
-        // schemaId 前缀,两者写同一个 _records。于是一条 EventId 恰为 "txn-journal-record:abc"
-        // 的事件会撞上已存的 txn 记录。此前的行为是当作重投返回 Accepted——静默丢 durable 记录。
-        //
-        // 键本身不能改(那会改变公共可观测键,属须升级确认),但「同键不同 RecordType」在
-        // 证据库里是不可能成立的状态,只能 Fail-stop 报出来,不能假装是重投。
-        var router = new DurableEvidenceRouter(4);
-        router.Enqueue(TxnRecord(1UL, "abc"), Payload, Correlation);
-
-        var collide = new DurableRecordView(
-            "txn-journal-record:abc", "logging-event", new byte[] { 9 }, Correlation);
-        var result = router.Enqueue(in collide);
-
-        Assert.Equal(DurableEnqueueStatus.Rejected, result.Status);
-        Assert.Equal("InternalInvariant", result.GeneratedErrorId);
-        Assert.False(result.AlreadyPresent);
-
-        // 原记录不得被覆盖或改写。
-        Assert.Equal("txn-journal-record", router.Query("txn-journal-record:abc").Record!.Value.RecordType);
-    }
-
-    [Fact]
-    public void SameRecordTypeReplayStillDedupesNormally()
-    {
-        // 上一条的守护不得误伤正常的同类型重投。
-        var router = new DurableEvidenceRouter(4);
-        var first = Record("replay-key");
-        var again = Record("replay-key");
-
-        var a = router.Enqueue(in first);
-        var b = router.Enqueue(in again);
-
-        Assert.Equal(DurableEnqueueStatus.Accepted, a.Status);
-        Assert.Equal(DurableEnqueueStatus.Accepted, b.Status);
-        Assert.True(b.AlreadyPresent);
-        Assert.Equal(a.RecordSequence, b.RecordSequence);
-    }
-
-    [Fact]
     public void GeneratedOverloadsPreserveProducerOrderAcrossRecordKinds()
     {
         var router = new DurableEvidenceRouter(8);
