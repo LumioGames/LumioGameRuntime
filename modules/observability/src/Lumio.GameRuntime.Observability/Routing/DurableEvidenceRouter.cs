@@ -8,6 +8,12 @@ namespace Lumio.GameRuntime.Observability;
 
 internal sealed class DurableEvidenceRouter : IDurableEvidencePort
 {
+    /// <summary>
+    /// generated 记录的 durable 键分隔符。抽成常量供 <c>DurableKeySchemeGuardTests</c> 引用:
+    /// 那组测试守护的正是「拼接键仍然单射」所依赖的三条前提,不能各写各的字面量。
+    /// </summary>
+    internal const string KeySeparator = ":";
+
     private readonly object _gate = new();
     private readonly int _capacity;
     private readonly Dictionary<string, DurableRecordView> _records = new(StringComparer.Ordinal);
@@ -41,6 +47,20 @@ internal sealed class DurableEvidenceRouter : IDurableEvidencePort
 
             if (_records.TryGetValue(record.IdempotencyKey, out DurableRecordView existing))
             {
+                // 同键**不同 RecordType** 在证据库里是不可能成立的状态,只可能是 keyspace 撞了:
+                // generated 重载的键带 schemaId 前缀,而本方法用调用方给的裸键(EventRouter 传的
+                // 是裸 EventId),两者写同一个 _records。一条 EventId 恰为 "txn-journal-record:abc"
+                // 的事件就会撞上已存的 txn 记录。
+                //
+                // 键本身不能改——那会改变公共可观测键,属「须升级确认」。但把它当成重投返回
+                // Accepted 等于静默丢一条 durable 记录并伪造成功,这是最坏的选项。按本仓
+                // Fail-stop 口径报出来,让调用方知道证据没落库。
+                if (!string.Equals(existing.RecordType, record.RecordType, StringComparison.Ordinal))
+                {
+                    return new DurableEnqueueResult(
+                        DurableEnqueueStatus.Rejected, 0UL, false, "InternalInvariant");
+                }
+
                 return new DurableEnqueueResult(
                     DurableEnqueueStatus.Accepted,
                     _recordSequences[existing.IdempotencyKey],
@@ -130,7 +150,7 @@ internal sealed class DurableEvidenceRouter : IDurableEvidencePort
         // 与另外两类一样按空值拒绝。这是本仓 durable port 的内部键,不是公共契约字段。
         if (string.IsNullOrWhiteSpace(record.PayloadHash)) return MalformedRecord();
         string chainIdentity = string.Concat(
-            record.RecordSeq.ToString(CultureInfo.InvariantCulture), ":", record.PayloadHash);
+            record.RecordSeq.ToString(CultureInfo.InvariantCulture), KeySeparator, record.PayloadHash);
         return EnqueueGenerated(
             SchemaIdOf(nameof(WalRecordEnvelope)), chainIdentity, payload, in correlation);
     }
@@ -146,7 +166,7 @@ internal sealed class DurableEvidenceRouter : IDurableEvidencePort
         if (string.IsNullOrWhiteSpace(recordKey)) return MalformedRecord();
 
         var view = new DurableRecordView(
-            string.Concat(schemaId, ":", recordKey), schemaId, payload, correlation);
+            string.Concat(schemaId, KeySeparator, recordKey), schemaId, payload, correlation);
         return Enqueue(in view);
     }
 
