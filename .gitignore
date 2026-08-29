@@ -4,7 +4,10 @@ node_modules/
 .env
 .env.*
 
-# .NET 构建与验证产物(eng/generate-sbom.* 与 verify-dependencies.* 写入 artifacts/)
+# .NET 构建与验证产物(eng/generate-sbom.* 与 verify-dependencies.* 写入仓库根 artifacts/)
 bin/
 obj/
-artifacts/
+# 必须锚定到仓库根:未锚定的 `artifacts/` 在大小写不敏感的文件系统(macOS/Windows)上
+# 同时匹配生成物目录 src/…/Generated/Artifacts/,使新增的 generated 文件被静默忽略、
+# 无法随生成源一起提交。
+/artifacts/
