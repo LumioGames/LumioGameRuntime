@@ -55,7 +55,7 @@ public sealed class DurableRouteFailureTests
         Assert.True(replay.AlreadyPresent);
         Assert.Equal(accepted.RecordSequence, replay.RecordSequence);
 
-        var stored = router.Query("txn-idem-1");
+        var stored = router.Query("txn-journal-record:txn-idem-1");
         Assert.Equal(DurableQueryStatus.Found, stored.Status);
         Assert.Equal("txn-journal-record", stored.Record!.Value.RecordType);
     }
@@ -69,7 +69,7 @@ public sealed class DurableRouteFailureTests
         var accepted = router.Enqueue(record, Payload, Correlation);
 
         Assert.Equal(DurableEnqueueStatus.Accepted, accepted.Status);
-        var stored = router.Query("cmd-idem-1");
+        var stored = router.Query("command-log-record:cmd-idem-1");
         Assert.Equal(DurableQueryStatus.Found, stored.Status);
         Assert.Equal("command-log-record", stored.Record!.Value.RecordType);
     }
@@ -93,6 +93,45 @@ public sealed class DurableRouteFailureTests
         Assert.Equal(first.RecordSequence, replay.RecordSequence);
         Assert.False(other.AlreadyPresent);
         Assert.NotEqual(first.RecordSequence, other.RecordSequence);
+    }
+
+    [Fact]
+    public void SameIdempotencyKeyFromDifferentSchemasDoesNotCollide()
+    {
+        // idempotencyKey 的 schema 约束只有 `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`,
+        // 跨 schema **不保证唯一**。同一次请求派生出一条 Txn 和一条 Command 并复用同一 key
+        // 是最自然的写法;若两者共用一个无命名空间的 keyspace,第二条会被当成重投而永久丢失,
+        // 且返回 Accepted——静默丢 durable 记录 + 伪成功。
+        var router = new DurableEvidenceRouter(4);
+
+        var txn = router.Enqueue(TxnRecord(1UL, "shared-key"), Payload, Correlation);
+        var command = router.Enqueue(CommandRecord(2UL, "shared-key"), Payload, Correlation);
+
+        Assert.False(txn.AlreadyPresent);
+        Assert.False(command.AlreadyPresent);
+        Assert.NotEqual(txn.RecordSequence, command.RecordSequence);
+
+        Assert.Equal("txn-journal-record", router.Query("txn-journal-record:shared-key").Record!.Value.RecordType);
+        Assert.Equal("command-log-record", router.Query("command-log-record:shared-key").Record!.Value.RecordType);
+    }
+
+    [Fact]
+    public void GeneratedRecordWithBlankKeyFieldIsRejectedNotSilentlyAccepted()
+    {
+        // 键一旦带上 schemaId 前缀就永远非空,DurableRecordView.IsWellFormed 的空值守卫
+        // 会被前缀架空。因此必须在**加前缀之前**校验记录自身的键字段。
+        var router = new DurableEvidenceRouter(4);
+
+        var blankTxn = router.Enqueue(TxnRecord(1UL, "   "), Payload, Correlation);
+        var blankCommand = router.Enqueue(CommandRecord(1UL, ""), Payload, Correlation);
+        // WAL 无 idempotencyKey,其键由 payloadHash 参与导出;payloadHash 缺失会让键退化成
+        // "wal-record-envelope:7:",于是 recordSeq 相同的两条记录互相夺舍。
+        var blankWal = router.Enqueue(WalRecord(7UL, null!), Payload, Correlation);
+
+        Assert.Equal(DurableEnqueueStatus.Rejected, blankTxn.Status);
+        Assert.Equal(DurableEnqueueStatus.Rejected, blankCommand.Status);
+        Assert.Equal(DurableEnqueueStatus.Rejected, blankWal.Status);
+        Assert.Equal("ManifestMalformed", blankWal.GeneratedErrorId);
     }
 
     [Fact]
@@ -120,7 +159,7 @@ public sealed class DurableRouteFailureTests
         Assert.Equal(DurableEnqueueStatus.Backpressured, backpressured.Status);
         Assert.Equal("QueueFull", backpressured.GeneratedErrorId);
         Assert.False(backpressured.AlreadyPresent);
-        Assert.Equal(DurableQueryStatus.NotFound, router.Query("second").Status);
+        Assert.Equal(DurableQueryStatus.NotFound, router.Query("command-log-record:second").Status);
     }
 
     private static readonly ReadOnlyMemory<byte> Payload = new byte[] { 1, 2, 3 };
