@@ -37,3 +37,93 @@ jobs:
           grep -q '^## 当前阶段与开发节奏$' README.md
           test -s docs/architecture/.baseline.sha256
           sha256sum -c docs/architecture/.baseline.sha256
+
+  supply-chain:
+    name: Supply chain gates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout runtime
+        uses: actions/checkout@v4
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      # 两个 dotnet 闸门读的是 `dotnet list package` 的解析结果与本机 NuGet 缓存里的
+      # .nuspec / .nupkg。不先 restore 会得到空依赖图和一片 DEPENDENCY_LICENSE_UNKNOWN 假红。
+      # --locked-mode 让 packages.lock.json 的漂移直接报错,而不是被这一步静默改写。
+      - name: Restore package graph
+        run: |
+          set -euo pipefail
+          find . -name '*.csproj' -not -path '*/bin/*' -not -path '*/obj/*' -print0 \
+            | xargs -0 -I{} dotnet restore {} --locked-mode
+
+      - name: Dependency policy gate
+        run: |
+          set -euo pipefail
+          if ! command -v dotnet >/dev/null 2>&1; then
+            printf 'SUPPLY_CHAIN_GATE_SKIPPED gate=dependency-policy reason=dotnet-unavailable\n' \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+            echo '::warning title=Supply chain gate skipped::dependency-policy 未执行——dotnet 不可用'
+            exit 0
+          fi
+          bash eng/verify-dependencies.sh
+
+      - name: SBOM gate
+        run: |
+          set -euo pipefail
+          if ! command -v dotnet >/dev/null 2>&1; then
+            printf 'SUPPLY_CHAIN_GATE_SKIPPED gate=sbom reason=dotnet-unavailable\n' \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+            echo '::warning title=Supply chain gate skipped::sbom 未执行——dotnet 不可用'
+            exit 0
+          fi
+          bash eng/generate-sbom.sh
+
+      # 顺序不可调:架构源必须落在上面两道闸门**之后**。
+      # verify-dependencies.sh / generate-sbom.sh 的项目发现是从仓库根递归找 *.csproj,
+      # 只跳过 bin/obj/artifacts/.git/node_modules;架构源仓自带 6 个 packages/csharp/*.csproj,
+      # 早一步 checkout 就会被它们当成本仓项目扫进去,报出 DEPENDENCY_LOCK_FILE_MISSING 之类的假红。
+      # 架构源是公开仓,默认 GITHUB_TOKEN 就能拉。fetch-depth: 0 也不是保险起见:
+      # 生成契约闸门要回放 manifest 里钉住的 architectureSourceCommit,浅克隆下那个对象根本不存在。
+      - name: Checkout architecture source
+        uses: actions/checkout@v4
+        with:
+          repository: LumioGames/LumioGameEngineArchitecture
+          path: .architecture-source
+          fetch-depth: 0
+
+      # 架构源生成器用了 Path.write_text(newline=...),需要 Python >= 3.10;
+      # runner 自带 python3 的版本随镜像漂移,这里显式钉住。
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Generated contract gate
+        env:
+          LUMIO_ARCHITECTURE_ROOT: ${{ github.workspace }}/.architecture-source
+        run: |
+          set -euo pipefail
+          if [ ! -e "$LUMIO_ARCHITECTURE_ROOT/.git" ]; then
+            printf 'SUPPLY_CHAIN_GATE_SKIPPED gate=generated-contracts reason=architecture-source-unavailable\n' \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+            echo '::warning title=Supply chain gate skipped::generated-contracts 未执行——架构源不可用'
+            exit 0
+          fi
+          if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'; then
+            printf 'SUPPLY_CHAIN_GATE_SKIPPED gate=generated-contracts reason=python-too-old\n' \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+            echo '::warning title=Supply chain gate skipped::generated-contracts 未执行——python3 低于 3.10'
+            exit 0
+          fi
+          bash eng/verify-generated-contracts.sh
+
+      - name: Upload supply chain evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: supply-chain-evidence
+          path: artifacts/
+          if-no-files-found: warn
