@@ -71,8 +71,6 @@ jobs:
           bash eng/verify-dependencies.sh
 
       - name: SBOM gate
-        env:
-          LUMIO_DEPENDENCY_PROJECTS: eng/probe-does-not-exist.csproj
         run: |
           set -euo pipefail
           if ! command -v dotnet >/dev/null 2>&1; then
