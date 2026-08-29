@@ -82,6 +82,36 @@ function scopeMatches(name, scopes) {
   return scopes.some((scope) => regexForGlob(scope).test(name));
 }
 
+// packageScopes 是准入许可,不是禁令:没登记的包既不许可也不禁止。被裁决移除的包落在这个
+// 空档里——删掉 packageScopes 条目后,把中央钉和引用一起加回去可以一路静默通过。
+// forbiddenPackages 补的就是这一半:按 id 的 glob 匹配(NuGet id 大小写不敏感,regexForGlob 带 i)。
+function forbiddenReason(id) {
+  for (const [pattern, reason] of Object.entries(policy.forbiddenPackages || {})) {
+    if (regexForGlob(pattern).test(id)) return reason;
+  }
+  return null;
+}
+
+// 三个引入面各查一次,少一个就留一条绕道:
+//   ① 中央钉——即使当前没有任何项目引用,钉在 Directory.Packages.props 里就是重新引入的第一步;
+//      这一条不依赖 dotnet 解析图,依赖图取不到时(DEPENDENCY_GRAPH_UNAVAILABLE)照样会响。
+//   ② 项目里声明的 PackageReference(下面项目循环里)。
+//   ③ 解析图里出现的包,含传递依赖(下面项目循环里)。
+function centralPins() {
+  const xml = fs.readFileSync(path.join(root, 'Directory.Packages.props'), 'utf8');
+  const pins = [];
+  for (const match of xml.matchAll(/<PackageVersion\b([^>]*)\/?>(?:<\/PackageVersion>)?/gi)) {
+    const values = attrs(match[1]);
+    if (values.Include) pins.push({ id: values.Include, version: values.Version || '' });
+  }
+  return pins;
+}
+
+for (const pin of centralPins()) {
+  const reason = forbiddenReason(pin.id);
+  if (reason) issue('PACKAGE_FORBIDDEN', `${pin.id}${pin.version ? `@${pin.version}` : ''} 中央钉仍在 Directory.Packages.props —— ${reason}`);
+}
+
 function discoverPackageReferences(xml, projectPath) {
   const references = [];
   for (const match of xml.matchAll(/<PackageReference\b([^>]*)(?:\/>|>[\\s\\S]*?<\/PackageReference>)/gi)) {
@@ -225,6 +255,8 @@ for (const projectPath of projects) {
     }
     const scopes = policy.packageScopes[reference.id];
     if (scopes && !scopeMatches(projectName, scopes)) issue('PACKAGE_SCOPE_VIOLATION', `${reference.id} is not allowed in ${projectName}`, relative);
+    const forbidden = forbiddenReason(reference.id);
+    if (forbidden) issue('PACKAGE_FORBIDDEN', `${reference.id} 被 ${projectName} 直接引用 —— ${forbidden}`, relative);
   }
   let graph;
   try {
@@ -241,6 +273,8 @@ for (const projectPath of projects) {
   for (const record of unique.values()) {
     const scopes = policy.packageScopes[record.id];
     if (scopes && !scopeMatches(projectName, scopes)) issue('PACKAGE_SCOPE_VIOLATION', `${record.id} is not allowed in ${projectName}`, relative);
+    const forbidden = forbiddenReason(record.id);
+    if (forbidden) issue('PACKAGE_FORBIDDEN', `${record.id}@${record.version} 出现在 ${projectName} 的解析图(含传递依赖) —— ${forbidden}`, relative);
   }
   for (const record of unique.values()) {
     const key = `${record.id.toLowerCase()}@${record.version}`;

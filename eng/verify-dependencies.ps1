@@ -72,6 +72,31 @@ function Test-Scope([string] $Name, [object[]] $Scopes) {
     return $false
 }
 
+# packageScopes 是准入许可,不是禁令:没登记的包既不许可也不禁止。被裁决移除的包落在这个
+# 空档里——删掉 packageScopes 条目后,把中央钉和引用一起加回去可以一路静默通过。
+# forbiddenPackages 补的就是这一半:按 id 的 glob 匹配(NuGet id 大小写不敏感,-match 默认即是)。
+# 与 verify-dependencies.sh 的 forbiddenReason 同义,两侧改动必须同步。
+function Get-ForbiddenReason([string] $Id) {
+    if (-not $Policy.PSObject.Properties['forbiddenPackages']) { return $null }
+    foreach ($entry in $Policy.forbiddenPackages.PSObject.Properties) {
+        $pattern = '^' + [regex]::Escape([string] $entry.Name).Replace('\*', '.*').Replace('\?', '.') + '$'
+        if ($Id -match $pattern) { return [string] $entry.Value }
+    }
+    return $null
+}
+
+# 三个引入面各查一次,少一个就留一条绕道:① 中央钉(下面紧接着扫,不依赖 dotnet 解析图,
+# 依赖图取不到时照样会响);② 项目里声明的 PackageReference;③ 解析图里出现的包,含传递依赖。
+function Get-CentralPins {
+    $xml = [xml](Get-Content -Raw -LiteralPath (Join-Path $Root 'Directory.Packages.props'))
+    $pins = [System.Collections.Generic.List[object]]::new()
+    foreach ($node in $xml.SelectNodes("//*[local-name()='PackageVersion']")) {
+        $include = $node.GetAttribute('Include')
+        if ($include) { $pins.Add([pscustomobject]@{ id = $include; version = $node.GetAttribute('Version') }) }
+    }
+    return $pins
+}
+
 function Get-DotnetJson([string] $ProjectPath, [string[]] $Extra) {
     $dotnet = if ($env:DOTNET) { $env:DOTNET } else { 'dotnet' }
     $arguments = @('list', $ProjectPath, 'package', '--include-transitive') + $Extra + @('--format', 'json')
@@ -150,6 +175,13 @@ function Add-LicenseEvidence($Record) {
 }
 
 $Central = Get-CentralVersions
+foreach ($pin in @(Get-CentralPins)) {
+    $reason = Get-ForbiddenReason $pin.id
+    if ($reason) {
+        $suffix = if ($pin.version) { "@$($pin.version)" } else { '' }
+        Add-Issue 'PACKAGE_FORBIDDEN' "$($pin.id)$suffix 中央钉仍在 Directory.Packages.props —— $reason"
+    }
+}
 $Projects = @(Get-ProjectPaths)
 foreach ($projectPath in $Projects) {
     if (-not (Test-Path -LiteralPath $projectPath)) { Add-Issue 'DEPENDENCY_PROJECT_MISSING' $projectPath; continue }
@@ -172,6 +204,8 @@ foreach ($projectPath in $Projects) {
         } elseif (-not $centralVersion) { Add-Issue 'PACKAGE_VERSION_NOT_CENTRALLY_PINNED' $id $relative }
         $scopes = $Policy.packageScopes.PSObject.Properties[$id]
         if ($scopes -and -not (Test-Scope $projectName $scopes.Value)) { Add-Issue 'PACKAGE_SCOPE_VIOLATION' "$id is not allowed in $projectName" $relative }
+        $forbidden = Get-ForbiddenReason $id
+        if ($forbidden) { Add-Issue 'PACKAGE_FORBIDDEN' "$id 被 $projectName 直接引用 —— $forbidden" $relative }
     }
     $lockPath = Get-XmlProperty $xml 'NuGetLockFilePath'
     if ($lockPath) { $lockPath = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetDirectoryName($projectPath)) $lockPath)) }
@@ -187,6 +221,8 @@ foreach ($projectPath in $Projects) {
     foreach ($record in $unique.Values) {
         $scopes = $Policy.packageScopes.PSObject.Properties[$record.id]
         if ($scopes -and -not (Test-Scope $projectName $scopes.Value)) { Add-Issue 'PACKAGE_SCOPE_VIOLATION' "$($record.id) is not allowed in $projectName" $relative }
+        $forbidden = Get-ForbiddenReason $record.id
+        if ($forbidden) { Add-Issue 'PACKAGE_FORBIDDEN' "$($record.id)@$($record.version) 出现在 $projectName 的解析图(含传递依赖) —— $forbidden" $relative }
     }
     foreach ($record in $unique.Values) {
         $key = "$($record.id.ToLowerInvariant())@$($record.version)"
