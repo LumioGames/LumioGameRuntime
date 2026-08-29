@@ -3,7 +3,12 @@ param(
     [string] $OutputDirectory
 )
 
+# 生成一律锚定架构源的**已提交对象**,绝不读其工作区。理由与锚点优先级见 generate-contracts.sh 顶部注释。
 $ErrorActionPreference = 'Stop'
+# PowerShell 7.4 起 $PSNativeCommandUseErrorActionPreference 默认为 $true,原生命令非零退出会
+# 抛终止性错误而不落到 $LASTEXITCODE——那样下面所有「跑 git 再查 $LASTEXITCODE」的守卫都走不到,
+# 约定的哨兵字符串与 exit 31 会被一段未捕获异常 + exit 1 顶替。
+$PSNativeCommandUseErrorActionPreference = $false
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $architectureRoot = $env:LUMIO_ARCHITECTURE_ROOT
 if ([string]::IsNullOrWhiteSpace($architectureRoot)) {
@@ -11,9 +16,9 @@ if ([string]::IsNullOrWhiteSpace($architectureRoot)) {
     exit 31
 }
 $architectureRoot = (Resolve-Path $architectureRoot).Path
-$tool = Join-Path $architectureRoot 'tools/lumio_contract.py'
-if (-not (Test-Path -LiteralPath $tool -PathType Leaf)) {
-    [Console]::Error.WriteLine("ARCHITECTURE_TOOL_MISSING root=$architectureRoot")
+& git -C $architectureRoot rev-parse --git-dir *> $null
+if ($LASTEXITCODE -ne 0) {
+    [Console]::Error.WriteLine("ARCHITECTURE_ROOT_NOT_A_REPOSITORY root=$architectureRoot")
     exit 31
 }
 
@@ -32,9 +37,12 @@ if ([string]::IsNullOrWhiteSpace($python)) {
     exit 31
 }
 
-$sourceCommit = (& git -C $architectureRoot rev-parse HEAD 2>$null | Out-String).Trim()
-if ($sourceCommit -notmatch '^[0-9a-fA-F]{40}$') {
-    [Console]::Error.WriteLine('ARCHITECTURE_COMMIT_MISSING')
+$architectureRef = $env:LUMIO_ARCHITECTURE_COMMIT
+if ([string]::IsNullOrWhiteSpace($architectureRef)) { $architectureRef = $env:LUMIO_ARCHITECTURE_REF }
+if ([string]::IsNullOrWhiteSpace($architectureRef)) { $architectureRef = 'origin/main' }
+$sourceCommit = (& git -C $architectureRoot rev-parse --verify --quiet "$architectureRef^{commit}" 2>$null | Out-String).Trim()
+if ($sourceCommit -notmatch '^[0-9a-f]{40}$') {
+    [Console]::Error.WriteLine("ARCHITECTURE_COMMIT_MISSING ref=$architectureRef")
     exit 31
 }
 
@@ -45,6 +53,38 @@ $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ('lumio-contracts-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $temporaryRoot | Out-Null
 try {
+    # 只读物化该 commit 的树。用 git archive 而非 git worktree add:后者会往架构源仓的 .git
+    # 写 worktree 注册记录,而那个仓正被并发编辑。archive 必须写文件再解包——PowerShell
+    # 管道会按文本处理字节流,直接 pipe 会损坏 tar。
+    # 三个 -c 与 pathspec 限定的理由见 generate-contracts.sh 同处注释:前者堵住三条会让导出字节
+    # 随机器变化的通道(core.autocrlf / core.eol / 全局 attributesfile),后者把全树的 42 个符号
+    # 链接降到 0——Windows 的 tar 在未开 Developer Mode 时创建符号链接会失败。
+    # 残留未闭合:$GIT_DIR/info/attributes 无 config 开关。
+    $architectureSnapshot = Join-Path $temporaryRoot 'architecture'
+    New-Item -ItemType Directory -Path $architectureSnapshot | Out-Null
+    $archivePath = Join-Path $temporaryRoot 'architecture.tar'
+    # Windows 上没有 /dev/null 设备路径,用 NUL;两者都只是「一个空的 attributes 文件」。
+    $nullAttributes = if ($IsWindows -or $env:OS -eq 'Windows_NT') { 'NUL' } else { '/dev/null' }
+    & git -C $architectureRoot -c core.autocrlf=false -c core.eol=lf -c core.attributesfile=$nullAttributes `
+        archive --format=tar --output=$archivePath $sourceCommit tools schemas ids fixtures
+    if ($LASTEXITCODE -ne 0) {
+        [Console]::Error.WriteLine("ARCHITECTURE_SNAPSHOT_FAILED commit=$sourceCommit")
+        exit 31
+    }
+    & tar -x -f $archivePath -C $architectureSnapshot
+    if ($LASTEXITCODE -ne 0) {
+        [Console]::Error.WriteLine("ARCHITECTURE_SNAPSHOT_FAILED commit=$sourceCommit")
+        exit 31
+    }
+    $tool = Join-Path $architectureSnapshot 'tools/lumio_contract.py'
+    if (-not (Test-Path -LiteralPath $tool -PathType Leaf)) {
+        # 报真实 root,不报临时快照路径——快照路径对排障没有意义。
+        [Console]::Error.WriteLine("ARCHITECTURE_TOOL_MISSING root=$architectureRoot commit=$sourceCommit")
+        exit 31
+    }
+    # 之后所有注册表读取都必须落在快照上,不得再碰工作区。
+    $architectureRoot = $architectureSnapshot
+
     & $python $tool generate --out (Join-Path $temporaryRoot 'packages')
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

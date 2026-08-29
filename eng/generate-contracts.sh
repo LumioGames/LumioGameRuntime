@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# 生成一律锚定架构源的**已提交对象**,绝不读其工作区。
+# 架构源仓被多个会话并发编辑,工作区随时带着未提交改动;从工作区生成会让
+# 生成物与 manifest 里的 provenance 戳都取决于「什么时候跑」,不可复现也不可复核。
+# 锚点选择:LUMIO_ARCHITECTURE_COMMIT(精确 SHA,校验路径用它回放 manifest 记录的 commit)
+#          > LUMIO_ARCHITECTURE_REF(默认 origin/main,用于把锚点前推到上游最新发布)。
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 architecture_root="${LUMIO_ARCHITECTURE_ROOT:-}"
 if [[ -z "$architecture_root" ]]; then
   printf 'ARCHITECTURE_ROOT_MISSING\n' >&2
   exit 31
 fi
-if [[ ! -f "$architecture_root/tools/lumio_contract.py" ]]; then
-  printf 'ARCHITECTURE_TOOL_MISSING root=%s\n' "$architecture_root" >&2
+if [[ ! -d "$architecture_root/.git" ]] && ! git -C "$architecture_root" rev-parse --git-dir >/dev/null 2>&1; then
+  printf 'ARCHITECTURE_ROOT_NOT_A_REPOSITORY root=%s\n' "$architecture_root" >&2
   exit 31
 fi
 
@@ -24,9 +29,10 @@ if [[ -z "$python_command" ]]; then
   fi
 fi
 
-source_commit="$(git -C "$architecture_root" rev-parse HEAD 2>/dev/null || true)"
-if [[ ! "$source_commit" =~ ^[0-9a-fA-F]{40}$ ]]; then
-  printf 'ARCHITECTURE_COMMIT_MISSING\n' >&2
+architecture_ref="${LUMIO_ARCHITECTURE_COMMIT:-${LUMIO_ARCHITECTURE_REF:-origin/main}}"
+source_commit="$(git -C "$architecture_root" rev-parse --verify --quiet "${architecture_ref}^{commit}" 2>/dev/null || true)"
+if [[ ! "$source_commit" =~ ^[0-9a-f]{40}$ ]]; then
+  printf 'ARCHITECTURE_COMMIT_MISSING ref=%s\n' "$architecture_ref" >&2
   exit 31
 fi
 
@@ -34,9 +40,39 @@ output_directory="${LUMIO_GENERATED_OUTPUT:-$repo_root/src/Lumio.GameRuntime.Gen
 temporary_root="$(mktemp -d "${TMPDIR:-/tmp}/lumio-contracts.XXXXXX")"
 trap 'rm -rf "$temporary_root"' EXIT
 
-"$python_command" "$architecture_root/tools/lumio_contract.py" generate --out "$temporary_root/packages"
+# 只读物化该 commit 的树。用 git archive 而非 git worktree add:后者会往架构源仓的
+# .git 写 worktree 注册记录,而那个仓正被并发编辑,只读导出不留任何痕迹。
+#
+# 三个 -c 都不是可选项,它们各自堵一条会让导出字节随机器变化的通道:
+#   core.autocrlf / core.eol —— 架构源的 .gitattributes 第一行是 `* text=auto`,git archive 会按
+#     **调用方**的配置做行尾转换。实测 5f06822:autocrlf=false 得 schemas=7c2501b5(等于 git blob
+#     原始字节),autocrlf=true 得 d5e9a3bb —— 后者正是本仓 manifest 里长期被误当成「伪造」的那组值。
+#   core.attributesfile —— 全局 ~/.gitattributes 里的一行 `* eol=crlf` **优先于** core.eol,
+#     能把上面两个 flag 直接压过去。实测:敌意 attributesfile 在场时不加此 flag 得 d5e9a3bb,
+#     加上后回到 7c2501b5。
+# 仍未闭合的一条:$GIT_DIR/info/attributes 没有对应的 config 开关,本机在架构源仓里放一份就能改变
+# 导出字节。要彻底闭合需改为直接哈希 blob(git cat-file blob <commit>:<path>),绕开整条转换链。
+# 因此本脚本的判据准确说是 (commit, attribute 栈) 的函数,不是 commit 的纯函数。
+#
+# pathspec 限定到生成器实际读取的四个目录:全树导出带 42 个符号链接,Windows 的 tar 在未开
+# Developer Mode 时无法创建符号链接并非零退出,闸门会在默认 Windows 上直接不可用;限定后为 0 个,
+# 且实测产出与全树导出完全一致。注意 .gitattributes 本身不在 pathspec 里,但**仍然作用于导出**。
+architecture_snapshot="$temporary_root/architecture"
+mkdir -p "$architecture_snapshot"
+if ! git -C "$architecture_root" -c core.autocrlf=false -c core.eol=lf -c core.attributesfile=/dev/null \
+      archive --format=tar "$source_commit" tools schemas ids fixtures \
+      | tar -x -C "$architecture_snapshot"; then
+  printf 'ARCHITECTURE_SNAPSHOT_FAILED commit=%s\n' "$source_commit" >&2
+  exit 31
+fi
+if [[ ! -f "$architecture_snapshot/tools/lumio_contract.py" ]]; then
+  printf 'ARCHITECTURE_TOOL_MISSING root=%s commit=%s\n' "$architecture_root" "$source_commit" >&2
+  exit 31
+fi
 
-"$python_command" - "$temporary_root/packages/index.json" "$temporary_root/packages" "$architecture_root" "$output_directory" "$source_commit" <<'PY'
+"$python_command" "$architecture_snapshot/tools/lumio_contract.py" generate --out "$temporary_root/packages"
+
+"$python_command" - "$temporary_root/packages/index.json" "$temporary_root/packages" "$architecture_snapshot" "$output_directory" "$source_commit" <<'PY'
 import hashlib
 import json
 import shutil

@@ -13,4 +13,12 @@
     <PackageReference Include="Microsoft.Testing.Platform" />
     <PackageReference Include="coverlet.MTP" />
   </ItemGroup>
+
+  <!-- The manifest JSON is the second emission of the same provenance the generated C#
+       constants carry; the test compares them to detect hand edits to either file. -->
+  <ItemGroup>
+    <None Include="../../src/Lumio.GameRuntime.GeneratedContracts/Generated/generated-contract-manifest.json"
+          Link="generated-contract-manifest.json"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>
