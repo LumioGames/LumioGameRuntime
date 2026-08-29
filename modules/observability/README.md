@@ -4,7 +4,7 @@
 
 **优先级**：P1
 **实施阶段**：Vertical Slice / Production Hardening
-**架构基线**：`LGE-V1.3-2026-08-27`
+**架构基线**：`LGE-V1.4-2026-08-27`
 
 ## 模块定位与目标
 

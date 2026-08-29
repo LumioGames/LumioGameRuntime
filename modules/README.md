@@ -1,7 +1,7 @@
 # LumioGameRuntime 模块架构（模块总入口）
 
-> **架构基线**：`LGE-V1.3-2026-08-27`
-> **唯一架构源**：`LumioGameEngineArchitecture`（本仓只保存只读镜像 [docs/architecture/LumioGameEngine_Architecture_v1.3.md](../docs/architecture/LumioGameEngine_Architecture_v1.3.md)）
+> **架构基线**：`LGE-V1.4-2026-08-27`
+> **唯一架构源**：`LumioGameEngineArchitecture`（本仓只保存只读镜像 [docs/architecture/LumioGameEngine_Architecture_v1.4.md](../docs/architecture/LumioGameEngine_Architecture_v1.4.md)）
 > **本文定位**：LumioGameRuntime 的模块文档总入口。公共语义引用架构源，本文只定义本仓的模块边界、依赖方向、状态所有权、线程/队列约束和文档维护规则。
 
 ## 1. 设计目标、范围与审核结论

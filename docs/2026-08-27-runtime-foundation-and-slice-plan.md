@@ -1,5 +1,7 @@
 # Runtime Foundation and First Vertical Slice Implementation Plan
 
+> **历史记述（2026-08-27）：** 本文是当时的实现计划快照，写作时的架构基线是 `LGE-V1.3-2026-08-27`。文内出现的 V1.3 是对当时状态的忠实记录，**不是**当前基线；当前基线见根 [`README.md`](../README.md)。为保留历史,不随基线前移改写。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use subagent-driven-development to implement this plan task-by-task (hosts without subagents: its Inline Fallback section). Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在不改变 `LGE-V1.3-2026-08-27` 公共语义的前提下，建立 LumioGameRuntime 的 .NET 工程基线、generated-contract 边界、最小 Observability/Config/ECS/Command/Coordination/GAS/Replication/Persistence/Simulation 骨架，以及可执行的 Reference Host，使单线程 Foundation 闭环能够调用唯一 `run_tick`、走完固定 13 相，并产出可复现的 Canonical State Hash。

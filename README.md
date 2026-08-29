@@ -6,7 +6,7 @@
 
 - Baseline：`LGE-V1.4-2026-08-27`
 - 唯一架构源：`LumioGameEngineArchitecture`
-- 本地镜像：[`docs/architecture/LumioGameEngine_Architecture_v1.3.md`](docs/architecture/LumioGameEngine_Architecture_v1.3.md)
+- 本地镜像：[`docs/architecture/LumioGameEngine_Architecture_v1.4.md`](docs/architecture/LumioGameEngine_Architecture_v1.4.md)
 
 Runtime 位于 Native/领域库之上、具体游戏内容之下。它拥有逻辑模拟语义和 ECS World，但不拥有 Server 进程时钟、Socket、Voxel 内部或具体玩法。稳定 Runtime 与从 `LumioGame` 加载的 Role-specific Gameplay Assembly 必须分开。
 
