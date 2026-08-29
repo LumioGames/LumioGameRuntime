@@ -21,9 +21,6 @@
     "Friflo.Engine.ECS": [
       "Lumio.GameRuntime.Ecs.Adapters.Friflo"
     ],
-    "MessagePack": [
-      "Lumio.GameRuntime.Persistence"
-    ],
     "xunit.v3": [
       "*.Tests",
       "Lumio.GameRuntime.ReferenceHost"

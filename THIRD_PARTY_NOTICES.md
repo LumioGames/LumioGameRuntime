@@ -13,12 +13,13 @@ release-blocking `DEPENDENCY_LICENSE_UNKNOWN` result.
 | `coverlet.MTP` | `10.0.1` | MIT | Test projects only |
 | `CsCheck` | `4.7.0` | MIT | Test projects only |
 | `Friflo.Engine.ECS` | `3.6.0` | MIT | `Lumio.GameRuntime.Ecs.Adapters.Friflo` only |
-| `MessagePack` | `3.1.8` | MIT | `Lumio.GameRuntime.Persistence` adapter only |
 
-`Friflo.Engine.ECS` and `MessagePack` are replaceable adapter implementation
-dependencies, not runtime contract or stable public API dependencies. SBOM
-generation is a build/release concern and does not add an SBOM tool to any
-production assembly.
+`Friflo.Engine.ECS` is a replaceable adapter implementation dependency, not a
+runtime contract or stable public API dependency. SBOM generation is a
+build/release concern and does not add an SBOM tool to any production assembly.
+
+Canonical binary encoding is not provided by a third-party package; it is owned
+by the architecture source, not by this repository.
 
 GPL, AGPL, LGPL, and any other license that cannot be confirmed as an SPDX
 expression require legal review or are rejected by the policy gate. This file
