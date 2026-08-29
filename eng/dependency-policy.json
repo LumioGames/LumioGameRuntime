@@ -22,7 +22,6 @@
       "Lumio.GameRuntime.Ecs.Adapters.Friflo"
     ],
     "xunit.v3": [
-      "*.Tests",
       "Lumio.GameRuntime.ReferenceHost"
     ],
     "CsCheck": [
