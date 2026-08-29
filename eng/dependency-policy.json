@@ -17,6 +17,11 @@
     "AGPL",
     "LGPL"
   ],
+  "_forbiddenPackagesNote": "packageScopes 是准入许可(白名单):没登记的包既不许可也不禁止。被裁决移除的包必须登记在 forbiddenPackages 里,否则重新引入时无人拦。键是包 id 的 glob(大小写不敏感),值是禁用理由,会原样打进报错。",
+  "forbiddenPackages": {
+    "MessagePack": "架构源 c350ec6 裁决一:作为被拒替代移除,不得重新引入(本仓 36d087a 已按裁决删除 3.1.8)",
+    "MessagePack.*": "同上——MessagePack 系列子包(如 MessagePack.Annotations)一并禁止,防止绕道引入"
+  },
   "packageScopes": {
     "Friflo.Engine.ECS": [
       "Lumio.GameRuntime.Ecs.Adapters.Friflo"
