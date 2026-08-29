@@ -9,8 +9,11 @@ namespace Lumio.GameRuntime.Observability;
 internal sealed class DurableEvidenceRouter : IDurableEvidencePort
 {
     /// <summary>
-    /// generated 记录的 durable 键分隔符。抽成常量供 <c>DurableKeySchemeGuardTests</c> 引用:
-    /// 那组测试守护的正是「拼接键仍然单射」所依赖的三条前提,不能各写各的字面量。
+    /// generated 记录的 durable 键分隔符。抽成常量供 <c>DurableKeySchemeGuardTests</c> 引用,
+    /// 避免实现与守护各写各的字面量。
+    /// <para><b>改这个值前先读那组测试的类注释。</b>拼接键的单射性同时依赖分隔符**无自重叠**
+    /// (无真后缀等于真前缀)与「分隔符之前的字段不含分隔符」两条;把它改成 <c>"::"</c> 这类
+    /// 自重叠的串会静默破坏单射。守护里有专门一条钉住这一点。</para>
     /// </summary>
     internal const string KeySeparator = ":";
 
@@ -47,20 +50,6 @@ internal sealed class DurableEvidenceRouter : IDurableEvidencePort
 
             if (_records.TryGetValue(record.IdempotencyKey, out DurableRecordView existing))
             {
-                // 同键**不同 RecordType** 在证据库里是不可能成立的状态,只可能是 keyspace 撞了:
-                // generated 重载的键带 schemaId 前缀,而本方法用调用方给的裸键(EventRouter 传的
-                // 是裸 EventId),两者写同一个 _records。一条 EventId 恰为 "txn-journal-record:abc"
-                // 的事件就会撞上已存的 txn 记录。
-                //
-                // 键本身不能改——那会改变公共可观测键,属「须升级确认」。但把它当成重投返回
-                // Accepted 等于静默丢一条 durable 记录并伪造成功,这是最坏的选项。按本仓
-                // Fail-stop 口径报出来,让调用方知道证据没落库。
-                if (!string.Equals(existing.RecordType, record.RecordType, StringComparison.Ordinal))
-                {
-                    return new DurableEnqueueResult(
-                        DurableEnqueueStatus.Rejected, 0UL, false, "InternalInvariant");
-                }
-
                 return new DurableEnqueueResult(
                     DurableEnqueueStatus.Accepted,
                     _recordSequences[existing.IdempotencyKey],
