@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RuntimeProductionProject>true</RuntimeProductionProject>
+    <TargetFrameworks>net10.0;netstandard2.1</TargetFrameworks>
+    <AssemblyName>Lumio.GameRuntime.Ecs</AssemblyName>
+    <RootNamespace>Lumio.GameRuntime.Ecs</RootNamespace>
+    <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../../../src/Lumio.GameRuntime.GeneratedContracts/Lumio.GameRuntime.GeneratedContracts.csproj" />
+    <Compile Include="../../../../src/Lumio.GameRuntime.GeneratedContracts/Generated/Compatibility/IsExternalInit.cs" Link="Compatibility/IsExternalInit.cs" />
+  </ItemGroup>
+</Project>
