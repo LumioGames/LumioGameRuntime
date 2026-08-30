@@ -10,7 +10,7 @@ namespace Lumio.GameRuntime.Ecs;
 /// It intentionally makes no promise about a production ECS layout.
 /// </summary>
 [SuppressMessage("Design", "CA1512", Justification = "The production target also compiles for netstandard2.1, where the ThrowIf helper is unavailable.")]
-public sealed class ReferenceWorldStorageAdapter : IWorldStorageAdapter
+internal sealed class ReferenceWorldStorageAdapter : IWorldStorageAdapter
 {
     private sealed class EntityData
     {
