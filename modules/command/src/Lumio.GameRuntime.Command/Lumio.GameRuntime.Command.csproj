@@ -2,16 +2,14 @@
   <PropertyGroup>
     <RuntimeProductionProject>true</RuntimeProductionProject>
     <TargetFrameworks>net10.0;netstandard2.1</TargetFrameworks>
-    <AssemblyName>Lumio.GameRuntime.Observability</AssemblyName>
-    <RootNamespace>Lumio.GameRuntime.Observability</RootNamespace>
+    <AssemblyName>Lumio.GameRuntime.Command</AssemblyName>
+    <RootNamespace>Lumio.GameRuntime.Command</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="../../../ecs/src/Lumio.GameRuntime.Ecs/Lumio.GameRuntime.Ecs.csproj" Condition="Exists('../../../ecs/src/Lumio.GameRuntime.Ecs/Lumio.GameRuntime.Ecs.csproj')" />
     <ProjectReference Include="../../../../src/Lumio.GameRuntime.GeneratedContracts/Lumio.GameRuntime.GeneratedContracts.csproj" />
+    <ProjectReference Include="../../../observability/src/Lumio.GameRuntime.Observability/Lumio.GameRuntime.Observability.csproj" />
     <Compile Include="../../../../src/Lumio.GameRuntime.GeneratedContracts/Generated/Compatibility/IsExternalInit.cs" Link="Compatibility/IsExternalInit.cs" />
-  </ItemGroup>
-
-  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.1'">
-    <PackageReference Include="System.Threading.Channels" />
   </ItemGroup>
 </Project>

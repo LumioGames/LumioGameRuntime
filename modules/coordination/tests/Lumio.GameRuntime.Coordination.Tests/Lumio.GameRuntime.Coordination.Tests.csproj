@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RuntimeTestProject>true</RuntimeTestProject>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <OutputType>Exe</OutputType>
+    <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/Lumio.GameRuntime.Coordination/Lumio.GameRuntime.Coordination.csproj" />
+    <ProjectReference Include="../../src/Lumio.GameRuntime.Coordination.VoxelAdapters/Lumio.GameRuntime.Coordination.VoxelAdapters.csproj" />
+    <PackageReference Include="xunit.v3" />
+    <PackageReference Include="Microsoft.Testing.Platform" />
+    <PackageReference Include="coverlet.MTP" />
+  </ItemGroup>
+</Project>
