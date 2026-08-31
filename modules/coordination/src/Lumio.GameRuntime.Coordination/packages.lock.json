@@ -5,8 +5,15 @@
       "lumio.gameruntime.command": {
         "type": "Project",
         "dependencies": {
+          "Lumio.GameRuntime.Ecs": "[1.0.0, )",
           "Lumio.GameRuntime.GeneratedContracts": "[1.0.0, )",
           "Lumio.GameRuntime.Observability": "[1.0.0, )"
+        }
+      },
+      "lumio.gameruntime.ecs": {
+        "type": "Project",
+        "dependencies": {
+          "Lumio.GameRuntime.GeneratedContracts": "[1.0.0, )"
         }
       },
       "lumio.gameruntime.generatedcontracts": {
@@ -30,8 +37,15 @@
       "lumio.gameruntime.command": {
         "type": "Project",
         "dependencies": {
+          "Lumio.GameRuntime.Ecs": "[1.0.0, )",
           "Lumio.GameRuntime.GeneratedContracts": "[1.0.0, )",
           "Lumio.GameRuntime.Observability": "[1.0.0, )"
+        }
+      },
+      "lumio.gameruntime.ecs": {
+        "type": "Project",
+        "dependencies": {
+          "Lumio.GameRuntime.GeneratedContracts": "[1.0.0, )"
         }
       },
       "lumio.gameruntime.generatedcontracts": {
