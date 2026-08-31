@@ -4,18 +4,57 @@ using System.Linq;
 
 namespace Lumio.GameRuntime.Ecs;
 
-public sealed class EntityTypeDefinition : IEquatable<EntityTypeDefinition>
+internal readonly record struct ComponentTypeHandle(
+    WorldId WorldId,
+    uint Value,
+    EcsWorld.EcsWorldContext? Origin = null) : IComparable<ComponentTypeHandle>
 {
-    private readonly ComponentTypeId[] _componentTypes;
+    public bool IsDefault => WorldId.IsDefault || Value == 0U;
+
+    public int CompareTo(ComponentTypeHandle other)
+    {
+        int world = WorldId.CompareTo(other.WorldId);
+        return world == 0 ? Value.CompareTo(other.Value) : world;
+    }
+}
+
+internal readonly record struct EntityTypeHandle(
+    WorldId WorldId,
+    uint Value,
+    EcsWorld.EcsWorldContext? Origin = null)
+{
+    public bool IsDefault => WorldId.IsDefault || Value == 0U;
+}
+
+internal readonly record struct ComponentTypeRegistrationResult(
+    bool Registered,
+    ComponentTypeHandle Handle,
+    StorageOperationResult Result)
+{
+    public ErrorIdentity? Error => Result.Error;
+}
+
+internal readonly record struct EntityTypeRegistrationResult(
+    bool Registered,
+    EntityTypeHandle Handle,
+    StorageOperationResult Result)
+{
+    public ErrorIdentity? Error => Result.Error;
+}
+
+internal sealed class EntityTypeDefinition : IEquatable<EntityTypeDefinition>
+{
+    private readonly ComponentTypeHandle[] _declaredComponentTypes;
+    private readonly ComponentTypeHandle[] _canonicalComponentTypes;
 
     public EntityTypeDefinition(string name)
-        : this(name, Array.Empty<ComponentTypeId>(), EntityMode.CrossServer)
+        : this(name, Array.Empty<ComponentTypeHandle>(), EntityMode.CrossServer)
     {
     }
 
     public EntityTypeDefinition(
         string name,
-        IEnumerable<ComponentTypeId> componentTypes,
+        IEnumerable<ComponentTypeHandle> componentTypes,
         EntityMode defaultMode = EntityMode.CrossServer)
     {
         if (string.IsNullOrWhiteSpace(name))
@@ -28,13 +67,14 @@ public sealed class EntityTypeDefinition : IEquatable<EntityTypeDefinition>
         if (componentTypes is null) throw new ArgumentNullException(nameof(componentTypes));
 #endif
 
-        ComponentTypeId[] supplied = componentTypes.ToArray();
+        ComponentTypeHandle[] supplied = componentTypes.ToArray();
         if (supplied.Length != supplied.Distinct().Count())
-            throw new ArgumentException("Entity component type ids must be unique.", nameof(componentTypes));
+            throw new ArgumentException("Entity component handles must be unique.", nameof(componentTypes));
         if (supplied.Any(static value => value.IsDefault))
-            throw new ArgumentException("Entity component type ids must be non-zero.", nameof(componentTypes));
+            throw new ArgumentException("Entity component handles must be non-default.", nameof(componentTypes));
 
-        _componentTypes = supplied.OrderBy(static value => value.Value).ToArray();
+        _declaredComponentTypes = supplied;
+        _canonicalComponentTypes = supplied.OrderBy(static value => value).ToArray();
         Name = name;
         DefaultMode = defaultMode;
     }
@@ -43,16 +83,26 @@ public sealed class EntityTypeDefinition : IEquatable<EntityTypeDefinition>
 
     public EntityMode DefaultMode { get; }
 
-    public ReadOnlyMemory<ComponentTypeId> ComponentTypes => _componentTypes;
+    public ReadOnlyMemory<ComponentTypeHandle> ComponentTypes => _declaredComponentTypes;
 
-    public bool HasComponent(ComponentTypeId componentType) =>
-        Array.BinarySearch(_componentTypes, componentType) >= 0;
+    public ReadOnlyMemory<ComponentTypeHandle> CanonicalComponentTypes => _canonicalComponentTypes;
+
+    public bool HasComponent(ComponentTypeHandle componentType)
+    {
+        for (int index = 0; index < _canonicalComponentTypes.Length; index++)
+        {
+            if (_canonicalComponentTypes[index].Equals(componentType)) return true;
+        }
+
+        return false;
+    }
 
     public bool Equals(EntityTypeDefinition? other)
     {
         if (ReferenceEquals(this, other)) return true;
         return other is not null && StringComparer.Ordinal.Equals(Name, other.Name) &&
-               DefaultMode == other.DefaultMode && _componentTypes.AsSpan().SequenceEqual(other._componentTypes);
+               DefaultMode == other.DefaultMode &&
+               _canonicalComponentTypes.AsSpan().SequenceEqual(other._canonicalComponentTypes);
     }
 
     public override bool Equals(object? obj) => Equals(obj as EntityTypeDefinition);
@@ -62,14 +112,14 @@ public sealed class EntityTypeDefinition : IEquatable<EntityTypeDefinition>
         var hash = new HashCode();
         hash.Add(Name, StringComparer.Ordinal);
         hash.Add(DefaultMode);
-        for (int i = 0; i < _componentTypes.Length; i++) hash.Add(_componentTypes[i]);
+        for (int i = 0; i < _canonicalComponentTypes.Length; i++) hash.Add(_canonicalComponentTypes[i]);
         return hash.ToHashCode();
     }
 
     public override string ToString() => Name;
 }
 
-public readonly struct ComponentFieldDefinition : IEquatable<ComponentFieldDefinition>
+internal readonly struct ComponentFieldDefinition : IEquatable<ComponentFieldDefinition>
 {
     public ComponentFieldDefinition(ComponentFieldId id, int sizeBytes)
     {
@@ -98,7 +148,7 @@ public readonly struct ComponentFieldDefinition : IEquatable<ComponentFieldDefin
     public override int GetHashCode() => HashCode.Combine(Id, SizeBytes);
 }
 
-public sealed class ComponentTypeDefinition : IEquatable<ComponentTypeDefinition>
+internal sealed class ComponentTypeDefinition : IEquatable<ComponentTypeDefinition>
 {
     private readonly ComponentFieldDefinition[] _fields;
 
@@ -155,86 +205,52 @@ public sealed class ComponentTypeDefinition : IEquatable<ComponentTypeDefinition
     public override int GetHashCode() => HashCode.Combine(Id, Name);
 }
 
-public sealed class GeneratedComponentSchemaView
-{
-    private readonly ComponentTypeDefinition[] _components;
-    private readonly IReadOnlyList<ComponentTypeDefinition> _componentView;
-
-    public GeneratedComponentSchemaView(SchemaEpoch schemaEpoch, IEnumerable<ComponentTypeDefinition> components)
-    {
-        if (schemaEpoch.Value == 0U) throw new ArgumentOutOfRangeException(nameof(schemaEpoch));
-#if NET10_0_OR_GREATER
-        ArgumentNullException.ThrowIfNull(components);
-#else
-        if (components is null) throw new ArgumentNullException(nameof(components));
-#endif
-        _components = components.ToArray();
-        if (_components.Any(static component => component is null))
-            throw new ArgumentException("Component schema entries cannot be null.", nameof(components));
-        if (_components.Length != _components.Select(static component => component.Id).Distinct().Count())
-            throw new ArgumentException("Component type ids must be unique.", nameof(components));
-        SchemaEpoch = schemaEpoch;
-        _componentView = Array.AsReadOnly(_components);
-    }
-
-    public SchemaEpoch SchemaEpoch { get; }
-
-    public IReadOnlyList<ComponentTypeDefinition> Components => _componentView;
-}
-
 /// <summary>World-local registry for validated component schemas.</summary>
-public sealed class ComponentTypeRegistry
+internal sealed class ComponentTypeRegistry
 {
     private readonly Dictionary<ComponentTypeId, ComponentTypeDefinition> _definitions = new();
+    private readonly Dictionary<ComponentTypeHandle, ComponentTypeDefinition> _definitionsByHandle = new();
+    private readonly WorldId _worldId;
+    private readonly EcsWorld.EcsWorldContext? _origin;
+    private uint _nextHandle;
+
+    public ComponentTypeRegistry(WorldId worldId, EcsWorld.EcsWorldContext? origin = null)
+    {
+        if (worldId.IsDefault) throw new ArgumentOutOfRangeException(nameof(worldId));
+        _worldId = worldId;
+        _origin = origin;
+    }
 
     public int Count => _definitions.Count;
 
-    public StorageOperationResult Register(ComponentTypeDefinition definition)
+    public StorageOperationResult Register(ComponentTypeDefinition definition, out ComponentTypeHandle handle)
     {
+        handle = default;
         if (definition is null)
             return StorageOperationResult.Rejected(EcsErrorCodes.InvalidArgument);
         if (_definitions.ContainsKey(definition.Id))
             return StorageOperationResult.Rejected(EcsErrorCodes.DuplicateRegistration);
+        if (_nextHandle == uint.MaxValue)
+            return StorageOperationResult.Fatal(EcsErrorCodes.InvalidState);
+        handle = new ComponentTypeHandle(_worldId, ++_nextHandle, _origin);
         _definitions.Add(definition.Id, definition);
+        _definitionsByHandle.Add(handle, definition);
         return StorageOperationResult.Accepted();
     }
 
     internal bool CanRegister(ComponentTypeDefinition definition) =>
         definition is not null && !_definitions.ContainsKey(definition.Id);
 
-    internal bool CanRegister(GeneratedComponentSchemaView schema)
-    {
-        if (schema is null) return false;
-        var seen = new HashSet<ComponentTypeId>();
-        for (int i = 0; i < schema.Components.Count; i++)
-        {
-            ComponentTypeDefinition definition = schema.Components[i];
-            if (definition is null || !seen.Add(definition.Id) || _definitions.ContainsKey(definition.Id)) return false;
-        }
-        return true;
-    }
-
-    public StorageOperationResult Register(GeneratedComponentSchemaView schema)
-    {
-        if (schema is null)
-            return StorageOperationResult.Rejected(EcsErrorCodes.InvalidArgument);
-
-        var pending = new List<ComponentTypeDefinition>(schema.Components.Count);
-        var seen = new HashSet<ComponentTypeId>();
-        for (int i = 0; i < schema.Components.Count; i++)
-        {
-            ComponentTypeDefinition definition = schema.Components[i];
-            if (!seen.Add(definition.Id) || _definitions.ContainsKey(definition.Id))
-                return StorageOperationResult.Rejected(EcsErrorCodes.DuplicateRegistration);
-            pending.Add(definition);
-        }
-
-        for (int i = 0; i < pending.Count; i++) _definitions.Add(pending[i].Id, pending[i]);
-        return StorageOperationResult.Accepted();
-    }
-
     public bool TryGet(ComponentTypeId id, out ComponentTypeDefinition definition) =>
         _definitions.TryGetValue(id, out definition!);
+
+    public bool TryGet(ComponentTypeHandle handle, out ComponentTypeDefinition definition)
+    {
+        if (handle.WorldId == _worldId && _definitionsByHandle.TryGetValue(handle, out definition!))
+            return true;
+        definition = null!;
+        return false;
+    }
 
     public bool Contains(ComponentTypeId id) => _definitions.ContainsKey(id);
 

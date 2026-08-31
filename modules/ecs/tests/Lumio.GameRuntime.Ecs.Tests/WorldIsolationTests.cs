@@ -10,8 +10,8 @@ public sealed class WorldIsolationTests
     [Fact]
     public void WorldFollowsExactLifecycle()
     {
-        using var world = new EcsWorld(new EcsWorldCreateRequest(
-            new WorldId(1), new EcsBudget(4, 32, 32, 4096)));
+        using var module = new EcsModule();
+        EcsWorld world = CreateWorld(module, 1);
 
         Assert.Equal(EcsWorldState.Created, world.State);
         Assert.Equal(StorageOperationStatus.Accepted, world.BeginRegistration().Status);
@@ -29,36 +29,38 @@ public sealed class WorldIsolationTests
     [Fact]
     public void SameLocalIdInDifferentWorldsRequiresMatchingWorldContext()
     {
-        using var first = NewWorld(10);
-        using var second = NewWorld(11);
-        EntityTypeDefinition type = new("Player");
+        using var firstModule = new EcsModule();
+        using var secondModule = new EcsModule();
+        EcsWorld first = NewWorld(firstModule, 10, out EntityTypeHandle firstType);
+        EcsWorld second = NewWorld(secondModule, 11, out EntityTypeHandle secondType);
 
-        EntityCreateResult firstResult = first.CreateEntityForCommit(new EntityCreateRequest(type));
-        EntityCreateResult secondResult = second.CreateEntityForCommit(new EntityCreateRequest(type));
+        EntityCreateResult firstResult = first.CreateEntityForCommit(first.Context, new EntityCreateRequest(firstType));
+        EntityCreateResult secondResult = second.CreateEntityForCommit(second.Context, new EntityCreateRequest(secondType));
 
         Assert.True(firstResult.Created);
         Assert.True(secondResult.Created);
         Assert.Equal(firstResult.Entity, secondResult.Entity);
         Assert.Equal(
             StorageOperationStatus.Accepted,
-            first.ValidateEntityContext(first.WorldId, firstResult.Entity).Status);
-        StorageOperationResult crossWorld = second.ValidateEntityContext(first.WorldId, firstResult.Entity);
+            first.ValidateEntityContext(first, firstResult.Entity).Status);
+        StorageOperationResult crossWorld = second.ValidateEntityContext(first, firstResult.Entity);
         Assert.Equal(StorageOperationStatus.Rejected, crossWorld.Status);
         Assert.Equal(EcsErrorCodes.CrossWorld, crossWorld.Error?.Code);
         Assert.Equal(
             StorageOperationStatus.Accepted,
-            second.ValidateEntityContext(second.WorldId, secondResult.Entity).Status);
+            second.ValidateEntityContext(second, secondResult.Entity).Status);
     }
 
     [Fact]
     public void NonOwnerStructuralWriteFaultsWorldBeforeStorage()
     {
-        using var world = NewWorld(20);
+        using var module = new EcsModule();
+        EcsWorld world = NewWorld(module, 20, out EntityTypeHandle entityType);
         var completed = new ManualResetEventSlim(false);
         EntityCreateResult result = default;
         var thread = new Thread(() =>
         {
-            result = world.CreateEntityForCommit(new EntityCreateRequest(new EntityTypeDefinition("Player")));
+            result = world.CreateEntityForCommit(world.Context, new EntityCreateRequest(entityType));
             completed.Set();
         });
 
@@ -76,30 +78,31 @@ public sealed class WorldIsolationTests
     [Fact]
     public void DisposedWorldRejectsOldEntityAndFurtherLifecycleCalls()
     {
-        var world = NewWorld(30);
-        EntityCreateResult created = world.CreateEntityForCommit(new EntityCreateRequest(new EntityTypeDefinition("Player")));
+        using var module = new EcsModule();
+        EcsWorld world = NewWorld(module, 30, out EntityTypeHandle entityType);
+        EntityCreateResult created = world.CreateEntityForCommit(world.Context, new EntityCreateRequest(entityType));
         Assert.True(created.Created);
+        Assert.Equal(StorageOperationStatus.Accepted, world.BeginDrain().Status);
         Assert.Equal(StorageOperationStatus.Accepted, world.DisposeWorld().Status);
 
-        Assert.False(world.TryResolve(created.Entity, out _));
-        EntityDestroyResult destroyed = world.DestroyEntityForCommit(created.Entity);
+        Assert.False(world.TryResolve(world, created.Entity, out _));
+        EntityDestroyResult destroyed = world.DestroyEntityForCommit(created.Target);
         Assert.False(destroyed.Destroyed);
         Assert.Equal(StorageOperationStatus.Rejected, destroyed.Result.Status);
         Assert.Equal(EcsErrorCodes.WorldDisposed, destroyed.Error?.Code);
         Assert.Equal(StorageOperationStatus.Rejected, world.Start().Status);
-        world.Dispose();
     }
 
     [Fact]
-    public void NullSchemaRegistrationIsRejectedAsInvalidArgument()
+    public void NullEntityTypeRegistrationIsRejectedAsInvalidArgument()
     {
-        using var world = new EcsWorld(new EcsWorldCreateRequest(
-            new WorldId(31), new EcsBudget(4, 32, 32, 4096)));
+        using var module = new EcsModule();
+        EcsWorld world = CreateWorld(module, 31);
         Assert.Equal(StorageOperationStatus.Accepted, world.BeginRegistration().Status);
 
-        StorageOperationResult result = world.RegisterTypes(null!);
+        EntityTypeRegistrationResult result = world.RegisterEntityType(null!);
 
-        Assert.Equal(StorageOperationStatus.Rejected, result.Status);
+        Assert.Equal(StorageOperationStatus.Rejected, result.Result.Status);
         Assert.Equal(EcsErrorCodes.InvalidArgument, result.Error?.Code);
         Assert.Equal(EcsWorldState.Registering, world.State);
     }
@@ -107,13 +110,13 @@ public sealed class WorldIsolationTests
     [Fact]
     public void NullComponentRegistrationIsRejectedAsInvalidArgument()
     {
-        using var world = new EcsWorld(new EcsWorldCreateRequest(
-            new WorldId(32), new EcsBudget(4, 32, 32, 4096)));
+        using var module = new EcsModule();
+        EcsWorld world = CreateWorld(module, 32);
         Assert.Equal(StorageOperationStatus.Accepted, world.BeginRegistration().Status);
 
-        StorageOperationResult result = world.RegisterComponentType(null!);
+        ComponentTypeRegistrationResult result = EcsTestRegistration.Register(world, null);
 
-        Assert.Equal(StorageOperationStatus.Rejected, result.Status);
+        Assert.Equal(StorageOperationStatus.Rejected, result.Result.Status);
         Assert.Equal(EcsErrorCodes.InvalidArgument, result.Error?.Code);
         Assert.Equal(EcsWorldState.Registering, world.State);
     }
@@ -121,27 +124,41 @@ public sealed class WorldIsolationTests
     [Fact]
     public void ContextValidationReportsFaultedAndDisposedStates()
     {
-        using var world = NewWorld(33);
+        using var module = new EcsModule();
+        EcsWorld world = NewWorld(module, 33, out _);
         LocalEntityId entity = new(1, 1);
 
-        Assert.Equal(StorageOperationStatus.Accepted, world.Fault(new ErrorIdentity("InjectedFault")).Status);
-        StorageOperationResult faulted = world.ValidateEntityContext(world.WorldId, entity);
+        Assert.Equal(StorageOperationStatus.Accepted, world.Fault(new ErrorIdentity(EcsErrorCodes.InvalidState)).Status);
+        StorageOperationResult faulted = world.ValidateEntityContext(world, entity);
         Assert.Equal(StorageOperationStatus.Rejected, faulted.Status);
         Assert.Equal(EcsErrorCodes.WorldFaulted, faulted.Error?.Code);
 
         Assert.Equal(StorageOperationStatus.Accepted, world.DisposeWorld().Status);
-        StorageOperationResult disposed = world.ValidateEntityContext(world.WorldId, entity);
+        StorageOperationResult disposed = world.ValidateEntityContext(world, entity);
         Assert.Equal(StorageOperationStatus.Rejected, disposed.Status);
         Assert.Equal(EcsErrorCodes.WorldDisposed, disposed.Error?.Code);
     }
 
-    private static EcsWorld NewWorld(ulong id)
+    private static EcsWorld NewWorld(
+        EcsModule module,
+        ulong id,
+        out EntityTypeHandle entityType)
     {
-        var world = new EcsWorld(new EcsWorldCreateRequest(
-            new WorldId(id), new EcsBudget(4, 32, 32, 4096)));
+        EcsWorld world = CreateWorld(module, id);
         Assert.Equal(StorageOperationStatus.Accepted, world.BeginRegistration().Status);
+        EntityTypeRegistrationResult registration = world.RegisterEntityType(new EntityTypeDefinition("Player"));
+        Assert.True(registration.Registered);
+        entityType = registration.Handle;
         Assert.Equal(StorageOperationStatus.Accepted, world.MarkReady().Status);
         Assert.Equal(StorageOperationStatus.Accepted, world.Start().Status);
         return world;
+    }
+
+    private static EcsWorld CreateWorld(EcsModule module, ulong id)
+    {
+        var request = new EcsWorldCreateRequest(
+            new WorldId(id),
+            new EcsBudget(4, 32, 32, 4096));
+        return Assert.IsType<EcsWorld>(module.CreateWorld(in request).World);
     }
 }

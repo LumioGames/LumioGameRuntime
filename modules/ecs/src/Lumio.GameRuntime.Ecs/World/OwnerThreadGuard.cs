@@ -10,19 +10,18 @@ internal sealed class OwnerThreadGuard
     public bool IsBound => Volatile.Read(ref _ownerThreadId) != 0;
     public int OwnerThreadId => Volatile.Read(ref _ownerThreadId);
 
-    public StorageOperationResult BindOrValidate()
+    public StorageOperationResult BindCurrentThread()
     {
         int current = Environment.CurrentManagedThreadId;
+        Interlocked.CompareExchange(ref _ownerThreadId, current, 0);
         int owner = Volatile.Read(ref _ownerThreadId);
-        if (owner == 0)
-        {
-            Interlocked.CompareExchange(ref _ownerThreadId, current, 0);
-            owner = Volatile.Read(ref _ownerThreadId);
-        }
         return owner == current
             ? StorageOperationResult.Accepted()
             : StorageOperationResult.Rejected(EcsErrorCodes.OwnerThreadViolation);
     }
 
-    public void Reset() => Volatile.Write(ref _ownerThreadId, 0);
+    public StorageOperationResult ValidateCurrentThread() =>
+        Volatile.Read(ref _ownerThreadId) == Environment.CurrentManagedThreadId
+            ? StorageOperationResult.Accepted()
+            : StorageOperationResult.Rejected(EcsErrorCodes.OwnerThreadViolation);
 }

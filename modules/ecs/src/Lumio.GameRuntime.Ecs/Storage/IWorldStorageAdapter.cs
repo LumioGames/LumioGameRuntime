@@ -2,7 +2,7 @@ using System;
 
 namespace Lumio.GameRuntime.Ecs;
 
-public readonly record struct QuerySpec(
+internal readonly record struct QuerySpec(
     ReadOnlyMemory<ComponentTypeId> Required,
     ReadOnlyMemory<ComponentTypeId> Excluded,
     ReadOnlyMemory<ComponentFieldId> ReadSet,
@@ -46,7 +46,7 @@ public readonly record struct QuerySpec(
 /// </summary>
 internal interface IWorldStorageAdapter : IDisposable
 {
-    StorageOperationResult Register(in GeneratedComponentSchemaView schema);
+    StorageOperationResult Register(ComponentTypeDefinition definition);
 
     StorageOperationResult Create(LocalEntityId entity, in ComponentInitBatch components);
 
@@ -72,7 +72,22 @@ internal interface IWorldStorageAdapter : IDisposable
         ComponentFieldId field,
         ReadOnlySpan<byte> canonicalValue);
 
-    StorageOperationResult CaptureReadSnapshot(out StorageReadSnapshotHandle handle);
+    StorageOperationResult CaptureReadSnapshot(
+        in StorageSnapshotContext context,
+        out StorageReadSnapshotHandle handle);
+
+    StorageOperationResult EnumerateSnapshotOrdered(
+        StorageReadSnapshotHandle handle,
+        Span<LocalEntityId> destination,
+        out int written);
+
+    StorageOperationResult ReadSnapshotField(
+        StorageReadSnapshotHandle handle,
+        LocalEntityId entity,
+        ComponentTypeId componentType,
+        ComponentFieldId field,
+        Span<byte> destination,
+        out int written);
 
     StorageOperationResult ReleaseReadSnapshot(StorageReadSnapshotHandle handle);
 

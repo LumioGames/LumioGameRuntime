@@ -30,7 +30,7 @@ public sealed class EntityGenerationPropertyTests
         Assert.True(slots.Retire(first));
 
         bool allocated = slots.TryAllocate(
-            new EntityTypeDefinition("Overflow"),
+            new EntityTypeHandle(new WorldId(1), 1U),
             EntityMode.Local,
             out _,
             out StorageOperationResult result);

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace Lumio.GameRuntime.Ecs;
 
@@ -15,7 +16,7 @@ public readonly record struct WorldId(ulong Value) : IComparable<WorldId>
     public override string ToString() => Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
 }
 
-public readonly record struct TickId(ulong Value) : IComparable<TickId>
+internal readonly record struct TickId(ulong Value) : IComparable<TickId>
 {
     public bool IsDefault => Value == 0UL;
     public int CompareTo(TickId other) => Value.CompareTo(other.Value);
@@ -28,13 +29,13 @@ public readonly record struct TickId(ulong Value) : IComparable<TickId>
     public override string ToString() => Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
 }
 
-public readonly record struct SnapshotId(ulong Value)
+internal readonly record struct SnapshotId(ulong Value)
 {
     public bool IsDefault => Value == 0UL;
     public static implicit operator SnapshotId(ulong value) => new(value);
 }
 
-public readonly record struct ProcessorId(ulong Value) : IComparable<ProcessorId>
+internal readonly record struct ProcessorId(ulong Value) : IComparable<ProcessorId>
 {
     public int CompareTo(ProcessorId other) => Value.CompareTo(other.Value);
     public static implicit operator ProcessorId(uint value) => new(value);
@@ -44,7 +45,7 @@ public readonly record struct ProcessorId(ulong Value) : IComparable<ProcessorId
     public static bool operator >=(ProcessorId left, ProcessorId right) => left.Value >= right.Value;
 }
 
-public readonly record struct ComponentTypeId(ulong Value) : IComparable<ComponentTypeId>
+internal readonly record struct ComponentTypeId(ulong Value) : IComparable<ComponentTypeId>
 {
     public bool IsDefault => Value == 0UL;
     public int CompareTo(ComponentTypeId other) => Value.CompareTo(other.Value);
@@ -57,7 +58,7 @@ public readonly record struct ComponentTypeId(ulong Value) : IComparable<Compone
     public override string ToString() => Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
 }
 
-public readonly record struct ComponentFieldId(ulong Value) : IComparable<ComponentFieldId>
+internal readonly record struct ComponentFieldId(ulong Value) : IComparable<ComponentFieldId>
 {
     public bool IsDefault => Value == 0UL;
     public int CompareTo(ComponentFieldId other) => Value.CompareTo(other.Value);
@@ -70,31 +71,43 @@ public readonly record struct ComponentFieldId(ulong Value) : IComparable<Compon
     public override string ToString() => Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
 }
 
-public readonly record struct SchemaEpoch(uint Value)
+internal readonly record struct Revision(ulong Value)
 {
-    public static implicit operator SchemaEpoch(uint value) => new(value);
-}
-
-public readonly record struct Revision(ulong Value)
-{
+    public bool IsDefault => Value == 0UL;
     public static implicit operator Revision(ulong value) => new(value);
 }
 
-public readonly record struct ErrorIdentity(string Code, int NumericCode = 0)
+public readonly record struct ErrorIdentity
 {
-    public override string ToString() => NumericCode == 0 ? Code : $"{Code}({NumericCode})";
+    public ErrorIdentity(string code)
+    {
+        if (string.IsNullOrWhiteSpace(code) || !EcsBoundaryErrors.IsGeneratedStableError(code))
+            throw new ArgumentOutOfRangeException(nameof(code), code, "Error identity must come from the generated stable error catalog.");
+        Code = code;
+    }
+
+    public string Code { get; }
+
+    public override string ToString() => Code ?? string.Empty;
 }
 
-public readonly record struct FailureContext(
+internal readonly record struct FailureContext(
     WorldId WorldId,
     TickId TickId,
+    ProcessorId? ProcessorId,
     LocalEntityId Entity,
     ComponentTypeId ComponentType,
     ComponentFieldId Field,
     string Operation,
+    string? EvidenceIdentity = null,
     string? Detail = null);
 
-public enum EntityMode
+internal readonly record struct EcsOperationEvidence(
+    TickId TickId,
+    ProcessorId? ProcessorId,
+    string? EvidenceIdentity);
+
+internal enum EntityMode
 {
     CrossServer,
     Local
@@ -123,7 +136,7 @@ public readonly record struct StorageOperationResult(StorageOperationStatus Stat
 {
     public bool IsSuccess => Status is StorageOperationStatus.Accepted or StorageOperationStatus.AlreadyApplied;
     public static StorageOperationResult Accepted() => new(StorageOperationStatus.Accepted);
-    public static StorageOperationResult Rejected(string code, int numericCode = 0) => new(StorageOperationStatus.Rejected, new ErrorIdentity(code, numericCode));
+    public static StorageOperationResult Rejected(string code) => new(StorageOperationStatus.Rejected, new ErrorIdentity(code));
     public static StorageOperationResult Retryable(string code) => new(StorageOperationStatus.Retryable, new ErrorIdentity(code));
     public static StorageOperationResult Fatal(string code) => new(StorageOperationStatus.Fatal, new ErrorIdentity(code));
 }
@@ -142,63 +155,66 @@ public readonly record struct EcsBudget(
     }
 }
 
-public readonly record struct QueryBudget(int MaxEntities, int MaxBytes)
+internal readonly record struct QueryBudget(int MaxEntities, int MaxBytes)
 {
     public static QueryBudget Default => new(65_536, 16 * 1024 * 1024);
     public bool IsValid => MaxEntities > 0 && MaxBytes > 0;
 }
 
-public readonly record struct StorageQueryHandle(uint Value);
-public readonly record struct StorageReadSnapshotHandle(ulong Value);
+internal readonly record struct StorageQueryHandle(uint Value);
 
-public readonly record struct ComponentInitValue(
+internal readonly record struct StorageSnapshotContext(
+    WorldId WorldId,
+    SnapshotId SnapshotId,
+    Revision Revision,
+    EcsWorld.EcsWorldContext? Origin = null)
+{
+    public bool IsValid => !WorldId.IsDefault && !SnapshotId.IsDefault && !Revision.IsDefault;
+}
+
+internal readonly record struct StorageReadSnapshotHandle(
+    ulong Value,
+    StorageSnapshotContext Context,
+    EcsWorld.EcsWorldContext? Origin = null)
+{
+    public bool IsDefault => Value == 0UL || !Context.IsValid;
+}
+
+internal readonly record struct ComponentInitValue(
     ComponentTypeId ComponentType,
     ComponentFieldId Field,
     ReadOnlyMemory<byte> CanonicalValue);
 
-public readonly record struct ComponentInitBatch(ReadOnlyMemory<ComponentInitValue> Values)
+internal readonly record struct ComponentInitBatch(
+    ReadOnlyMemory<ComponentTypeId> Components,
+    ReadOnlyMemory<ComponentInitValue> Values)
 {
-    public static ComponentInitBatch Empty => new(ReadOnlyMemory<ComponentInitValue>.Empty);
+    public ComponentInitBatch(ReadOnlyMemory<ComponentInitValue> values)
+        : this(InferComponents(values), values)
+    {
+    }
+
+    public static ComponentInitBatch Empty => new(
+        ReadOnlyMemory<ComponentTypeId>.Empty,
+        ReadOnlyMemory<ComponentInitValue>.Empty);
+
+    private static ReadOnlyMemory<ComponentTypeId> InferComponents(ReadOnlyMemory<ComponentInitValue> values)
+    {
+        var components = new List<ComponentTypeId>();
+        ReadOnlySpan<ComponentInitValue> span = values.Span;
+        for (int index = 0; index < span.Length; index++)
+        {
+            if (!components.Contains(span[index].ComponentType))
+                components.Add(span[index].ComponentType);
+        }
+        return components.ToArray();
+    }
 }
 
-public readonly record struct EntityDestroyResult(
+internal readonly record struct EntityDestroyResult(
     bool Destroyed,
     LocalEntityId Entity,
     StorageOperationResult Result)
 {
     public ErrorIdentity? Error => Result.Error;
 }
-
-public readonly record struct EntityReference(
-    LocalEntityId Local,
-    ulong NetworkId,
-    uint Generation,
-    ReferenceResolutionState State)
-{
-    public bool IsResolved => State == ReferenceResolutionState.Resolved;
-}
-
-public enum ReferenceResolutionState
-{
-    Unresolved,
-    Resolved,
-    Debt,
-    Tombstone,
-    Rejected
-}
-
-public enum ReferenceFallback
-{
-    KeepLastKnown,
-    DefaultValue,
-    Ignore,
-    Reject
-}
-
-public readonly record struct ReferenceResolution(
-    ReferenceResolutionState State,
-    LocalEntityId Entity,
-    ulong NetworkId,
-    uint Generation,
-    ReferenceFallback Fallback = ReferenceFallback.DefaultValue,
-    string? Reason = null);

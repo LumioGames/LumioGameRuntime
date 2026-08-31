@@ -13,7 +13,7 @@ internal sealed class EntitySlotTable
         public bool Active;
         public EntityLifecycleState State;
         public EntityMode Mode;
-        public EntityTypeDefinition? Type;
+        public EntityTypeHandle Type;
         public long CreationSequence;
     }
 
@@ -41,9 +41,14 @@ internal sealed class EntitySlotTable
     public int ActiveCount { get; private set; }
     public int Capacity => _capacity;
 
-    public bool TryAllocate(EntityTypeDefinition type, EntityMode mode, out LocalEntityId id, out StorageOperationResult result)
+    public bool TryAllocate(EntityTypeHandle type, EntityMode mode, out LocalEntityId id, out StorageOperationResult result)
     {
         id = default;
+        if (type.IsDefault)
+        {
+            result = StorageOperationResult.Rejected(EcsErrorCodes.InvalidType);
+            return false;
+        }
         if (ActiveCount >= _capacity)
         {
             result = StorageOperationResult.Rejected(EcsErrorCodes.CapacityExceeded);
@@ -91,10 +96,10 @@ internal sealed class EntitySlotTable
         return true;
     }
 
-    public bool TryResolve(LocalEntityId id, out EntityLifecycleState state, out EntityTypeDefinition? type, out long creationSequence)
+    public bool TryResolve(LocalEntityId id, out EntityLifecycleState state, out EntityTypeHandle type, out long creationSequence)
     {
         state = EntityLifecycleState.Destroyed;
-        type = null;
+        type = default;
         creationSequence = 0;
         if (id.Index == 0U || id.Index >= _slots.Count) return false;
         Slot slot = _slots[checked((int)id.Index)];
@@ -121,7 +126,7 @@ internal sealed class EntitySlotTable
         if (!slot.Active || slot.Generation != id.Generation) return false;
         slot.Active = false;
         slot.State = EntityLifecycleState.Tombstoned;
-        slot.Type = null;
+        slot.Type = default;
         ActiveCount--;
         _free.Enqueue(id.Index);
         return true;
@@ -129,7 +134,11 @@ internal sealed class EntitySlotTable
 
     internal LocalEntityId Allocate()
     {
-        if (!TryAllocate(new EntityTypeDefinition("Anonymous"), EntityMode.Local, out LocalEntityId id, out StorageOperationResult result))
+        if (!TryAllocate(
+                new EntityTypeHandle(new WorldId(ulong.MaxValue), 1U),
+                EntityMode.Local,
+                out LocalEntityId id,
+                out StorageOperationResult result))
             throw new InvalidOperationException(result.Error?.Code ?? EcsErrorCodes.InvalidState);
         return id;
     }
@@ -139,13 +148,13 @@ internal sealed class EntitySlotTable
     internal bool TryResolve(LocalEntityId id, out EntityLifecycleState state) =>
         TryResolve(id, out state, out _, out _);
 
-    public IEnumerable<(LocalEntityId Id, EntityTypeDefinition Type, EntityLifecycleState State, long CreationSequence)> EnumerateActiveOrdered()
+    public IEnumerable<(LocalEntityId Id, EntityTypeHandle Type, EntityLifecycleState State, long CreationSequence)> EnumerateActiveOrdered()
     {
-        var values = new List<(LocalEntityId, EntityTypeDefinition, EntityLifecycleState, long)>();
+        var values = new List<(LocalEntityId, EntityTypeHandle, EntityLifecycleState, long)>();
         for (uint index = 1; index < _slots.Count; index++)
         {
             Slot slot = _slots[checked((int)index)];
-            if (slot.Active && slot.Type is not null)
+            if (slot.Active && !slot.Type.IsDefault)
                 values.Add((new LocalEntityId(index, slot.Generation), slot.Type, slot.State, slot.CreationSequence));
         }
         values.Sort(static (a, b) => a.Item4.CompareTo(b.Item4));

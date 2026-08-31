@@ -11,7 +11,7 @@ public sealed class StorageAdapterConformanceTests
     [Fact]
     public void RegisterCreateReadWriteQueryDestroyAndIntegrityHaveStableResults()
     {
-        using var storage = new ReferenceWorldStorageAdapter(4);
+        using var storage = new ReferenceWorldStorageAdapter(new WorldId(500), 4);
         ComponentTypeDefinition component = PositionComponent();
         Assert.Equal(StorageOperationStatus.Accepted, Register(storage, component).Status);
 
@@ -53,23 +53,22 @@ public sealed class StorageAdapterConformanceTests
 
         Assert.Equal(StorageOperationStatus.Accepted, storage.Destroy(first).Status);
         Assert.Equal(StorageOperationStatus.Rejected, storage.Destroy(first).Status);
-        Assert.Equal(EcsErrorCodes.StaleEntity, storage.LastError?.Code);
+        Assert.Equal("InvalidHandle", storage.LastError?.Code);
         Assert.Equal(StorageOperationStatus.Accepted, storage.ValidateIntegrity().Status);
     }
 
     [Fact]
-    public void SchemaRegistrationIsAtomicAndDuplicateIdsAreRejected()
+    public void ComponentRegistrationRejectsDuplicatesWithoutBlockingOtherTypes()
     {
-        using var storage = new ReferenceWorldStorageAdapter(4);
+        using var storage = new ReferenceWorldStorageAdapter(new WorldId(501), 4);
         ComponentTypeDefinition first = PositionComponent();
         ComponentTypeDefinition second = new(
             new ComponentTypeId(11),
             "Velocity",
             new[] { new ComponentFieldDefinition(new ComponentFieldId(1), 4) });
-        var schema = new GeneratedComponentSchemaView(new SchemaEpoch(1), new[] { first, second });
-
-        Assert.Equal(StorageOperationStatus.Accepted, storage.Register(in schema).Status);
-        Assert.Equal(StorageOperationStatus.Rejected, storage.Register(in schema).Status);
+        Assert.Equal(StorageOperationStatus.Accepted, storage.Register(first).Status);
+        Assert.Equal(StorageOperationStatus.Accepted, storage.Register(second).Status);
+        Assert.Equal(StorageOperationStatus.Rejected, storage.Register(first).Status);
         Assert.Equal(EcsErrorCodes.DuplicateRegistration, storage.LastError?.Code);
         Assert.Equal(StorageOperationStatus.Accepted, Register(storage, new ComponentTypeDefinition(
             new ComponentTypeId(12), "Health", Array.Empty<ComponentFieldDefinition>())).Status);
@@ -78,7 +77,7 @@ public sealed class StorageAdapterConformanceTests
     [Fact]
     public void UnknownFieldsCapacityAndSnapshotReleaseAreExplicitlyRejected()
     {
-        using var storage = new ReferenceWorldStorageAdapter(1);
+        using var storage = new ReferenceWorldStorageAdapter(new WorldId(502), 1);
         ComponentTypeDefinition component = PositionComponent();
         Assert.Equal(StorageOperationStatus.Accepted, Register(storage, component).Status);
         LocalEntityId entity = new(1, 1);
@@ -90,10 +89,15 @@ public sealed class StorageAdapterConformanceTests
             entity, component.Id, new ComponentFieldId(99), new byte[4], out _).Status);
         Assert.Equal(EcsErrorCodes.UnknownField, storage.LastError?.Code);
 
-        Assert.Equal(StorageOperationStatus.Accepted, storage.CaptureReadSnapshot(out StorageReadSnapshotHandle handle).Status);
+        var snapshotContext = new StorageSnapshotContext(
+            new WorldId(502),
+            new SnapshotId(1),
+            new Revision(1));
+        Assert.Equal(StorageOperationStatus.Accepted,
+            storage.CaptureReadSnapshot(in snapshotContext, out StorageReadSnapshotHandle handle).Status);
         Assert.Equal(StorageOperationStatus.Accepted, storage.ReleaseReadSnapshot(handle).Status);
         Assert.Equal(StorageOperationStatus.Rejected, storage.ReleaseReadSnapshot(handle).Status);
-        Assert.Equal(EcsErrorCodes.SnapshotReleased, storage.LastError?.Code);
+        Assert.Equal("HandleDoubleRelease", storage.LastError?.Code);
 
         storage.Dispose();
         Assert.Equal(StorageOperationStatus.Rejected, storage.ValidateIntegrity().Status);
@@ -103,7 +107,7 @@ public sealed class StorageAdapterConformanceTests
     [Fact]
     public void QueryBudgetDoesNotReturnPartialResults()
     {
-        using var storage = new ReferenceWorldStorageAdapter(4);
+        using var storage = new ReferenceWorldStorageAdapter(new WorldId(503), 4);
         ComponentTypeDefinition component = PositionComponent();
         Register(storage, component);
         ComponentInitBatch initial = new(new[]
@@ -133,7 +137,7 @@ public sealed class StorageAdapterConformanceTests
     [Fact]
     public void WriteExistingFieldDoesNotCreateMissingComponent()
     {
-        using var storage = new ReferenceWorldStorageAdapter(4);
+        using var storage = new ReferenceWorldStorageAdapter(new WorldId(504), 4);
         ComponentTypeDefinition component = PositionComponent();
         Register(storage, component);
         LocalEntityId entity = new(1, 1);
@@ -161,7 +165,7 @@ public sealed class StorageAdapterConformanceTests
     [Fact]
     public void CompileQueryRejectsUnknownTypesAndFields()
     {
-        using var storage = new ReferenceWorldStorageAdapter(4);
+        using var storage = new ReferenceWorldStorageAdapter(new WorldId(505), 4);
         ComponentTypeDefinition component = PositionComponent();
         Register(storage, component);
 
@@ -187,7 +191,7 @@ public sealed class StorageAdapterConformanceTests
     [Fact]
     public void CompiledQueryOwnsItsSpecificationMemory()
     {
-        using var storage = new ReferenceWorldStorageAdapter(4);
+        using var storage = new ReferenceWorldStorageAdapter(new WorldId(506), 4);
         ComponentTypeDefinition component = PositionComponent();
         Register(storage, component);
         ComponentInitBatch initial = new(new[]
@@ -211,21 +215,16 @@ public sealed class StorageAdapterConformanceTests
     }
 
     [Fact]
-    public void GeneratedSchemaViewCannotBeMutatedThroughItsReadOnlyList()
+    public void ComponentDefinitionOwnsItsFieldDeclarationMemory()
     {
         ComponentTypeDefinition position = PositionComponent();
-        ComponentTypeDefinition velocity = new(
-            new ComponentTypeId(11),
-            "Velocity",
-            Array.Empty<ComponentFieldDefinition>());
-        var supplied = new[] { position, velocity };
-        var schema = new GeneratedComponentSchemaView(new SchemaEpoch(1), supplied);
+        var replacement = new ComponentFieldDefinition(new ComponentFieldId(2), 8);
+        var supplied = new[] { new ComponentFieldDefinition(new ComponentFieldId(1), 4), replacement };
+        var component = new ComponentTypeDefinition(new ComponentTypeId(11), "Velocity", supplied);
 
-        supplied[0] = velocity;
-        Assert.Throws<NotSupportedException>(() =>
-            ((IList<ComponentTypeDefinition>)schema.Components)[0] = velocity);
+        supplied[0] = replacement;
 
-        Assert.Equal(position, schema.Components[0]);
+        Assert.Equal(new ComponentFieldId(1), component.Fields.Span[0].Id);
     }
 
     private static ComponentTypeDefinition PositionComponent() => new(
@@ -237,7 +236,6 @@ public sealed class StorageAdapterConformanceTests
         ReferenceWorldStorageAdapter storage,
         ComponentTypeDefinition component)
     {
-        GeneratedComponentSchemaView schema = new(new SchemaEpoch(1), new[] { component });
-        return storage.Register(in schema);
+        return storage.Register(component);
     }
 }
