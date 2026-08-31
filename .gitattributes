@@ -3,3 +3,4 @@
 *.sha256 text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf
+src/Lumio.GameRuntime.GeneratedContracts/Generated/** text eol=lf

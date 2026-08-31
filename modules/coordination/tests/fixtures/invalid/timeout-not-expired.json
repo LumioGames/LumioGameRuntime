@@ -1,0 +1,28 @@
+{
+  "fixtureVersion": 2,
+  "fixtureId": "timeout-negative",
+  "case": "timeout",
+  "gameReleaseId": "runtime",
+  "sessionId": "session",
+  "txnId": "fixture-timeout-not-expired",
+  "commandId": "command-timeout-not-expired",
+  "tickId": 10,
+  "deadlineTick": 11,
+  "requestDigest": "a805a90a404c21db9da7e6982aa5b8727ab5561420992eee8153aca81a794dae",
+  "expectedRevision": {
+    "tickId": 1,
+    "gameRevision": 1,
+    "voxelWorldRevision": 1,
+    "chunkRevisionSet": {},
+    "replicationRevision": 1,
+    "configRevision": 1,
+    "schemaEpoch": 1,
+    "canonicalDigest": "c1fdfcb726e471de7683dba38b229a0877b8f32a08ce6059da09679925906540"
+  },
+  "expectedRevisionDigest": "c1fdfcb726e471de7683dba38b229a0877b8f32a08ce6059da09679925906540",
+  "identityCanonicalHex": "010000000773657373696f6e0000000772756e74696d650000001b666978747572652d74696d656f75742d6e6f742d657870697265640000001b636f6d6d616e642d74696d656f75742d6e6f742d65787069726564000000000000000a00000040613830356139306134303463323164623964613765363938326161356238373237616235353631343230393932656565383135336163613831613739346461650000004063316664666362373236653437316465373638336462613338623232396130383737623866333261303863653630353964613039363739393235393036353430",
+  "identityDigest": "ccf511466093837bbbfbfdd093d9fd3444e2d023afbf6ebe9d5d167f28fcf803",
+  "expectedStatus": "Prepared",
+  "expectedErrorId": null,
+  "forbiddenStatus": "Rejected"
+}

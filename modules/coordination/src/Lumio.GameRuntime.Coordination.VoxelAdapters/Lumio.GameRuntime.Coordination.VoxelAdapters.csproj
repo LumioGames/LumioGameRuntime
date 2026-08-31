@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RuntimeProductionProject>true</RuntimeProductionProject>
+    <TargetFrameworks>net10.0;netstandard2.1</TargetFrameworks>
+    <AssemblyName>Lumio.GameRuntime.Coordination.VoxelAdapters</AssemblyName>
+    <RootNamespace>Lumio.GameRuntime.Coordination.VoxelAdapters</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Lumio.GameRuntime.Coordination/Lumio.GameRuntime.Coordination.csproj" />
+    <ProjectReference Include="../../../../src/Lumio.GameRuntime.GeneratedContracts/Lumio.GameRuntime.GeneratedContracts.csproj" />
+    <Compile Include="../../../../src/Lumio.GameRuntime.GeneratedContracts/Generated/Compatibility/IsExternalInit.cs" Link="Compatibility/IsExternalInit.cs" />
+  </ItemGroup>
+</Project>

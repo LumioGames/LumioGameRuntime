@@ -1,0 +1,28 @@
+{
+  "fixtureVersion": 2,
+  "fixtureId": "duplicate-negative",
+  "case": "duplicate",
+  "gameReleaseId": "runtime",
+  "sessionId": "session",
+  "txnId": "fixture-duplicate-conflict",
+  "commandId": "command-duplicate-conflict",
+  "tickId": 1,
+  "firstDigest": "2013b6c1dee602db6b55973dde708d4110b0e81348bae28cae10ef0201f85bb7",
+  "replayDigest": "3c06ed61d2cd175df92af92790f4beedfd68e703b4c2fe63f0fa04d30808938a",
+  "expectedRevision": {
+    "tickId": 1,
+    "gameRevision": 1,
+    "voxelWorldRevision": 1,
+    "chunkRevisionSet": {},
+    "replicationRevision": 1,
+    "configRevision": 1,
+    "schemaEpoch": 1,
+    "canonicalDigest": "c1fdfcb726e471de7683dba38b229a0877b8f32a08ce6059da09679925906540"
+  },
+  "expectedRevisionDigest": "c1fdfcb726e471de7683dba38b229a0877b8f32a08ce6059da09679925906540",
+  "identityCanonicalHex": "010000000773657373696f6e0000000772756e74696d650000001a666978747572652d6475706c69636174652d636f6e666c6963740000001a636f6d6d616e642d6475706c69636174652d636f6e666c696374000000000000000100000040323031336236633164656536303264623662353539373364646537303864343131306230653831333438626165323863616531306566303230316638356262370000004063316664666362373236653437316465373638336462613338623232396130383737623866333261303863653630353964613039363739393235393036353430",
+  "identityDigest": "b0a5091f5c93b8244ff5cf4ccb5fccf8ab5848022a5f3c2d5448d068a80e2e32",
+  "replayIdentityDigest": "264d62d267991d710b414db42332df66a976b45ff56df17c148f21a6563d7eda",
+  "expectedStatus": "Conflict",
+  "expectedErrorId": "InvalidArgument"
+}
