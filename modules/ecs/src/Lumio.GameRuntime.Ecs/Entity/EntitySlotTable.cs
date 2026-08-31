@@ -22,16 +22,16 @@ internal sealed class EntitySlotTable
     private readonly int _capacity;
     private long _creationSequence;
 
-    public EntitySlotTable(int capacity)
-        : this(capacity, 1U)
+    public EntitySlotTable(int maxSlots)
+        : this(maxSlots, 1U)
     {
     }
 
-    internal EntitySlotTable(int capacity, uint initialGeneration)
+    internal EntitySlotTable(int maxSlots, uint initialGeneration)
     {
-        if (capacity <= 0) throw new ArgumentOutOfRangeException(nameof(capacity));
+        if (maxSlots <= 0) throw new ArgumentOutOfRangeException(nameof(maxSlots));
         if (initialGeneration == 0U) throw new ArgumentOutOfRangeException(nameof(initialGeneration));
-        _capacity = capacity;
+        _capacity = maxSlots;
         _slots.Add(new Slot { Generation = initialGeneration == 1U ? 0U : initialGeneration, Active = false, State = EntityLifecycleState.Destroyed });
         _initialGeneration = initialGeneration;
     }
