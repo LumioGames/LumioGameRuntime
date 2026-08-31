@@ -2,12 +2,6 @@
   "version": 2,
   "dependencies": {
     ".NETStandard,Version=v2.1": {
-      "System.Threading.Channels": {
-        "type": "Direct",
-        "requested": "[10.0.0, )",
-        "resolved": "10.0.0",
-        "contentHash": "fwRdkJpKisUEVNaEdsL5w5EwidzuVw0BOTfzDvYB1Yg8sq1pqNfUZxBOVFgSj6i6tNhpT3HP8BEDXf1+kFkTDA=="
-      },
       "lumio.gameruntime.generatedcontracts": {
         "type": "Project"
       }
