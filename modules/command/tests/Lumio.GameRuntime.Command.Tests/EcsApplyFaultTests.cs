@@ -12,10 +12,13 @@ public sealed class EcsApplyFaultTests
         buffer.Writer.Destroy("entity-a");
         PreparedGameDelta prepared = new CommandPreflightValidator().Prepare(new CommandBufferMerger().Merge(1UL, new[] { buffer.Seal() }));
         var executor = new EcsCommandCommitExecutor(new FaultPort());
-        CommandApplyReceipt result = executor.Apply(prepared);
+        CommandModule module = CommandModule.Create(executor: executor);
+        Assert.True(module.Configure().Succeeded);
+        Assert.True(module.Start().Succeeded);
+        CommandApplyReceipt result = module.Apply(prepared);
         Assert.Equal(CommandApplyStatus.InfrastructureFault, result.Status);
         Assert.True(executor.IsFaulted);
-        Assert.Equal(result.Status, executor.Apply(prepared).Status);
+        Assert.Equal(result.Status, module.Apply(prepared).Status);
     }
 
     private sealed class FaultPort : IEcsCommandCommitPort

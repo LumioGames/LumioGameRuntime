@@ -25,7 +25,7 @@ public sealed class TxnIdempotencyIndex
     private readonly object _gate = new();
     private readonly int _capacity;
     private readonly Dictionary<string, TxnRecord> _records = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, string> _digests = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _identityDigests = new(StringComparer.Ordinal);
 
     public TxnIdempotencyIndex(int capacity = 4096)
     {
@@ -53,7 +53,8 @@ public sealed class TxnIdempotencyIndex
         {
             if (_records.TryGetValue(record.TxnId, out TxnRecord? existing))
             {
-                if (string.Equals(_digests[record.TxnId], record.RequestDigest, StringComparison.Ordinal))
+                string identityDigest = TxnIdentity.From(record).DigestHex;
+                if (string.Equals(_identityDigests[record.TxnId], identityDigest, StringComparison.Ordinal))
                     return new TxnLookupResult(TxnLookupStatus.Duplicate, existing, null);
                 return new TxnLookupResult(
                     TxnLookupStatus.Conflict,
@@ -70,7 +71,7 @@ public sealed class TxnIdempotencyIndex
             }
 
             _records.Add(record.TxnId, record);
-            _digests.Add(record.TxnId, record.RequestDigest);
+            _identityDigests.Add(record.TxnId, TxnIdentity.From(record).DigestHex);
             return new TxnLookupResult(TxnLookupStatus.New, record, null);
         }
     }
@@ -93,7 +94,7 @@ public sealed class TxnIdempotencyIndex
         lock (_gate)
         {
             if (!_records.TryGetValue(txnId, out TxnRecord? record)) return new TxnLookupResult(TxnLookupStatus.New, null, null);
-            return string.Equals(_digests[txnId], requestDigest, StringComparison.Ordinal)
+            return string.Equals(record.RequestDigest, requestDigest, StringComparison.Ordinal)
                 ? new TxnLookupResult(TxnLookupStatus.Duplicate, record, null)
                 : new TxnLookupResult(TxnLookupStatus.Conflict, record,
                     CoordinationFailure.Fatal("InvalidArgument", "A transaction ID was reused with a different request digest."));

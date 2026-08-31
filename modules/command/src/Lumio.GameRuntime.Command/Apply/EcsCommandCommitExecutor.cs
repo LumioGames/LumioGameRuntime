@@ -17,7 +17,7 @@ public sealed class EcsCommandCommitExecutor
 
     public EcsCommandCommitExecutor(IEcsCommandCommitPort? port = null, Action<string>? faultSink = null)
     {
-        _port = port ?? new NoOpEcsCommandCommitPort();
+        _port = port ?? new FailClosedEcsCommandCommitPort();
         _faultSink = faultSink;
     }
 
@@ -26,8 +26,13 @@ public sealed class EcsCommandCommitExecutor
         get { lock (_gate) return _faulted; }
     }
 
-    public CommandApplyReceipt Apply(PreparedGameDelta prepared)
+    internal CommandApplyReceipt Apply(
+        PreparedGameDelta prepared,
+        CommandOperationLease operation,
+        CommandModule owner)
     {
+        if (operation is null || owner is null || !operation.PermitsApply(owner))
+            return FaultReceipt(prepared?.TickId ?? 0UL, prepared?.CanonicalDigest ?? Array.Empty<byte>(), "InvalidArgument");
         lock (_applyGate)
         {
             return ApplyCore(prepared);
@@ -117,8 +122,6 @@ public sealed class EcsCommandCommitExecutor
         }
     }
 
-    public CommandApplyReceipt Commit(PreparedGameDelta prepared) => Apply(prepared);
-
     private CommandApplyReceipt FaultReceipt(ulong tickId, ReadOnlyMemory<byte> digest, string errorId) =>
         FaultReceipt(string.Concat(tickId.ToString(System.Globalization.CultureInfo.InvariantCulture), ":", CommandHashing.ToHex(digest.ToArray())), tickId, digest, errorId);
 
@@ -158,8 +161,9 @@ public sealed class EcsCommandCommitExecutor
         return receipt;
     }
 
-    private sealed class NoOpEcsCommandCommitPort : IEcsCommandCommitPort
+    private sealed class FailClosedEcsCommandCommitPort : IEcsCommandCommitPort
     {
-        public EcsCommandPortResult Apply(Command command, string? resolvedEntityId) => EcsCommandPortResult.Applied();
+        public EcsCommandPortResult Apply(Command command, string? resolvedEntityId) =>
+            EcsCommandPortResult.Fault("CapabilityMissing");
     }
 }

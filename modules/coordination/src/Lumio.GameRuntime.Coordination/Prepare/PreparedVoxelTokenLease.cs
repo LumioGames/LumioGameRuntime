@@ -2,7 +2,7 @@ using System;
 
 namespace Lumio.GameRuntime.Coordination;
 
-public sealed class PreparedVoxelTokenLease : IDisposable
+internal sealed class PreparedVoxelTokenLease : IDisposable
 {
     private readonly ReservationLease _lease;
 
@@ -21,6 +21,8 @@ public sealed class PreparedVoxelTokenLease : IDisposable
     public ReservationLeaseState State => _lease.State;
 
     public int ReleaseCount => _lease.ReleaseCount;
+
+    public Exception? ReleaseFailure => _lease.ReleaseFailure;
 
     public bool Release() => _lease.Release();
 

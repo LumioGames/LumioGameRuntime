@@ -58,8 +58,8 @@ public sealed class PrepareNoSideEffectTests
         TxnPrepareResult[] results = await Task.WhenAll(
             Enumerable.Range(0, 8).Select(_ => Task.Run(() => coordinator.Prepare(request))));
 
-        Assert.All(results, result => Assert.True(result.IsPrepared));
-        Assert.Single(results.Select(result => result.Prepared).Distinct());
+        Assert.All(results, result => Assert.True(result.IsPrepared || result.Status == TxnPrepareStatus.Retryable));
+        Assert.Single(results.Where(result => result.IsPrepared).Select(result => result.Prepared).Distinct());
         Assert.Equal(1, game.Calls);
         Assert.Equal(1, voxel.PrepareCalls);
     }
@@ -99,7 +99,7 @@ public sealed class PrepareNoSideEffectTests
     }
 
     internal static SessionRevisionVectorView Vector(ulong revision) =>
-        new(1UL, revision, revision, new Dictionary<string, ulong>(), revision, 1UL, 1UL);
+        new(revision, revision, revision, new Dictionary<string, ulong>(), revision, 1UL, 1UL);
 
     private sealed class CountingGamePort : IGameReservationPort
     {

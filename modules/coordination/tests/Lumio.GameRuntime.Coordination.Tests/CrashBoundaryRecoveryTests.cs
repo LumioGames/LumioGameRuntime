@@ -11,7 +11,12 @@ public sealed class CrashBoundaryRecoveryTests
     public void RecoveryNeverGuessesUnavailableParticipant()
     {
         TxnRecord record = IntentRecord("txn-unknown");
-        TxnRecoveryResult result = new TxnRecoveryResolver().Recover(record, new QueryPort(false));
+        var journal = new InMemoryTxnJournalPort();
+        TxnAuthorityTestData.AppendIntent(journal, record);
+        TxnRecoveryResult result = new TxnRecoveryResolver(
+            journal,
+            new SessionRevisionVectorStore(record.ExpectedRevision),
+            new InMemoryTxnResultEvidencePort()).Recover(record, new QueryPort(false));
         Assert.Equal(TxnCommitStatus.Indeterminate, result.Status);
         Assert.Contains(TxnParticipantState.Unknown, new[] { result.VoxelParticipant, result.EcsParticipant });
     }
@@ -20,7 +25,16 @@ public sealed class CrashBoundaryRecoveryTests
     public void RecoveryConvergesOnlyAfterBothParticipantsProveApplied()
     {
         TxnRecord record = IntentRecord("txn-applied");
-        TxnRecoveryResult result = new TxnRecoveryResolver().Recover(record, new QueryPort(true));
+        SessionRevisionVectorView revision = PrepareNoSideEffectTests.Vector(2UL);
+        var revisions = new SessionRevisionVectorStore(PrepareNoSideEffectTests.Vector(1UL));
+        var journal = new InMemoryTxnJournalPort();
+        TxnAuthorityTestData.AppendIntent(journal, record);
+        var evidence = new InMemoryTxnResultEvidencePort();
+        TxnResultEvidence row = new(record.SessionId, record.TxnId, record.CommandId, record.TickId,
+            record.RequestDigest, record.ExpectedRevision, revision);
+        Assert.True(evidence.Write(in row).IsDurable);
+        TxnRecoveryResult result = new TxnRecoveryResolver(journal, revisions, evidence)
+            .Recover(record, new QueryPort(true, revision));
         Assert.Equal(TxnCommitStatus.Committed, result.Status);
         Assert.Equal(CrossWorldTxnState.Committed, record.State);
     }
@@ -31,16 +45,17 @@ public sealed class CrashBoundaryRecoveryTests
         TxnRecord record = new("session", "txn-marker", 2UL, "command",
             PrepareNoSideEffectTests.Vector(1UL), 10UL, "digest");
         var journal = new InMemoryTxnJournalPort(4);
-        TxnJournalRecord marker = TxnJournalRecordFactory.Create(
-            "session", "runtime", 2UL, "txn-marker",
-            TxnJournalRecordRecordKind.Committed, "txn-marker:committed",
-            TxnJournalRecordCommitState.Committed,
-            TxnJournalRecordDurabilityState.Durable,
-            "command");
-        journal.Append(in marker);
 
-        TxnRecoveryResult result = new TxnRecoveryResolver(journal)
-            .Recover(record, new QueryPort(false));
+        SessionRevisionVectorView revision = PrepareNoSideEffectTests.Vector(2UL);
+        var revisions = new SessionRevisionVectorStore(PrepareNoSideEffectTests.Vector(1UL));
+        var evidence = new InMemoryTxnResultEvidencePort();
+        TxnResultEvidence resultEvidence = new(
+            record.SessionId, record.TxnId, record.CommandId, record.TickId,
+            record.RequestDigest, record.ExpectedRevision, revision);
+        Assert.True(evidence.Write(in resultEvidence).IsDurable);
+        TxnAuthorityTestData.AppendCommittedCertificate(journal, record, resultEvidence);
+        TxnRecoveryResult result = new TxnRecoveryResolver(journal, revisions, evidence)
+            .Recover(record, new QueryPort(true, revision));
 
         Assert.Equal(TxnCommitStatus.Committed, result.Status);
         Assert.Equal(CrossWorldTxnState.Committed, record.State);
@@ -54,7 +69,10 @@ public sealed class CrashBoundaryRecoveryTests
         TxnRecord record = new("session", "txn-journal-fatal", 2UL, "command",
             PrepareNoSideEffectTests.Vector(1UL), 10UL, "digest");
 
-        TxnRecoveryResult result = new TxnRecoveryResolver(new FatalJournal())
+        TxnRecoveryResult result = new TxnRecoveryResolver(
+            new FatalJournal(),
+            new SessionRevisionVectorStore(record.ExpectedRevision),
+            new InMemoryTxnResultEvidencePort())
             .Recover(record, new QueryPort(false));
 
         Assert.Equal(TxnCommitStatus.Fatal, result.Status);
@@ -69,11 +87,16 @@ public sealed class CrashBoundaryRecoveryTests
             new Dictionary<string, ulong>(), 2UL, 1UL, 2UL);
         var queries = new QueryPort(true, incompatible);
         var revisions = new SessionRevisionVectorStore(PrepareNoSideEffectTests.Vector(1UL));
+        var journal = new InMemoryTxnJournalPort();
+        TxnAuthorityTestData.AppendIntent(journal, record);
 
-        TxnRecoveryResult result = new TxnRecoveryResolver(revisions: revisions).Recover(record, queries);
+        TxnRecoveryResult result = new TxnRecoveryResolver(
+            journal,
+            revisions,
+            new InMemoryTxnResultEvidencePort()).Recover(record, queries);
 
         Assert.Equal(TxnCommitStatus.Fatal, result.Status);
-        Assert.Equal(CrossWorldTxnState.Indeterminate, record.State);
+        Assert.Equal(CrossWorldTxnState.CommitIntent, record.State);
         Assert.Equal(1UL, revisions.Read().SchemaEpoch);
     }
 
@@ -83,7 +106,7 @@ public sealed class CrashBoundaryRecoveryTests
         var record = new TxnRecord("session", txnId, 2UL, "command", PrepareNoSideEffectTests.Vector(1UL), 10UL, "digest");
         record.AttachPreparedDelta(delta, "voxel-token");
         record.TryTransition(CrossWorldTxnState.Prepared);
-        record.TryTransition(CrossWorldTxnState.CommitIntent);
+        TxnAuthorityTestData.MarkIntent(record);
         return record;
     }
 

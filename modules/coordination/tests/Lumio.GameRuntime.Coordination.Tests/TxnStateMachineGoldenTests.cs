@@ -14,8 +14,11 @@ public sealed class TxnStateMachineGoldenTests
     {
         TxnRecord happy = Record("txn-happy");
         Assert.True(happy.TryTransition(CrossWorldTxnState.Prepared).Succeeded);
-        Assert.True(happy.TryTransition(CrossWorldTxnState.CommitIntent).Succeeded);
-        Assert.True(happy.TryTransition(CrossWorldTxnState.Committed).Succeeded);
+        Assert.Equal("CapabilityMissing",
+            happy.TryTransition(CrossWorldTxnState.CommitIntent).Failure?.GeneratedErrorId);
+        TxnAuthorityTestData.MarkIntent(happy);
+        Assert.Equal("CapabilityMissing",
+            happy.TryTransition(CrossWorldTxnState.Committed).Failure?.GeneratedErrorId);
         Assert.False(happy.TryTransition(CrossWorldTxnState.Prepared).Succeeded);
 
         TxnRecord invalid = Record("txn-invalid");

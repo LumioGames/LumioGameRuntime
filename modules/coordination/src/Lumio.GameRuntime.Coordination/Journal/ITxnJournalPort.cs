@@ -19,7 +19,9 @@ public readonly record struct TxnJournalAppendResult(
     TxnJournalAppendStatus Status,
     ulong RecordSequence,
     bool AlreadyPresent,
-    string? GeneratedErrorId)
+    string? GeneratedErrorId,
+    string? RecordChecksum = null,
+    string? PreviousHash = null)
 {
     public bool IsDurable => Status == TxnJournalAppendStatus.Durable;
 }
@@ -40,24 +42,35 @@ public readonly record struct TxnJournalQueryResult(
     public bool IsFound => Status == TxnJournalQueryStatus.Found;
 }
 
+public enum TxnJournalTailStatus
+{
+    Available,
+    Retryable,
+    Fatal
+}
+
+public readonly record struct TxnJournalTailResult(
+    TxnJournalTailStatus Status,
+    ulong RecordSequence,
+    string? Checksum,
+    string? GeneratedErrorId)
+{
+    public bool IsAvailable => Status == TxnJournalTailStatus.Available && Checksum is not null;
+}
+
 /// <summary>Durable journal boundary owned by the caller (normally Persistence).</summary>
 public interface ITxnJournalPort
 {
     TxnJournalAppendResult Append(in TxnJournalRecord record);
 
     TxnJournalQueryResult Query(string sessionId, string txnId);
+
+    TxnJournalTailResult ReadTail() =>
+        new(TxnJournalTailStatus.Fatal, 0UL, null, "CapabilityMissing");
 }
 
-// Optional capability used by the coordinator to continue a chain after a
-// process-local restart. It is deliberately internal; persistence owns the
-// durable storage contract exposed above.
-internal interface ITxnJournalChainTail
-{
-    bool TryGetTail(out ulong recordSequence, out string checksum);
-}
-
-/// <summary>Small bounded in-memory journal useful for a host adapter and deterministic tests.</summary>
-public sealed class InMemoryTxnJournalPort : ITxnJournalPort, ITxnJournalChainTail
+/// <summary>Small bounded reference journal for deterministic tests; it is never a production default.</summary>
+public sealed class InMemoryTxnJournalPort : ITxnJournalPort
 {
     private readonly object _gate = new();
     private readonly int _capacity;
@@ -116,7 +129,16 @@ public sealed class InMemoryTxnJournalPort : ITxnJournalPort, ITxnJournalChainTa
                     }
                 }
 
-                return new TxnJournalAppendResult(TxnJournalAppendStatus.Durable, existing, true, null);
+                string idempotencyKey = record.IdempotencyKey;
+                TxnJournalRecord existingRecord = _records.Find(item =>
+                    string.Equals(item.IdempotencyKey, idempotencyKey, StringComparison.Ordinal))!;
+                return new TxnJournalAppendResult(
+                    TxnJournalAppendStatus.Durable,
+                    existing,
+                    true,
+                    null,
+                    existingRecord.Checksum,
+                    existingRecord.PreviousHash);
             }
             if (_records.Count >= _capacity)
                 return new TxnJournalAppendResult(TxnJournalAppendStatus.Backpressured, 0UL, false, "QueueFull");
@@ -132,6 +154,12 @@ public sealed class InMemoryTxnJournalPort : ITxnJournalPort, ITxnJournalChainTa
             ulong sequence = record.RecordSeq == 0UL ? expectedSequence : record.RecordSeq;
             if (sequence != expectedSequence)
             {
+                if (sequence < expectedSequence)
+                    return new TxnJournalAppendResult(
+                        TxnJournalAppendStatus.Backpressured,
+                        0UL,
+                        false,
+                        "RevisionConflict");
                 _fatal = true;
                 return new TxnJournalAppendResult(TxnJournalAppendStatus.Fatal, 0UL, false, "InternalInvariant");
             }
@@ -179,7 +207,13 @@ public sealed class InMemoryTxnJournalPort : ITxnJournalPort, ITxnJournalChainTa
             _nextSequence = sequence;
             _records.Add(normalized);
             _keys.Add(normalized.IdempotencyKey, sequence);
-            return new TxnJournalAppendResult(TxnJournalAppendStatus.Durable, sequence, false, null);
+            return new TxnJournalAppendResult(
+                TxnJournalAppendStatus.Durable,
+                sequence,
+                false,
+                null,
+                normalized.Checksum,
+                normalized.PreviousHash);
         }
     }
 
@@ -206,21 +240,27 @@ public sealed class InMemoryTxnJournalPort : ITxnJournalPort, ITxnJournalChainTa
 
     public void SetFatal() { lock (_gate) _fatal = true; }
 
-    bool ITxnJournalChainTail.TryGetTail(out ulong recordSequence, out string checksum)
+    public TxnJournalTailResult ReadTail()
     {
         lock (_gate)
         {
+            if (_fatal)
+                return new TxnJournalTailResult(TxnJournalTailStatus.Fatal, 0UL, null, "PanicBoundary");
             if (_records.Count == 0)
             {
-                recordSequence = 0UL;
-                checksum = new string('0', 64);
-                return true;
+                return new TxnJournalTailResult(
+                    TxnJournalTailStatus.Available,
+                    0UL,
+                    new string('0', 64),
+                    null);
             }
 
             TxnJournalRecord tail = _records[_records.Count - 1];
-            recordSequence = tail.RecordSeq;
-            checksum = tail.Checksum;
-            return true;
+            return new TxnJournalTailResult(
+                TxnJournalTailStatus.Available,
+                tail.RecordSeq,
+                tail.Checksum,
+                null);
         }
     }
 

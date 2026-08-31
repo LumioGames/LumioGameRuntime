@@ -15,7 +15,7 @@ public sealed class DeferredTokenGoldenTests
 
         Assert.NotEqual(first, secondProcessor);
         Assert.NotEqual(first, nextTick);
-        Assert.Equal("12:processor-a:1", first.CanonicalKey);
+        Assert.Equal("12:default:processor-a:0:1", first.CanonicalKey);
 
         var map = new DeferredEntityMap(12UL);
         Assert.True(map.TryAdd(first, "local-entity-1", out _));
@@ -43,5 +43,40 @@ public sealed class DeferredTokenGoldenTests
         DeferredEntityToken token = source.Writer.AllocateDeferredEntity();
         var target = new ProcessorCommandBuffer(3UL, "world-b", "processor-b", ProcessorDescriptorPhase.ProcessorPlan);
         Assert.Equal(CommandAppendStatus.Rejected, target.Writer.Write(token, "avatar", "health").Status);
+    }
+
+    [Fact]
+    public void CanonicalIdentityIncludesWorldAndBufferGeneration()
+    {
+        var worldA = new DeferredEntityToken(3UL, "world-a", "processor-a", 1UL, 1UL);
+        var worldB = new DeferredEntityToken(3UL, "world-b", "processor-a", 1UL, 1UL);
+        var nextGeneration = new DeferredEntityToken(3UL, "world-a", "processor-a", 2UL, 1UL);
+
+        Assert.NotEqual(worldA.CanonicalKey, worldB.CanonicalKey);
+        Assert.NotEqual(worldA.CanonicalKey, nextGeneration.CanonicalKey);
+
+        Command first = StructuralCommand.Write(
+            new CommandSortKey(ProcessorDescriptorPhase.ProcessorPlan, "processor-a", 1UL),
+            worldA, "avatar", "health");
+        Command second = StructuralCommand.Write(
+            new CommandSortKey(ProcessorDescriptorPhase.ProcessorPlan, "processor-a", 1UL),
+            worldB, "avatar", "health");
+        Command third = StructuralCommand.Write(
+            new CommandSortKey(ProcessorDescriptorPhase.ProcessorPlan, "processor-a", 1UL),
+            nextGeneration, "avatar", "health");
+
+        Assert.NotEqual(first.CanonicalDigestHex, second.CanonicalDigestHex);
+        Assert.NotEqual(first.CanonicalDigestHex, third.CanonicalDigestHex);
+    }
+
+    [Fact]
+    public void CanonicalIdentityEscapesDelimiterBearingIdentifiers()
+    {
+        var first = new DeferredEntityToken(3UL, "world:a", "processor", 1UL, 1UL);
+        var second = new DeferredEntityToken(3UL, "world", "a:processor", 1UL, 1UL);
+
+        Assert.NotEqual(first, second);
+        Assert.NotEqual(first.CanonicalKey, second.CanonicalKey);
+        Assert.NotEqual(first.CanonicalBytes.ToArray(), second.CanonicalBytes.ToArray());
     }
 }

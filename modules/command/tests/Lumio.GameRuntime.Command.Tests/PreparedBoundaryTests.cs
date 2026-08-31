@@ -27,9 +27,9 @@ public sealed class PreparedBoundaryTests
         buffer.Writer.Destroy("entity-a");
         MergedCommandBatch merged = new CommandBufferMerger().Merge(2UL, new[] { buffer.Seal() });
         PreparedGameDelta prepared = new CommandPreflightValidator().Prepare(merged);
-        var executor = new EcsCommandCommitExecutor();
-        CommandApplyReceipt first = executor.Apply(prepared);
-        CommandApplyReceipt second = executor.Apply(prepared);
+        CommandModule module = RunningModule(new AppliedPort());
+        CommandApplyReceipt first = module.Apply(prepared);
+        CommandApplyReceipt second = module.Apply(prepared);
         Assert.Equal(CommandApplyStatus.Applied, first.Status);
         Assert.Equal(CommandApplyStatus.AlreadyApplied, second.Status);
         Assert.Equal(first.CanonicalDigest.ToArray(), second.CanonicalDigest.ToArray());
@@ -44,7 +44,7 @@ public sealed class PreparedBoundaryTests
         buffer.Writer.Destroy(token);
         PreparedGameDelta prepared = new CommandPreflightValidator().Prepare(new CommandBufferMerger().Merge(5UL, new[] { buffer.Seal() }));
         var port = new CapturingPort();
-        CommandApplyReceipt receipt = new EcsCommandCommitExecutor(port).Apply(prepared);
+        CommandApplyReceipt receipt = RunningModule(port).Apply(prepared);
         Assert.Equal(CommandApplyStatus.Applied, receipt.Status);
         Assert.Equal(3, port.Calls);
         Assert.All(port.ResolvedTargets, target => Assert.True(target is null || target == "entity-created"));
@@ -65,5 +65,18 @@ public sealed class PreparedBoundaryTests
             ResolvedTargets.Add(resolvedEntityId);
             return command.Kind == CommandKind.Create ? EcsCommandPortResult.Applied("entity-created") : EcsCommandPortResult.Applied();
         }
+    }
+
+    private sealed class AppliedPort : IEcsCommandCommitPort
+    {
+        public EcsCommandPortResult Apply(Command command, string? resolvedEntityId) => EcsCommandPortResult.Applied();
+    }
+
+    private static CommandModule RunningModule(IEcsCommandCommitPort port)
+    {
+        CommandModule module = CommandModule.Create(executor: new EcsCommandCommitExecutor(port));
+        Assert.True(module.Configure().Succeeded);
+        Assert.True(module.Start().Succeeded);
+        return module;
     }
 }

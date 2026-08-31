@@ -99,7 +99,7 @@ public class TxnRecord
 
     public bool IsTerminal => State is CrossWorldTxnState.Committed or CrossWorldTxnState.Aborted or CrossWorldTxnState.Expired;
 
-    public void AttachPreparedDelta(PreparedGameDelta delta, string? preparedVoxelToken = null)
+    internal void AttachPreparedDelta(PreparedGameDelta delta, string? preparedVoxelToken = null)
     {
 #if NET10_0_OR_GREATER
         ArgumentNullException.ThrowIfNull(delta);
@@ -114,13 +114,17 @@ public class TxnRecord
         }
     }
 
-    public TxnTransitionResult TryTransition(CrossWorldTxnState next)
+    internal TxnTransitionResult TryTransition(CrossWorldTxnState next)
     {
         lock (_gate)
         {
+            if (next is CrossWorldTxnState.CommitIntent or CrossWorldTxnState.Committed)
+                return TxnTransitionResult.Reject(
+                    _state,
+                    "CapabilityMissing",
+                    "Sensitive transaction transitions require a durable proof or commit certificate.");
             if (_state == next)
             {
-                if (next == CrossWorldTxnState.CommitIntent) CommitIntentPersisted = true;
                 return TxnTransitionResult.Success(_state);
             }
 
@@ -129,21 +133,31 @@ public class TxnRecord
                 return TxnTransitionResult.Reject(_state, "InvalidArgument", string.Concat("Illegal transaction transition: ", _state, " -> ", next));
             }
 
-            if (next == CrossWorldTxnState.CommitIntent) CommitIntentPersisted = true;
             _state = next;
             return TxnTransitionResult.Success(_state);
         }
     }
 
-    public TxnTransitionResult Transition(CrossWorldTxnState next) => TryTransition(next);
-
-    public TxnTransitionResult MarkCommitIntentPersisted()
+    internal TxnTransitionResult MarkCommitIntentPersisted(TxnJournalProof proof)
     {
-        TxnTransitionResult result = TryTransition(CrossWorldTxnState.CommitIntent);
-        return result;
+        if (proof is null || proof.Stage != TxnJournalStage.CommitIntent || !proof.Identity.Matches(this))
+            return TxnTransitionResult.Reject(State, "EvidenceDigestMismatch", "Commit intent proof does not match the transaction.");
+        lock (_gate)
+        {
+            if (_state == CrossWorldTxnState.CommitIntent)
+            {
+                CommitIntentPersisted = true;
+                return TxnTransitionResult.Success(_state);
+            }
+            if (_state != CrossWorldTxnState.Prepared)
+                return TxnTransitionResult.Reject(_state, "InvalidArgument", "Durable commit intent requires a prepared transaction.");
+            CommitIntentPersisted = true;
+            _state = CrossWorldTxnState.CommitIntent;
+            return TxnTransitionResult.Success(_state);
+        }
     }
 
-    public TxnTransitionResult Abort(string reason)
+    internal TxnTransitionResult Abort(string reason)
     {
         if (string.IsNullOrWhiteSpace(reason)) reason = "ValidationFailed";
         lock (_gate)
@@ -157,33 +171,11 @@ public class TxnRecord
         }
     }
 
-    public TxnTransitionResult Expire() => TryTransition(CrossWorldTxnState.Expired);
+    internal TxnTransitionResult Expire() => TryTransition(CrossWorldTxnState.Expired);
 
-    public TxnTransitionResult Cancel() => Abort("Cancelled");
+    internal TxnTransitionResult Cancel() => Abort("Cancelled");
 
-    public TxnTransitionResult MarkResultRevision(SessionRevisionVectorView revision)
-    {
-#if NET10_0_OR_GREATER
-        ArgumentNullException.ThrowIfNull(revision);
-#else
-        if (revision is null) throw new ArgumentNullException(nameof(revision));
-#endif
-        lock (_gate)
-        {
-            if (_state != CrossWorldTxnState.Committed)
-                return TxnTransitionResult.Reject(_state, "InvalidArgument", "Result revision requires a committed transaction.");
-            if (ResultRevision is not null)
-            {
-                return ResultRevision.Equals(revision)
-                    ? TxnTransitionResult.Success(_state)
-                    : TxnTransitionResult.Reject(_state, "RevisionConflict", "Committed result revision cannot be replaced.");
-            }
-            ResultRevision = revision;
-            return TxnTransitionResult.Success(_state);
-        }
-    }
-
-    public TxnTransitionResult MarkParticipant(TxnParticipantKind participant, TxnParticipantState state)
+    internal TxnTransitionResult MarkParticipant(TxnParticipantKind participant, TxnParticipantState state)
     {
         lock (_gate)
         {
@@ -206,6 +198,69 @@ public class TxnRecord
 
             if (participant == TxnParticipantKind.VoxelCommit) _voxelParticipant = state;
             else _ecsParticipant = state;
+            return TxnTransitionResult.Success(_state);
+        }
+    }
+
+    internal bool CanPublishCommitted(SessionRevisionVectorView revision, out CoordinationFailure? failure)
+    {
+        if (revision is null)
+        {
+            failure = CoordinationFailure.Rejected("InvalidArgument", "A result revision is required.");
+            return false;
+        }
+
+        lock (_gate)
+        {
+            if (_state is CrossWorldTxnState.Aborted or CrossWorldTxnState.Expired ||
+                _voxelParticipant == TxnParticipantState.Failed ||
+                _ecsParticipant == TxnParticipantState.Failed)
+            {
+                failure = CoordinationFailure.Fatal("InternalInvariant", "Terminal or failed local state contradicts the commit certificate.");
+                return false;
+            }
+
+            if (_state == CrossWorldTxnState.Committed && ResultRevision is not null && !ResultRevision.Equals(revision))
+            {
+                failure = CoordinationFailure.Fatal("RevisionConflict", "Committed result revision cannot be replaced.");
+                return false;
+            }
+
+            if (revision.TickId != TickId || revision.SchemaEpoch != ExpectedRevision.SchemaEpoch ||
+                revision.Equals(ExpectedRevision) || !revision.IsMonotonicFrom(ExpectedRevision))
+            {
+                failure = CoordinationFailure.Fatal("RevisionConflict", "Commit certificate result revision is invalid for the transaction.");
+                return false;
+            }
+
+            failure = null;
+            return true;
+        }
+    }
+
+    internal TxnTransitionResult PublishCommitted(TxnCommitCertificate certificate)
+    {
+        if (certificate is null || !certificate.Operation.Identity.Matches(this) ||
+            !certificate.Intent.Identity.Equals(certificate.Operation.Identity) ||
+            !certificate.VoxelMarker.Identity.Equals(certificate.Operation.Identity) ||
+            !certificate.EcsMarker.Identity.Equals(certificate.Operation.Identity) ||
+            !certificate.Terminal.Identity.Equals(certificate.Operation.Identity) ||
+            !certificate.Evidence.Matches(this) ||
+            !certificate.Evidence.ResultRevision.Equals(certificate.ResultRevision))
+        {
+            return TxnTransitionResult.Reject(State, "EvidenceDigestMismatch", "Commit certificate does not match the transaction.");
+        }
+
+        if (!CanPublishCommitted(certificate.ResultRevision, out CoordinationFailure? failure))
+            return TxnTransitionResult.Reject(State, failure!.GeneratedErrorId, failure.Detail);
+
+        lock (_gate)
+        {
+            CommitIntentPersisted = true;
+            _voxelParticipant = TxnParticipantState.Applied;
+            _ecsParticipant = TxnParticipantState.Applied;
+            ResultRevision = certificate.ResultRevision;
+            _state = CrossWorldTxnState.Committed;
             return TxnTransitionResult.Success(_state);
         }
     }
@@ -256,12 +311,9 @@ public class TxnRecord
             (CrossWorldTxnState.Created, CrossWorldTxnState.Prepared) => true,
             (CrossWorldTxnState.Created, CrossWorldTxnState.Aborted) => true,
             (CrossWorldTxnState.Created, CrossWorldTxnState.Expired) => true,
-            (CrossWorldTxnState.Prepared, CrossWorldTxnState.CommitIntent) => true,
             (CrossWorldTxnState.Prepared, CrossWorldTxnState.Aborted) => true,
             (CrossWorldTxnState.Prepared, CrossWorldTxnState.Expired) => true,
-            (CrossWorldTxnState.CommitIntent, CrossWorldTxnState.Committed) => true,
             (CrossWorldTxnState.CommitIntent, CrossWorldTxnState.Indeterminate) => true,
-            (CrossWorldTxnState.Indeterminate, CrossWorldTxnState.Committed) => true,
             _ => false
         };
 

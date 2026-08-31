@@ -52,12 +52,17 @@ public readonly record struct DeferredEntityToken : IComparable<DeferredEntityTo
         ProcessorId.Length > 0 &&
         IsValidIdentifier(ProcessorId);
 
-    // World scope is enforced by the owning buffer/map; the frozen token
-    // canonical fields remain TickId + ProcessorId + LocalSequence.
+    // The canonical key contains every field that participates in token
+    // equality so it can safely be used in command digests and idempotency
+    // keys.
     public string CanonicalKey => string.Concat(
         TickId.ToString(System.Globalization.CultureInfo.InvariantCulture),
         ":",
-        ProcessorId,
+        Escape(WorldId),
+        ":",
+        Escape(ProcessorId),
+        ":",
+        BufferGeneration.ToString(System.Globalization.CultureInfo.InvariantCulture),
         ":",
         LocalSequence.ToString(System.Globalization.CultureInfo.InvariantCulture));
 
@@ -76,7 +81,9 @@ public readonly record struct DeferredEntityToken : IComparable<DeferredEntityTo
         int world = StringComparer.Ordinal.Compare(WorldId, other.WorldId);
         if (world != 0) return world;
         int processor = StringComparer.Ordinal.Compare(ProcessorId, other.ProcessorId);
-        return processor != 0 ? processor : LocalSequence.CompareTo(other.LocalSequence);
+        if (processor != 0) return processor;
+        int generation = BufferGeneration.CompareTo(other.BufferGeneration);
+        return generation != 0 ? generation : LocalSequence.CompareTo(other.LocalSequence);
     }
 
     public static bool operator <(DeferredEntityToken left, DeferredEntityToken right) => left.CompareTo(right) < 0;
@@ -88,6 +95,10 @@ public readonly record struct DeferredEntityToken : IComparable<DeferredEntityTo
     public static bool operator >=(DeferredEntityToken left, DeferredEntityToken right) => left.CompareTo(right) >= 0;
 
     public override string ToString() => CanonicalKey;
+
+    private static string Escape(string value) => value
+        .Replace("%", "%25", StringComparison.Ordinal)
+        .Replace(":", "%3A", StringComparison.Ordinal);
 
     private static bool IsValidIdentifier(string value)
     {

@@ -2,35 +2,17 @@ namespace Lumio.GameRuntime.Command;
 
 public sealed class CommandServices
 {
-    internal CommandServices(
-        CommandBufferMerger merger,
-        CommandPreflightValidator preflight,
-        EcsCommandCommitExecutor executor,
-        CommandBufferFactory? bufferFactory = null)
-    {
-        Merger = merger;
-        Preflight = preflight;
-        Executor = executor;
-        BufferFactory = bufferFactory ?? new CommandBufferFactory();
-        PrepareServices = new CommandPreparePort(preflight, merger);
-        ApplyServices = new CommandApplyPort(executor);
-    }
+    private readonly CommandModule _module;
 
-    public CommandBufferMerger Merger { get; }
+    internal CommandServices(CommandModule module) => _module = module;
 
-    public CommandPreflightValidator Preflight { get; }
+    public BufferOpenResult OpenBuffer(in ProcessorInvocationKey key, in CommandBufferBudget budget) =>
+        _module.OpenBuffer(in key, in budget);
 
-    public EcsCommandCommitExecutor Executor { get; }
+    public CommandMergeResult Merge(ulong tickId, System.Collections.Generic.IEnumerable<SealedCommandBuffer> buffers) =>
+        _module.Merge(tickId, buffers);
 
-    public ICommandBufferFactory BufferFactory { get; }
+    public CommandPreflightResult Prepare(MergedCommandBatch batch) => _module.Prepare(batch);
 
-    public CommandBufferFactory Buffers => (CommandBufferFactory)BufferFactory;
-
-    public CommandPreflightValidator PreparePort => Preflight;
-
-    public EcsCommandCommitExecutor ApplyPort => Executor;
-
-    public ICommandPreparePort PrepareServices { get; }
-
-    public ICommandApplyPort ApplyServices { get; }
+    public CommandApplyReceipt Apply(PreparedGameDelta delta) => _module.Apply(delta);
 }

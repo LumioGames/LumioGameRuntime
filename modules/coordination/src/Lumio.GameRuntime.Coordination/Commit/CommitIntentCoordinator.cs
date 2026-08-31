@@ -20,309 +20,603 @@ public readonly record struct TxnCommitResult(
         new(TxnCommitStatus.Retryable, record.VoxelParticipant, record.EcsParticipant, null, trace, failure, record);
 }
 
-/// <summary>Durable intent gate and fixed Voxel-then-ECS apply algorithm.</summary>
+/// <summary>Session-scoped durable intent and participant commit authority.</summary>
 public sealed class CommitIntentCoordinator
 {
-    private readonly object _gate = new();
+    private readonly SessionCoordinationContext _context;
     private readonly SessionRevisionVectorStore _revisions;
     private readonly ITxnJournalPort _journal;
+    private readonly ITxnResultEvidencePort _evidence;
     private readonly ParticipantApplyCoordinator _participants;
     private readonly Action<string>? _sessionFault;
-    private JournalChainState? _journalChain;
 
-    public CommitIntentCoordinator(
+    internal CommitIntentCoordinator(
         SessionRevisionVectorStore revisions,
         ITxnJournalPort journal,
         IVoxelWorldPort voxel,
         EcsCommandCommitExecutor ecs,
         Action<string>? sessionFault = null)
+        : this(revisions, journal, voxel, ecs, null, new MissingTxnResultEvidencePort(), sessionFault)
     {
-        _revisions = revisions ?? throw new ArgumentNullException(nameof(revisions));
-        _journal = journal ?? throw new ArgumentNullException(nameof(journal));
-        _participants = new ParticipantApplyCoordinator(voxel ?? throw new ArgumentNullException(nameof(voxel)), ecs ?? throw new ArgumentNullException(nameof(ecs)));
-        _sessionFault = sessionFault;
     }
 
-    public CommitIntentCoordinator(
+    internal CommitIntentCoordinator(
+        SessionRevisionVectorStore revisions,
+        ITxnJournalPort journal,
+        IVoxelWorldPort voxel,
+        EcsCommandCommitExecutor ecs,
+        ITxnResultEvidencePort evidence,
+        Action<string>? sessionFault = null)
+        : this(revisions, journal, voxel, ecs, null, evidence, sessionFault)
+    {
+    }
+
+    internal CommitIntentCoordinator(
+        SessionRevisionVectorStore revisions,
+        ITxnJournalPort journal,
+        IVoxelWorldPort voxel,
+        EcsCommandCommitExecutor ecs,
+        IEcsCommandCommitRevisionPort? ecsRevision,
+        Action<string>? sessionFault = null)
+        : this(revisions, journal, voxel, ecs, ecsRevision, new MissingTxnResultEvidencePort(), sessionFault)
+    {
+    }
+
+    internal CommitIntentCoordinator(
+        SessionRevisionVectorStore revisions,
+        ITxnJournalPort journal,
+        IVoxelWorldPort voxel,
+        EcsCommandCommitExecutor ecs,
+        IEcsCommandCommitRevisionPort? ecsRevision,
+        ITxnResultEvidencePort evidence,
+        Action<string>? sessionFault = null)
+        : this(
+            revisions,
+            journal,
+            new ParticipantApplyCoordinator(
+                voxel ?? throw new ArgumentNullException(nameof(voxel)),
+                ecs ?? throw new ArgumentNullException(nameof(ecs)),
+                ecsRevision),
+            sessionFault,
+            evidence)
+    {
+    }
+
+    internal CommitIntentCoordinator(
+        SessionRevisionVectorStore revisions,
+        ITxnJournalPort journal,
+        IVoxelWorldPort voxel,
+        CommandModule command,
+        IEcsCommandCommitRevisionPort? ecsRevision,
+        ITxnResultEvidencePort evidence,
+        Action<string>? sessionFault = null)
+        : this(
+            revisions,
+            journal,
+            new ParticipantApplyCoordinator(
+                voxel ?? throw new ArgumentNullException(nameof(voxel)),
+                command ?? throw new ArgumentNullException(nameof(command)),
+                ecsRevision),
+            sessionFault,
+            evidence)
+    {
+    }
+
+    internal CommitIntentCoordinator(
         SessionRevisionVectorStore revisions,
         ITxnJournalPort journal,
         ParticipantApplyCoordinator participants,
-        Action<string>? sessionFault = null)
+        Action<string>? sessionFault = null,
+        ITxnResultEvidencePort? evidence = null)
     {
         _revisions = revisions ?? throw new ArgumentNullException(nameof(revisions));
+        _context = SessionCoordinationContext.For(revisions);
         _journal = journal ?? throw new ArgumentNullException(nameof(journal));
+        _evidence = evidence ?? new MissingTxnResultEvidencePort();
         _participants = participants ?? throw new ArgumentNullException(nameof(participants));
         _sessionFault = sessionFault;
     }
 
-    public TxnCommitResult Commit(CrossWorldPreparedTxn prepared) =>
-        prepared is null
-            ? new TxnCommitResult(TxnCommitStatus.Fatal, TxnParticipantState.NotStarted, TxnParticipantState.NotStarted, null,
-                Array.Empty<string>(), CoordinationFailure.Fatal("InvalidArgument", "Prepared transaction is required."))
-            : Commit(prepared.Record, null, prepared);
-
-    public TxnCommitResult Commit(TxnRecord record, SessionRevisionVectorView? resultRevision = null, CrossWorldPreparedTxn? leases = null)
+    public TxnCommitResult Commit(CrossWorldPreparedTxn prepared)
     {
-        // Commit includes the process-local journal chain cursor. Keep the
-        // whole barrier operation serialized so concurrent retries cannot
-        // interleave sequence/hash-chain updates or apply participants twice.
-        lock (_gate)
+        if (prepared is null)
         {
-            return CommitCore(record, resultRevision, leases);
-        }
-    }
-
-    private TxnCommitResult CommitCore(TxnRecord record, SessionRevisionVectorView? resultRevision, CrossWorldPreparedTxn? leases)
-    {
-        if (record is null)
-            return new TxnCommitResult(TxnCommitStatus.Fatal, TxnParticipantState.NotStarted, TxnParticipantState.NotStarted, null,
-                Array.Empty<string>(), CoordinationFailure.Fatal("InvalidArgument", "Transaction is required."));
-
-        switch (record.State)
-        {
-            case CrossWorldTxnState.Committed:
-                return Result(TxnCommitStatus.AlreadyCommitted, record, resultRevision, Array.Empty<string>(), null);
-            case CrossWorldTxnState.Aborted:
-                return Result(TxnCommitStatus.Aborted, record, null, Array.Empty<string>(), null);
-            case CrossWorldTxnState.Expired:
-                return Result(TxnCommitStatus.Expired, record, null, Array.Empty<string>(), null);
-            case CrossWorldTxnState.CommitIntent:
-            case CrossWorldTxnState.Indeterminate:
-                return Result(TxnCommitStatus.Indeterminate, record, null, Array.Empty<string>(),
-                    CoordinationFailure.Infrastructure("PanicBoundary", "Commit intent exists; participant recovery is required."));
-            case CrossWorldTxnState.Created:
-                return Result(TxnCommitStatus.Fatal, record, null, Array.Empty<string>(),
-                    CoordinationFailure.Rejected("InvalidArgument", "Transaction is not prepared."));
+            return new TxnCommitResult(
+                TxnCommitStatus.Fatal,
+                TxnParticipantState.NotStarted,
+                TxnParticipantState.NotStarted,
+                null,
+                Array.Empty<string>(),
+                CoordinationFailure.Fatal("InvalidArgument", "Prepared transaction is required."));
         }
 
-        if (record.PreparedGameDelta is null || !record.PreparedGameDelta.VerifyForApply())
-            return Fatal(record, Array.Empty<string>(), CoordinationFailure.Fatal("InternalInvariant", "Prepared game delta is not valid for commit."));
+        TxnRecord record = prepared.Record;
+        TxnIdentity identity;
+        try { identity = TxnIdentity.From(record); }
+        catch (ArgumentException ex)
+        {
+            return Fatal(record, Array.Empty<string>(), CoordinationFailure.Fatal("InvalidArgument", ex.Message));
+        }
 
-        var trace = new List<string>();
-        TxnJournalAppendResult intent;
+        if (!prepared.TryClaimForCommit(identity, out CoordinationFailure? leaseFailure))
+        {
+            return record.State switch
+            {
+                CrossWorldTxnState.Aborted => Result(TxnCommitStatus.Aborted, record, null, Array.Empty<string>(), null),
+                CrossWorldTxnState.Expired => Result(TxnCommitStatus.Expired, record, null, Array.Empty<string>(), null),
+                _ => Result(TxnCommitStatus.Fatal, record, null, Array.Empty<string>(), leaseFailure)
+            };
+        }
+
+        if (!_context.TryEnter(identity, out TxnAuthorityOperation operation, out CoordinationFailure? admissionFailure))
+        {
+            prepared.ReleaseCommitClaim();
+            return admissionFailure?.Class == CoordinationFailureClass.Retryable
+                ? TxnCommitResult.Retryable(record, Array.Empty<string>(), admissionFailure)
+                : Fatal(record, Array.Empty<string>(), admissionFailure ??
+                    CoordinationFailure.Fatal("InternalInvariant", "Transaction authority admission failed."));
+        }
+
         try
         {
-            intent = Append(record, TxnJournalRecordRecordKind.CommitIntent, "commit-intent", TxnJournalRecordCommitState.Pending);
+            using (operation)
+            {
+                return CommitCore(prepared, operation);
+            }
         }
-        catch (Exception ex)
+        finally { prepared.ReleaseCommitClaim(); }
+    }
+
+    internal TxnCommitResult Commit(
+        TxnRecord record,
+        SessionRevisionVectorView? resultRevision = null,
+        CrossWorldPreparedTxn? leases = null)
+    {
+        if (resultRevision is not null)
+            return Fatal(record, Array.Empty<string>(),
+                CoordinationFailure.Rejected("InvalidArgument", "Result revision must come from both participants."));
+        if (leases is null || !ReferenceEquals(leases.Record, record))
+            return Fatal(record, Array.Empty<string>(),
+                CoordinationFailure.Rejected("CapabilityMissing", "An active prepared transaction capability is required."));
+        return Commit(leases);
+    }
+
+    internal TxnCommitResult Commit(TxnRecord record, SessionRevisionVectorView resultRevision) =>
+        Commit(record, resultRevision, null);
+
+    private TxnCommitResult CommitCore(CrossWorldPreparedTxn prepared, TxnAuthorityOperation operation)
+    {
+        TxnRecord record = prepared.Record;
+        var trace = new List<string>();
+
+        if (record.State == CrossWorldTxnState.Committed)
+            return TryConvergeCertificate(prepared, operation, trace);
+        if (record.State == CrossWorldTxnState.Aborted)
+            return Result(TxnCommitStatus.Aborted, record, null, trace, null);
+        if (record.State == CrossWorldTxnState.Expired)
+            return Result(TxnCommitStatus.Expired, record, null, trace, null);
+        if (record.State is CrossWorldTxnState.CommitIntent or CrossWorldTxnState.Indeterminate)
+            return TryConvergeCertificate(prepared, operation, trace);
+        if (record.State != CrossWorldTxnState.Prepared || record.PreparedGameDelta is null ||
+            !record.PreparedGameDelta.VerifyForApply())
         {
-            return Result(TxnCommitStatus.Fatal, record, null, trace, CoordinationFailure.Infrastructure("PanicBoundary", ex.Message));
-        }
-        if (!intent.IsDurable)
-        {
-            CoordinationFailure failure = intent.Status == TxnJournalAppendStatus.Backpressured
-                ? CoordinationFailure.Retryable(intent.GeneratedErrorId ?? "QueueFull", "CommitIntent journal is backpressured.")
-                : CoordinationFailure.Fatal(intent.GeneratedErrorId ?? "PanicBoundary", "CommitIntent journal failed.");
-            if (failure.Class == CoordinationFailureClass.Fatal) return Fatal(record, trace, failure);
-            return TxnCommitResult.Retryable(record, trace, failure);
+            return Fatal(record, trace,
+                CoordinationFailure.Fatal("InternalInvariant", "Prepared game delta is not valid for commit."));
         }
 
+        JournalAppendOutcome intentAppend = AppendStage(operation.Identity, TxnJournalStage.CommitIntent);
+        if (!intentAppend.Succeeded || intentAppend.Proof is null)
+        {
+            return FromJournalFailure(record, trace, intentAppend);
+        }
+        TxnJournalProof intent = intentAppend.Proof;
         trace.Add("Journal.CommitIntent.Durable");
-        TxnTransitionResult intentTransition = record.MarkCommitIntentPersisted();
+        TxnTransitionResult intentTransition = record.MarkCommitIntentPersisted(intent);
         if (!intentTransition.Succeeded)
-            return Fatal(record, trace, intentTransition.Failure ?? CoordinationFailure.Fatal("InternalInvariant", "Unable to enter CommitIntent."));
+            return Fatal(record, trace, intentTransition.Failure ??
+                CoordinationFailure.Fatal("InternalInvariant", "Unable to publish durable commit intent."));
+        prepared.MarkIntentPersisted();
 
         VoxelCommitParticipantResult voxel;
         try { voxel = _participants.ApplyVoxel(record); }
-        catch (Exception) {
+        catch (Exception ex)
+        {
             record.MarkParticipant(TxnParticipantKind.VoxelCommit, TxnParticipantState.Unknown);
-            return Indeterminate(record, trace, "PanicBoundary");
+            return Indeterminate(record, trace, "PanicBoundary", ex.Message);
         }
         trace.Add("Voxel.Apply");
-        if (voxel.Status == VoxelCommitParticipantStatus.Rejected)
-        {
-            record.MarkParticipant(TxnParticipantKind.VoxelCommit, TxnParticipantState.Failed);
-            record.TryTransition(CrossWorldTxnState.Indeterminate);
-            return Fatal(record, trace, CoordinationFailure.Fatal("PanicBoundary", "Participant rejected after durable CommitIntent."));
-        }
-
-        if (voxel.Status is VoxelCommitParticipantStatus.Faulted or VoxelCommitParticipantStatus.Indeterminate)
+        if (voxel.Status is not (VoxelCommitParticipantStatus.Applied or VoxelCommitParticipantStatus.AlreadyApplied))
         {
             record.MarkParticipant(
                 TxnParticipantKind.VoxelCommit,
-                voxel.Status == VoxelCommitParticipantStatus.Faulted ? TxnParticipantState.Failed : TxnParticipantState.Unknown);
-            return Indeterminate(record, trace, voxel.GeneratedErrorId ?? "PanicBoundary");
+                voxel.Status == VoxelCommitParticipantStatus.Indeterminate
+                    ? TxnParticipantState.Unknown
+                    : TxnParticipantState.Failed);
+            return Indeterminate(record, trace, voxel.GeneratedErrorId ?? "PanicBoundary",
+                "Voxel participant did not return an applied receipt.");
         }
-
-        TxnJournalAppendResult voxelMarker;
-        try { voxelMarker = Append(record, TxnJournalRecordRecordKind.ParticipantMarker, "voxel-marker", TxnJournalRecordCommitState.Pending); }
-        catch (Exception) { return Indeterminate(record, trace, "PanicBoundary"); }
-        if (!voxelMarker.IsDurable)
+        if (!ValidateParticipantRevision(record, voxel.ResultRevision, out CoordinationFailure? voxelRevisionFailure))
         {
             record.MarkParticipant(TxnParticipantKind.VoxelCommit, TxnParticipantState.Unknown);
-            return Indeterminate(record, trace, voxelMarker.GeneratedErrorId ?? "QueueFull");
+            return FatalOrIndeterminate(record, trace, voxelRevisionFailure!);
         }
-        trace.Add("Journal.VoxelMarker.Durable");
-        TxnTransitionResult voxelMarkerState = record.MarkParticipant(TxnParticipantKind.VoxelCommit, TxnParticipantState.Applied);
-        if (!voxelMarkerState.Succeeded)
-            return Fatal(record, trace, voxelMarkerState.Failure ?? CoordinationFailure.Fatal("InternalInvariant", "Unable to record voxel marker."));
 
-        CommandApplyReceipt ecs;
-        try { ecs = _participants.ApplyEcs(record); }
-        catch (Exception) {
+        SessionRevisionVectorView revision = voxel.ResultRevision!;
+        JournalAppendOutcome voxelAppend = AppendStage(
+            operation.Identity,
+            TxnJournalStage.VoxelMarker,
+            intent.Checksum,
+            revision.CanonicalDigestHex);
+        if (!voxelAppend.Succeeded || voxelAppend.Proof is null)
+            return FromJournalFailureAfterIntent(record, trace, voxelAppend, TxnParticipantKind.VoxelCommit);
+        TxnJournalProof voxelMarker = voxelAppend.Proof;
+        trace.Add("Journal.VoxelMarker.Durable");
+        TxnTransitionResult voxelState = record.MarkParticipant(
+            TxnParticipantKind.VoxelCommit,
+            TxnParticipantState.Applied);
+        if (!voxelState.Succeeded)
+            return Fatal(record, trace, voxelState.Failure ??
+                CoordinationFailure.Fatal("InternalInvariant", "Voxel marker state could not be published."));
+
+        EcsParticipantApplyResult ecs;
+        try { ecs = _participants.ApplyEcsResult(record); }
+        catch (Exception ex)
+        {
             record.MarkParticipant(TxnParticipantKind.EcsCommandBufferCommit, TxnParticipantState.Unknown);
-            return Indeterminate(record, trace, "PanicBoundary");
+            return Indeterminate(record, trace, "PanicBoundary", ex.Message);
         }
         trace.Add("ECS.Apply");
-        if (!ecs.IsApplied)
+        if (!ecs.IsApplied || ecs.Receipt.TickId != record.TickId ||
+            !ecs.Receipt.CanonicalDigest.Span.SequenceEqual(record.PreparedGameDelta.CanonicalDigest.Span))
         {
             record.MarkParticipant(
                 TxnParticipantKind.EcsCommandBufferCommit,
-                ecs.Status is CommandApplyStatus.Faulted or CommandApplyStatus.InfrastructureFault
-                    ? TxnParticipantState.Failed
-                    : TxnParticipantState.Unknown);
-            return Indeterminate(record, trace, ecs.GeneratedErrorId ?? "PanicBoundary");
+                ecs.Receipt.Status is CommandApplyStatus.Indeterminate
+                    ? TxnParticipantState.Unknown
+                    : TxnParticipantState.Failed);
+            return Indeterminate(record, trace, ecs.Receipt.GeneratedErrorId ?? "EvidenceDigestMismatch",
+                "ECS participant receipt does not match the prepared transaction.");
         }
-
-        TxnJournalAppendResult ecsMarker;
-        try { ecsMarker = Append(record, TxnJournalRecordRecordKind.ParticipantMarker, "ecs-marker", TxnJournalRecordCommitState.Pending); }
-        catch (Exception) { return Indeterminate(record, trace, "PanicBoundary"); }
-        if (!ecsMarker.IsDurable)
+        if (!ValidateParticipantRevision(record, ecs.ResultRevision, out CoordinationFailure? ecsRevisionFailure) ||
+            !revision.Equals(ecs.ResultRevision))
         {
             record.MarkParticipant(TxnParticipantKind.EcsCommandBufferCommit, TxnParticipantState.Unknown);
-            return Indeterminate(record, trace, ecsMarker.GeneratedErrorId ?? "QueueFull");
+            return FatalOrIndeterminate(record, trace,
+                ecsRevisionFailure ?? CoordinationFailure.Infrastructure(
+                    "RevisionConflict",
+                    "Participant result revisions disagree."));
         }
-        trace.Add("Journal.EcsMarker.Durable");
-        TxnTransitionResult ecsMarkerState = record.MarkParticipant(TxnParticipantKind.EcsCommandBufferCommit, TxnParticipantState.Applied);
-        if (!ecsMarkerState.Succeeded)
-            return Fatal(record, trace, ecsMarkerState.Failure ?? CoordinationFailure.Fatal("InternalInvariant", "Unable to record ECS marker."));
 
-        TxnJournalAppendResult terminal;
-        try { terminal = Append(record, TxnJournalRecordRecordKind.Committed, "committed", TxnJournalRecordCommitState.Committed); }
-        catch (Exception) { return Indeterminate(record, trace, "PanicBoundary"); }
-        if (!terminal.IsDurable) return Indeterminate(record, trace, terminal.GeneratedErrorId ?? "QueueFull");
+        RevisionReservationResult reserved = _revisions.TryReserveStrict(record.ExpectedRevision, revision, operation);
+        if (!reserved.Succeeded || reserved.Reservation is null)
+            return FromReservationFailure(record, trace, reserved);
+        RevisionAdvanceReservation reservation = reserved.Reservation;
+
+        TxnResultEvidence evidence;
+        try
+        {
+            evidence = new TxnResultEvidence(record, revision);
+            TxnResultEvidenceWriteResult written = _evidence.Write(in evidence);
+            if (!written.IsDurable)
+            {
+                reservation.Release();
+                record.MarkParticipant(TxnParticipantKind.EcsCommandBufferCommit, TxnParticipantState.Unknown);
+                return written.Status == TxnResultEvidenceWriteStatus.Retryable
+                    ? Indeterminate(record, trace, written.GeneratedErrorId ?? "QueueFull",
+                        "Result evidence is temporarily unavailable.")
+                    : Fatal(record, trace, CoordinationFailure.Fatal(
+                        written.GeneratedErrorId ?? "EvidenceMissing",
+                        "Durable result evidence could not be written."));
+            }
+        }
+        catch (Exception ex)
+        {
+            reservation.Release();
+            record.MarkParticipant(TxnParticipantKind.EcsCommandBufferCommit, TxnParticipantState.Unknown);
+            return Indeterminate(record, trace, "PanicBoundary", ex.Message);
+        }
+        trace.Add("Evidence.ResultRevision.Durable");
+
+        JournalAppendOutcome ecsAppend = AppendStage(
+            operation.Identity,
+            TxnJournalStage.EcsMarker,
+            intent.Checksum,
+            voxelMarker.Checksum,
+            revision.CanonicalDigestHex,
+            evidence.CanonicalDigestHex);
+        if (!ecsAppend.Succeeded || ecsAppend.Proof is null)
+        {
+            reservation.Release();
+            return FromJournalFailureAfterIntent(record, trace, ecsAppend, TxnParticipantKind.EcsCommandBufferCommit);
+        }
+        TxnJournalProof ecsMarker = ecsAppend.Proof;
+        trace.Add("Journal.EcsMarker.Durable");
+        TxnTransitionResult ecsState = record.MarkParticipant(
+            TxnParticipantKind.EcsCommandBufferCommit,
+            TxnParticipantState.Applied);
+        if (!ecsState.Succeeded)
+        {
+            reservation.Release();
+            return Fatal(record, trace, ecsState.Failure ??
+                CoordinationFailure.Fatal("InternalInvariant", "ECS marker state could not be published."));
+        }
+
+        JournalAppendOutcome terminalAppend = AppendStage(
+            operation.Identity,
+            TxnJournalStage.Committed,
+            intent.Checksum,
+            voxelMarker.Checksum,
+            ecsMarker.Checksum,
+            evidence.CanonicalDigestHex,
+            revision.CanonicalDigestHex);
+        if (!terminalAppend.Succeeded || terminalAppend.Proof is null)
+        {
+            reservation.Release();
+            return FromJournalFailureAfterIntent(record, trace, terminalAppend, null);
+        }
+        TxnJournalProof terminal = terminalAppend.Proof;
         trace.Add("Journal.Committed.Durable");
 
-        SessionRevisionVectorView revision;
-        try { revision = resultRevision ?? NextRevision(record); }
-        catch (Exception ex) { record.TryTransition(CrossWorldTxnState.Indeterminate); return Fatal(record, trace, CoordinationFailure.Infrastructure("PanicBoundary", ex.Message)); }
-        RevisionAdvanceResult advance = _revisions.AdvanceCommitted(revision);
-        if (!advance.Succeeded)
+        var certificate = new TxnCommitCertificate(
+            operation,
+            intent,
+            voxelMarker,
+            ecsMarker,
+            terminal,
+            evidence,
+            revision);
+        if (!record.CanPublishCommitted(revision, out CoordinationFailure? publicationFailure))
         {
-            record.TryTransition(CrossWorldTxnState.Indeterminate);
-            return Fatal(record, trace, advance.Failure ?? CoordinationFailure.Fatal("RevisionConflict", "Unable to advance result revision."));
+            reservation.Release();
+            return Fatal(record, trace, publicationFailure!);
         }
 
-        TxnTransitionResult committedTransition = record.TryTransition(CrossWorldTxnState.Committed);
-        if (!committedTransition.Succeeded)
-            return Fatal(record, trace, committedTransition.Failure ?? CoordinationFailure.Fatal("InternalInvariant", "Unable to mark transaction committed."));
-        record.MarkResultRevision(revision);
-        leases?.VoxelReservation.Commit();
-        leases?.GameReservation.Commit();
+        RevisionAdvanceResult advanced = reservation.Commit();
+        if (!advanced.Succeeded)
+            return Fatal(record, trace, advanced.Failure ??
+                CoordinationFailure.Fatal("RevisionConflict", "Result revision could not be finalized."));
+        TxnTransitionResult published = record.PublishCommitted(certificate);
+        if (!published.Succeeded)
+            return Fatal(record, trace, published.Failure ??
+                CoordinationFailure.Fatal("InternalInvariant", "Committed record publication failed."));
+        if (!prepared.CommitReservations())
+            return Fatal(record, trace,
+                CoordinationFailure.Fatal("InternalInvariant", "Prepared reservations could not be finalized."));
+
         trace.Add("Revision.Advance");
         return Result(TxnCommitStatus.Committed, record, revision, trace, null);
     }
 
-    public TxnCommitResult Commit(TxnRecord record, SessionRevisionVectorView resultRevision) => Commit(record, resultRevision, null);
-
-    private TxnJournalAppendResult Append(TxnRecord record, TxnJournalRecordRecordKind kind, string suffix, TxnJournalRecordCommitState state)
+    private TxnCommitResult TryConvergeCertificate(
+        CrossWorldPreparedTxn prepared,
+        TxnAuthorityOperation operation,
+        List<string> trace)
     {
-        if (_journalChain is null && _journal is ITxnJournalChainTail tail && tail.TryGetTail(out ulong tailSequence, out string tailChecksum))
-        {
-            _journalChain = new JournalChainState(tailSequence, tailChecksum);
-        }
-
-        ulong sequence = _journalChain is null ? 1UL : checked(_journalChain.Sequence + 1UL);
-        string previousHash = _journalChain?.Checksum ?? new string('0', 64);
-        byte[] payload = System.Text.Encoding.UTF8.GetBytes(string.Concat(record.RequestDigest, "|", suffix));
-        TxnJournalRecord journalRecord = TxnJournalRecordFactory.Create(
-            record.SessionId,
-            record.GameReleaseId,
-            record.TickId,
-            record.TxnId,
-            kind,
-            string.Concat(record.TxnId, ":", suffix),
-            state,
-            TxnJournalRecordDurabilityState.Durable,
-            record.CommandId,
-            sequence,
-            previousHash,
-            payload);
-        TxnJournalAppendResult result = _journal.Append(in journalRecord);
-        if (result.IsDurable && !result.AlreadyPresent)
-        {
-            ulong actualSequence = result.RecordSequence == 0UL ? sequence : result.RecordSequence;
-            string actualChecksum = TxnJournalRecordFactory.ComputeChecksum(
-                actualSequence,
-                previousHash,
-                journalRecord.PayloadHash,
-                journalRecord.IdempotencyKey);
-            _journalChain = new JournalChainState(actualSequence, actualChecksum);
-        }
-        else if (result.IsDurable && result.AlreadyPresent)
-        {
-            RefreshJournalChain(record);
-        }
-
-        return result;
+        TxnRecord record = prepared.Record;
+        TxnRecoveryResult recovered = new TxnRecoveryResolver(_journal, _revisions, _evidence)
+            .RecoverWithinAuthority(record, null, operation);
+        if (recovered.Succeeded && !prepared.CommitReservations())
+            return Fatal(record, trace,
+                CoordinationFailure.Fatal("InternalInvariant", "Prepared reservations could not be finalized."));
+        return recovered.ToCommitResult(record);
     }
 
-    private void RefreshJournalChain(TxnRecord record)
+    private JournalAppendOutcome AppendStage(
+        TxnIdentity identity,
+        TxnJournalStage stage,
+        params string[] links)
     {
-        if (_journal is ITxnJournalChainTail tail && tail.TryGetTail(out ulong tailSequence, out string tailChecksum))
+        TxnJournalQueryResult existing;
+        try { existing = _journal.Query(identity.SessionId, identity.TxnId); }
+        catch (Exception ex)
         {
-            _journalChain = new JournalChainState(tailSequence, tailChecksum);
-            return;
+            return JournalAppendOutcome.Fatal("PanicBoundary", ex.Message);
+        }
+        if (existing.Status == TxnJournalQueryStatus.Retryable)
+            return JournalAppendOutcome.Retryable(existing.GeneratedErrorId ?? "QueueFull", "Journal query is unavailable.");
+        if (existing.Status == TxnJournalQueryStatus.Fatal)
+            return JournalAppendOutcome.Fatal(existing.GeneratedErrorId ?? "PanicBoundary", "Journal query failed.");
+        if (existing.Status == TxnJournalQueryStatus.Found)
+        {
+            if (!TxnJournalAuthority.TryValidateRecordSet(
+                    existing.Records,
+                    identity,
+                    out CoordinationFailure? recordSetFailure))
+                return JournalAppendOutcome.FromFailure(recordSetFailure!);
+            if (!TxnJournalAuthority.TryFind(existing.Records, identity, stage, links,
+                    out TxnJournalProof? existingProof, out CoordinationFailure? existingFailure))
+                return JournalAppendOutcome.FromFailure(existingFailure!);
+            if (existingProof is not null) return JournalAppendOutcome.Durable(existingProof, alreadyPresent: true);
         }
 
-        // A persistence adapter may not expose its tail capability. Query the
-        // transaction and recover the matching idempotency record so a replay
-        // still advances from the durable checksum rather than a speculative
-        // local value.
-        try
+        TxnJournalTailResult tail;
+        try { tail = _journal.ReadTail(); }
+        catch (Exception ex)
         {
-            TxnJournalQueryResult query = _journal.Query(record.SessionId, record.TxnId);
-            if (query.Status != TxnJournalQueryStatus.Found) return;
-            string keyPrefix = string.Concat(record.TxnId, ":");
-            TxnJournalRecord? latest = null;
-            foreach (TxnJournalRecord candidate in query.Records)
+            return JournalAppendOutcome.Fatal("PanicBoundary", ex.Message);
+        }
+        if (!tail.IsAvailable || tail.Checksum is null)
+        {
+            return tail.Status == TxnJournalTailStatus.Retryable
+                ? JournalAppendOutcome.Retryable(tail.GeneratedErrorId ?? "QueueFull", "Journal tail is unavailable.")
+                : JournalAppendOutcome.Fatal(tail.GeneratedErrorId ?? "CapabilityMissing", "Journal tail capability is required.");
+        }
+
+        ulong sequence;
+        try { sequence = checked(tail.RecordSequence + 1UL); }
+        catch (OverflowException)
+        {
+            return JournalAppendOutcome.Fatal("InternalInvariant", "Journal sequence was exhausted.");
+        }
+        TxnJournalRecord row = TxnJournalAuthority.Create(identity, stage, sequence, tail.Checksum, links);
+        TxnJournalAppendResult appended;
+        try { appended = _journal.Append(in row); }
+        catch (Exception ex)
+        {
+            return JournalAppendOutcome.Fatal("PanicBoundary", ex.Message);
+        }
+        if (!appended.IsDurable)
+        {
+            return appended.Status == TxnJournalAppendStatus.Backpressured
+                ? JournalAppendOutcome.Retryable(appended.GeneratedErrorId ?? "QueueFull", "Journal append is backpressured.")
+                : JournalAppendOutcome.Fatal(appended.GeneratedErrorId ?? "PanicBoundary", "Journal append failed.");
+        }
+        if (appended.AlreadyPresent)
+        {
+            TxnJournalQueryResult duplicate = _journal.Query(identity.SessionId, identity.TxnId);
+            CoordinationFailure? duplicateFailure = null;
+            if (duplicate.Status != TxnJournalQueryStatus.Found ||
+                !TxnJournalAuthority.TryValidateRecordSet(duplicate.Records, identity, out duplicateFailure) ||
+                !TxnJournalAuthority.TryFind(duplicate.Records, identity, stage, links,
+                    out TxnJournalProof? duplicateProof, out duplicateFailure) ||
+                duplicateProof is null)
             {
-                if (!candidate.IdempotencyKey.StartsWith(keyPrefix, StringComparison.Ordinal)) continue;
-                if (latest is null || candidate.RecordSeq > latest.RecordSeq) latest = candidate;
+                return JournalAppendOutcome.FromFailure(duplicateFailure ??
+                    CoordinationFailure.Fatal("EvidenceDigestMismatch", "Duplicate journal receipt could not be verified."));
             }
-
-            if (latest is not null) _journalChain = new JournalChainState(latest.RecordSeq, latest.Checksum);
+            return JournalAppendOutcome.Durable(duplicateProof, alreadyPresent: true);
         }
-        catch (Exception)
+
+        if (appended.RecordSequence != sequence ||
+            !string.Equals(appended.RecordChecksum, row.Checksum, StringComparison.Ordinal) ||
+            !string.Equals(appended.PreviousHash, row.PreviousHash, StringComparison.Ordinal))
         {
-            // The original append was durable; leave the existing cursor in
-            // place and let the next append surface a deterministic chain
-            // failure instead of fabricating a checksum.
+            return JournalAppendOutcome.Fatal("EvidenceDigestMismatch", "Journal append receipt was not normalized to the requested tail.");
         }
+        if (!TxnJournalAuthority.TryValidate(row, identity, stage, links,
+                out TxnJournalProof? proof, out CoordinationFailure? proofFailure) || proof is null)
+            return JournalAppendOutcome.FromFailure(proofFailure!);
+        return JournalAppendOutcome.Durable(proof, alreadyPresent: false);
     }
 
-    private sealed record JournalChainState(ulong Sequence, string Checksum);
-
-    private SessionRevisionVectorView NextRevision(TxnRecord record)
+    private static bool ValidateParticipantRevision(
+        TxnRecord record,
+        SessionRevisionVectorView? revision,
+        out CoordinationFailure? failure)
     {
-        SessionRevisionVectorView current = _revisions.Read();
-        return new SessionRevisionVectorView(
-            Math.Max(current.TickId, record.TickId),
-            checked(current.GameRevision + 1UL),
-            checked(current.VoxelWorldRevision + 1UL),
-            current.ChunkRevisionSet,
-            checked(current.ReplicationRevision + 1UL),
-            current.ConfigRevision,
-            current.SchemaEpoch);
+        if (revision is null)
+        {
+            failure = CoordinationFailure.Infrastructure("RevisionConflict", "Participant result revision is missing.");
+            return false;
+        }
+        if (revision.TickId != record.TickId)
+        {
+            failure = CoordinationFailure.Fatal("RevisionConflict", "Participant result TickId does not match the transaction.");
+            return false;
+        }
+        if (revision.SchemaEpoch != record.ExpectedRevision.SchemaEpoch)
+        {
+            failure = CoordinationFailure.Fatal("InternalInvariant", "Participant result schema epoch does not match.");
+            return false;
+        }
+        if (revision.Equals(record.ExpectedRevision) || !revision.IsMonotonicFrom(record.ExpectedRevision))
+        {
+            failure = CoordinationFailure.Infrastructure("RevisionConflict", "Participant result does not strictly advance the expectation.");
+            return false;
+        }
+        failure = null;
+        return true;
     }
 
-    private static TxnCommitResult Result(TxnCommitStatus status, TxnRecord record, SessionRevisionVectorView? revision,
-        IReadOnlyList<string> trace, CoordinationFailure? failure) =>
-        new(status, record.VoxelParticipant, record.EcsParticipant, revision ?? record.ResultRevision, trace, failure, record);
+    private TxnCommitResult FromJournalFailure(
+        TxnRecord record,
+        IReadOnlyList<string> trace,
+        JournalAppendOutcome outcome) =>
+        outcome.IsRetryable
+            ? TxnCommitResult.Retryable(record, trace, outcome.Failure!)
+            : Fatal(record, trace, outcome.Failure!);
 
-    private TxnCommitResult Fatal(TxnRecord record, IReadOnlyList<string> trace, CoordinationFailure failure)
+    private TxnCommitResult FromJournalFailureAfterIntent(
+        TxnRecord record,
+        IReadOnlyList<string> trace,
+        JournalAppendOutcome outcome,
+        TxnParticipantKind? participant)
+    {
+        if (participant is TxnParticipantKind value)
+            record.MarkParticipant(value, TxnParticipantState.Unknown);
+        return Indeterminate(
+            record,
+            trace,
+            outcome.Failure?.GeneratedErrorId ?? "PanicBoundary",
+            outcome.Failure?.Detail ?? "A durable journal stage is unavailable.");
+    }
+
+    private TxnCommitResult FromReservationFailure(
+        TxnRecord record,
+        IReadOnlyList<string> trace,
+        RevisionReservationResult reserved)
+    {
+        record.MarkParticipant(TxnParticipantKind.EcsCommandBufferCommit, TxnParticipantState.Unknown);
+        if (reserved.Status == RevisionReservationStatus.Fatal)
+            return Fatal(record, trace, reserved.Failure ??
+                CoordinationFailure.Fatal("InternalInvariant", "Revision reservation failed."));
+        return Indeterminate(record, trace, reserved.Failure?.GeneratedErrorId ?? "RevisionConflict",
+            reserved.Failure?.Detail ?? "Revision reservation was rejected.");
+    }
+
+    private TxnCommitResult FatalOrIndeterminate(
+        TxnRecord record,
+        IReadOnlyList<string> trace,
+        CoordinationFailure failure) =>
+        failure.Class == CoordinationFailureClass.Fatal
+            ? Fatal(record, trace, failure)
+            : Indeterminate(record, trace, failure.GeneratedErrorId, failure.Detail);
+
+    private TxnCommitResult Fatal(TxnRecord? record, IReadOnlyList<string> trace, CoordinationFailure failure)
     {
         try { _sessionFault?.Invoke(failure.GeneratedErrorId); }
         catch (Exception) { }
-        return Result(TxnCommitStatus.Fatal, record, null, trace, failure);
+        return record is null
+            ? new TxnCommitResult(
+                TxnCommitStatus.Fatal,
+                TxnParticipantState.NotStarted,
+                TxnParticipantState.NotStarted,
+                null,
+                trace,
+                failure)
+            : Result(TxnCommitStatus.Fatal, record, null, trace, failure);
     }
 
-    private TxnCommitResult Indeterminate(TxnRecord record, IReadOnlyList<string> trace, string errorId)
+    private TxnCommitResult Indeterminate(
+        TxnRecord record,
+        IReadOnlyList<string> trace,
+        string errorId,
+        string detail)
     {
         record.TryTransition(CrossWorldTxnState.Indeterminate);
-        CoordinationFailure failure = CoordinationFailure.Infrastructure(errorId, "Participant result is not proven.");
+        CoordinationFailure failure = CoordinationFailure.Infrastructure(errorId, detail);
         try { _sessionFault?.Invoke(errorId); }
         catch (Exception) { }
         return Result(TxnCommitStatus.Indeterminate, record, null, trace, failure);
+    }
+
+    private static TxnCommitResult Result(
+        TxnCommitStatus status,
+        TxnRecord record,
+        SessionRevisionVectorView? revision,
+        IReadOnlyList<string> trace,
+        CoordinationFailure? failure) =>
+        new(status, record.VoxelParticipant, record.EcsParticipant, revision, trace, failure, record);
+
+    private readonly record struct JournalAppendOutcome(
+        bool Succeeded,
+        bool IsRetryable,
+        bool AlreadyPresent,
+        TxnJournalProof? Proof,
+        CoordinationFailure? Failure)
+    {
+        internal static JournalAppendOutcome Durable(TxnJournalProof proof, bool alreadyPresent) =>
+            new(true, false, alreadyPresent, proof, null);
+
+        internal static JournalAppendOutcome Retryable(string errorId, string detail) =>
+            new(false, true, false, null, CoordinationFailure.Retryable(errorId, detail));
+
+        internal static JournalAppendOutcome Fatal(string errorId, string detail) =>
+            new(false, false, false, null, CoordinationFailure.Fatal(errorId, detail));
+
+        internal static JournalAppendOutcome FromFailure(CoordinationFailure failure) =>
+            failure.Class == CoordinationFailureClass.Retryable
+                ? new JournalAppendOutcome(false, true, false, null, failure)
+                : new JournalAppendOutcome(false, false, false, null, failure);
     }
 }

@@ -31,7 +31,7 @@ public interface IGameReservationPort
     GameReservationResult Reserve(in GameReservationRequest request);
 }
 
-public readonly record struct VoxelPrepareRequest(
+internal readonly record struct VoxelPrepareRequest(
     string SessionId,
     string TxnId,
     ulong TickId,
@@ -41,7 +41,7 @@ public readonly record struct VoxelPrepareRequest(
     int SchemaEpoch,
     PreparedGameDelta Delta);
 
-public enum VoxelPrepareStatus
+internal enum VoxelPrepareStatus
 {
     Prepared,
     Rejected,
@@ -49,28 +49,28 @@ public enum VoxelPrepareStatus
     Fatal
 }
 
-public readonly record struct VoxelPrepareResult(
+internal readonly record struct VoxelPrepareResult(
     VoxelPrepareStatus Status,
     string? PreparedVoxelToken,
     PreparedVoxelTokenLease? Lease,
     CoordinationFailure? Failure)
 {
-    public bool Succeeded => Status == VoxelPrepareStatus.Prepared && Lease is not null && PreparedVoxelToken is not null;
+    internal bool Succeeded => Status == VoxelPrepareStatus.Prepared && Lease is not null && PreparedVoxelToken is not null;
 
-    public static VoxelPrepareResult Prepared(string token, ulong deadlineTick, Action? release = null) =>
+    internal static VoxelPrepareResult Prepared(string token, ulong deadlineTick, Action? release = null) =>
         new(VoxelPrepareStatus.Prepared, token, new PreparedVoxelTokenLease(token, deadlineTick, release), null);
 
-    public static VoxelPrepareResult Rejected(string errorId, string detail) =>
+    internal static VoxelPrepareResult Rejected(string errorId, string detail) =>
         new(VoxelPrepareStatus.Rejected, null, null, CoordinationFailure.Rejected(errorId, detail));
 
-    public static VoxelPrepareResult Retryable(string errorId, string detail) =>
+    internal static VoxelPrepareResult Retryable(string errorId, string detail) =>
         new(VoxelPrepareStatus.Retryable, null, null, CoordinationFailure.Retryable(errorId, detail));
 
-    public static VoxelPrepareResult Fatal(string errorId, string detail) =>
+    internal static VoxelPrepareResult Fatal(string errorId, string detail) =>
         new(VoxelPrepareStatus.Fatal, null, null, CoordinationFailure.Fatal(errorId, detail));
 }
 
-public interface IVoxelWorldPort
+internal interface IVoxelWorldPort
 {
     VoxelPrepareResult Prepare(in VoxelPrepareRequest request);
 
@@ -83,13 +83,13 @@ public interface IVoxelWorldPort
     SessionRevisionVectorView ReadRevision();
 }
 
-public readonly record struct VoxelCommitParticipantRequest(
+internal readonly record struct VoxelCommitParticipantRequest(
     string SessionId,
     string TxnId,
     ulong TickId,
     string PreparedVoxelToken);
 
-public enum VoxelCommitParticipantStatus
+internal enum VoxelCommitParticipantStatus
 {
     Applied,
     AlreadyApplied,
@@ -98,38 +98,38 @@ public enum VoxelCommitParticipantStatus
     Faulted
 }
 
-public readonly record struct VoxelCommitParticipantResult(
+internal readonly record struct VoxelCommitParticipantResult(
     VoxelCommitParticipantStatus Status,
     SessionRevisionVectorView? ResultRevision,
     string? GeneratedErrorId)
 {
-    public static VoxelCommitParticipantResult Applied(SessionRevisionVectorView? revision = null) =>
+    internal static VoxelCommitParticipantResult Applied(SessionRevisionVectorView? revision = null) =>
         new(VoxelCommitParticipantStatus.Applied, revision, null);
 
-    public static VoxelCommitParticipantResult AlreadyApplied(SessionRevisionVectorView? revision = null) =>
+    internal static VoxelCommitParticipantResult AlreadyApplied(SessionRevisionVectorView? revision = null) =>
         new(VoxelCommitParticipantStatus.AlreadyApplied, revision, null);
 
-    public static VoxelCommitParticipantResult Rejected(string errorId) =>
+    internal static VoxelCommitParticipantResult Rejected(string errorId) =>
         new(VoxelCommitParticipantStatus.Rejected, null, errorId);
 
-    public static VoxelCommitParticipantResult Indeterminate(string errorId = "PanicBoundary") =>
+    internal static VoxelCommitParticipantResult Indeterminate(string errorId = "PanicBoundary") =>
         new(VoxelCommitParticipantStatus.Indeterminate, null, errorId);
 
-    public static VoxelCommitParticipantResult Faulted(string errorId = "PanicBoundary") =>
+    internal static VoxelCommitParticipantResult Faulted(string errorId = "PanicBoundary") =>
         new(VoxelCommitParticipantStatus.Faulted, null, errorId);
 }
 
-public readonly record struct VoxelAbortParticipantRequest(string SessionId, string TxnId, string? PreparedVoxelToken);
+internal readonly record struct VoxelAbortParticipantRequest(string SessionId, string TxnId, string? PreparedVoxelToken);
 
-public readonly record struct VoxelAbortParticipantResult(bool Succeeded, string? GeneratedErrorId);
+internal readonly record struct VoxelAbortParticipantResult(bool Succeeded, string? GeneratedErrorId);
 
-public readonly record struct VoxelParticipantQueryResult(
+internal readonly record struct VoxelParticipantQueryResult(
     TxnParticipantState State,
     bool Available,
     string? GeneratedErrorId,
     SessionRevisionVectorView? ResultRevision)
 {
-    public static VoxelParticipantQueryResult Unavailable(string errorId = "QueueFull") =>
+    internal static VoxelParticipantQueryResult Unavailable(string errorId = "QueueFull") =>
         new(TxnParticipantState.Unknown, false, errorId, null);
 }
 
@@ -149,47 +149,123 @@ public readonly record struct TxnPrepareRequest(
 
 public sealed class CrossWorldPreparedTxn : IDisposable
 {
-    public CrossWorldPreparedTxn(TxnRecord record, ReservationLease gameReservation, PreparedVoxelTokenLease voxelReservation)
+    private readonly object _gate = new();
+    private readonly ReservationBundle _reservations;
+    private readonly Action<string>? _retire;
+    private bool _commitInFlight;
+    private bool _intentPersisted;
+    private bool _disposed;
+
+    internal CrossWorldPreparedTxn(
+        TxnRecord record,
+        ReservationLease gameReservation,
+        PreparedVoxelTokenLease voxelReservation,
+        Action<string>? retire = null)
     {
         Record = record ?? throw new ArgumentNullException(nameof(record));
-        GameReservation = gameReservation ?? throw new ArgumentNullException(nameof(gameReservation));
-        VoxelReservation = voxelReservation ?? throw new ArgumentNullException(nameof(voxelReservation));
+        _reservations = new ReservationBundle(gameReservation, voxelReservation);
+        _retire = retire;
+        _intentPersisted = record.CommitIntentPersisted ||
+            record.State is CrossWorldTxnState.CommitIntent or CrossWorldTxnState.Indeterminate or CrossWorldTxnState.Committed;
     }
 
     public TxnRecord Record { get; }
 
-    public ReservationLease GameReservation { get; }
+    internal ReservationLease GameReservation => _reservations.Game;
 
-    public PreparedVoxelTokenLease VoxelReservation { get; }
+    internal PreparedVoxelTokenLease VoxelReservation => _reservations.Voxel;
+
+    internal CoordinationFailure? ReleaseFailure { get; private set; }
+
+    internal bool TryClaimForCommit(TxnIdentity identity, out CoordinationFailure? failure)
+    {
+        lock (_gate)
+        {
+            bool stateAllowed = !_intentPersisted
+                ? Record.State == CrossWorldTxnState.Prepared && _reservations.IsActiveAt(Record.TickId)
+                : (Record.State is CrossWorldTxnState.CommitIntent or CrossWorldTxnState.Indeterminate or CrossWorldTxnState.Committed) &&
+                  (_reservations.IsActive || _reservations.IsCommitted);
+            if (_disposed || _commitInFlight || !identity.Matches(Record) || !stateAllowed)
+            {
+                failure = CoordinationFailure.Rejected(
+                    "InvalidArgument",
+                    "Prepared transaction leases are inactive, terminal, or already claimed.");
+                return false;
+            }
+
+            _commitInFlight = true;
+            failure = null;
+            return true;
+        }
+    }
+
+    internal void MarkIntentPersisted()
+    {
+        lock (_gate) _intentPersisted = true;
+    }
+
+    internal void ReleaseCommitClaim()
+    {
+        lock (_gate) _commitInFlight = false;
+    }
+
+    internal bool CommitReservations()
+    {
+        lock (_gate) return _commitInFlight && _intentPersisted && _reservations.Commit();
+    }
 
     public TxnTransitionResult Abort(string reason = "Cancelled")
     {
-        TxnTransitionResult result = Record.Abort(reason);
-        if (result.Succeeded)
+        TxnTransitionResult result;
+        lock (_gate)
         {
-            VoxelReservation.Release();
-            GameReservation.Release();
+            if (_commitInFlight || _intentPersisted)
+                return TxnTransitionResult.Reject(Record.State, "QueueFull", "Commit authority already owns the prepared leases.");
+            result = Record.Abort(reason);
+            if (!result.Succeeded) return result;
+            _disposed = true;
         }
 
-        return result;
+        CoordinationFailure? releaseFailure = _reservations.Release();
+        lock (_gate) ReleaseFailure = releaseFailure;
+        _retire?.Invoke(Record.TxnId);
+        return releaseFailure is null
+            ? result
+            : TxnTransitionResult.Reject(Record.State, "PanicBoundary", releaseFailure.Detail);
     }
 
     public TxnTransitionResult Expire()
     {
-        TxnTransitionResult result = Record.Expire();
-        if (result.Succeeded)
+        TxnTransitionResult result;
+        lock (_gate)
         {
-            VoxelReservation.Expire();
-            GameReservation.Expire();
+            if (_commitInFlight || _intentPersisted)
+                return TxnTransitionResult.Reject(Record.State, "QueueFull", "Commit authority already owns the prepared leases.");
+            result = Record.Expire();
+            if (!result.Succeeded) return result;
+            _disposed = true;
         }
 
-        return result;
+        CoordinationFailure? releaseFailure = _reservations.Expire();
+        lock (_gate) ReleaseFailure = releaseFailure;
+        _retire?.Invoke(Record.TxnId);
+        return releaseFailure is null
+            ? result
+            : TxnTransitionResult.Reject(Record.State, "PanicBoundary", releaseFailure.Detail);
     }
 
     public void Dispose()
     {
-        VoxelReservation.Dispose();
-        GameReservation.Dispose();
+        lock (_gate)
+        {
+            if (_disposed || _commitInFlight || _intentPersisted) return;
+            _disposed = true;
+            if (Record.State is CrossWorldTxnState.Created or CrossWorldTxnState.Prepared)
+                Record.Abort("Cancelled");
+        }
+        CoordinationFailure? releaseFailure = _reservations.Release();
+        lock (_gate) ReleaseFailure = releaseFailure;
+        _retire?.Invoke(Record.TxnId);
     }
 }
 
@@ -210,35 +286,56 @@ public sealed class TxnPrepareCoordinator
     private readonly IGameReservationPort _game;
     private readonly IVoxelWorldPort _voxel;
     private bool _acceptingPrepares = true;
+    private bool _prepareInFlight;
     private readonly Dictionary<string, CrossWorldPreparedTxn> _preparedByTxn = new(StringComparer.Ordinal);
 
     public TxnPrepareCoordinator(
         SessionRevisionVectorStore revisions,
+        CrossWorldCoordinator transactions)
+        : this(revisions, transactions, null, null)
+    {
+    }
+
+    internal TxnPrepareCoordinator(
+        SessionRevisionVectorStore revisions,
         CrossWorldCoordinator transactions,
-        IGameReservationPort? game = null,
-        IVoxelWorldPort? voxel = null)
+        IGameReservationPort? game,
+        IVoxelWorldPort? voxel)
     {
         _revisions = revisions ?? throw new ArgumentNullException(nameof(revisions));
         _transactions = transactions ?? throw new ArgumentNullException(nameof(transactions));
-        _game = game ?? new NoOpGameReservationPort();
-        _voxel = voxel ?? new NoOpVoxelWorldPort();
+        _game = game ?? new FailClosedGameReservationPort();
+        _voxel = voxel ?? new FailClosedVoxelWorldPort();
     }
 
     public TxnPrepareResult Prepare(in TxnPrepareRequest request)
     {
-        // Prepare owns both reservation acquisition and the local idempotency
-        // projection. Serialize the operation so duplicate callers cannot
-        // acquire two leases for one transaction before either is published.
+        if (string.IsNullOrWhiteSpace(request.TxnId))
+            return Rejected("InvalidArgument", "Transaction prepare request is malformed.");
         lock (_gate)
         {
+            if (!_acceptingPrepares)
+                return Rejected("ContextClosing", "Coordinator is draining and no new prepare is accepted.");
+            if (_prepareInFlight)
+                return new TxnPrepareResult(
+                    TxnPrepareStatus.Retryable,
+                    null,
+                    CoordinationFailure.Retryable("QueueFull", "Another transaction prepare is in flight."));
+            _prepareInFlight = true;
+        }
+
+        try
+        {
             return PrepareCore(in request);
+        }
+        finally
+        {
+            lock (_gate) _prepareInFlight = false;
         }
     }
 
     private TxnPrepareResult PrepareCore(in TxnPrepareRequest request)
     {
-        if (!_acceptingPrepares)
-            return Rejected("ContextClosing", "Coordinator is draining and no new prepare is accepted.");
         if (string.IsNullOrWhiteSpace(request.SessionId) || string.IsNullOrWhiteSpace(request.TxnId) ||
             string.IsNullOrWhiteSpace(request.CommandId) || request.PreparedGameDelta is null)
         {
@@ -250,6 +347,25 @@ public sealed class TxnPrepareCoordinator
             return new TxnPrepareResult(TxnPrepareStatus.Fatal, null, existing.Failure);
         if (existing.Status == TxnLookupStatus.Duplicate)
         {
+            if (existing.Record is not TxnRecord existingRecord ||
+                !string.Equals(existingRecord.SessionId, request.SessionId, StringComparison.Ordinal) ||
+                !string.Equals(existingRecord.CommandId, request.CommandId, StringComparison.Ordinal) ||
+                existingRecord.TickId != request.TickId ||
+                existingRecord.DeadlineTick != request.DeadlineTick ||
+                !string.Equals(existingRecord.RequestDigest, request.RequestDigest, StringComparison.Ordinal) ||
+                !string.Equals(existingRecord.PredictionKey, request.PredictionKey, StringComparison.Ordinal) ||
+                existingRecord.ExpectedRevision.GameRevision != request.ExpectedGameRevision ||
+                existingRecord.ExpectedRevision.VoxelWorldRevision != request.ExpectedVoxelRevision ||
+                !ChunkRevisionsMatch(existingRecord.ExpectedRevision.ChunkRevisionSet, request.ExpectedChunkRevisionSet))
+            {
+                return new TxnPrepareResult(
+                    TxnPrepareStatus.Fatal,
+                    null,
+                    CoordinationFailure.Fatal(
+                        "InvalidArgument",
+                        "A transaction ID was reused with a different full request identity."));
+            }
+
             if (existing.Record?.PreparedGameDelta is PreparedGameDelta existingDelta &&
                 !existingDelta.CanonicalDigest.Span.SequenceEqual(request.PreparedGameDelta.CanonicalDigest.Span))
             {
@@ -259,8 +375,28 @@ public sealed class TxnPrepareCoordinator
                     CoordinationFailure.Fatal("InvalidArgument", "A transaction ID was reused with a different prepared delta."));
             }
 
-            if (_preparedByTxn.TryGetValue(request.TxnId, out CrossWorldPreparedTxn? prior))
-                return new TxnPrepareResult(TxnPrepareStatus.Prepared, prior, null);
+            CrossWorldPreparedTxn? prior;
+            lock (_gate) _preparedByTxn.TryGetValue(request.TxnId, out prior);
+            if (prior is not null)
+            {
+                if (prior.Record.State == CrossWorldTxnState.Prepared &&
+                    prior.GameReservation.State == ReservationLeaseState.Active &&
+                    prior.VoxelReservation.State == ReservationLeaseState.Active)
+                    return new TxnPrepareResult(TxnPrepareStatus.Prepared, prior, null);
+
+                lock (_gate) _preparedByTxn.Remove(request.TxnId);
+                return new TxnPrepareResult(
+                    TxnPrepareStatus.Rejected,
+                    null,
+                    CoordinationFailure.Rejected(
+                        prior.Record.State == CrossWorldTxnState.Expired ? "TimedOut" : "InvalidArgument",
+                        "The original transaction preparation is terminal or no longer owns active leases."));
+            }
+
+            return new TxnPrepareResult(
+                TxnPrepareStatus.Rejected,
+                null,
+                CoordinationFailure.Rejected("InvalidArgument", "The original prepared capability was retired."));
         }
 
         SessionRevisionVectorView current = _revisions.Read();
@@ -321,21 +457,22 @@ public sealed class TxnPrepareCoordinator
         }
         catch (Exception ex)
         {
-            game.Lease.Release();
-            return new TxnPrepareResult(TxnPrepareStatus.Fatal, null, CoordinationFailure.Infrastructure("PanicBoundary", ex.Message));
+            return Rollback(
+                game.Lease,
+                null,
+                new TxnPrepareResult(TxnPrepareStatus.Fatal, null,
+                    CoordinationFailure.Infrastructure("PanicBoundary", ex.Message)));
         }
 
         if (!voxel.Succeeded || voxel.Lease is null || voxel.PreparedVoxelToken is null)
         {
-            voxel.Lease?.Release();
-            game.Lease.Release();
-            return new TxnPrepareResult(
+            return Rollback(game.Lease, voxel.Lease, new TxnPrepareResult(
                 voxel.Status switch
                 {
                     VoxelPrepareStatus.Retryable => TxnPrepareStatus.Retryable,
                     VoxelPrepareStatus.Fatal => TxnPrepareStatus.Fatal,
                     _ => TxnPrepareStatus.Rejected
-                }, null, voxel.Failure ?? CoordinationFailure.Rejected("CapacityExceeded", "Voxel reservation failed."));
+                }, null, voxel.Failure ?? CoordinationFailure.Rejected("CapacityExceeded", "Voxel reservation failed.")));
         }
 
         TxnBeginResult begin;
@@ -354,16 +491,15 @@ public sealed class TxnPrepareCoordinator
         }
         catch (Exception ex)
         {
-            voxel.Lease.Release();
-            game.Lease.Release();
-            return new TxnPrepareResult(TxnPrepareStatus.Fatal, null,
-                CoordinationFailure.Infrastructure("PanicBoundary", ex.Message));
+            return Rollback(game.Lease, voxel.Lease,
+                new TxnPrepareResult(TxnPrepareStatus.Fatal, null,
+                    CoordinationFailure.Infrastructure("PanicBoundary", ex.Message)));
         }
         if (!begin.Succeeded || begin.Record is null)
         {
-            voxel.Lease.Release();
-            game.Lease.Release();
-            return new TxnPrepareResult(TxnPrepareStatus.Fatal, null, begin.Failure ?? CoordinationFailure.Fatal("InternalInvariant", "Unable to register transaction."));
+            return Rollback(game.Lease, voxel.Lease,
+                new TxnPrepareResult(TxnPrepareStatus.Fatal, null,
+                    begin.Failure ?? CoordinationFailure.Fatal("InternalInvariant", "Unable to register transaction.")));
         }
 
         TxnRecord record = begin.Record;
@@ -375,22 +511,20 @@ public sealed class TxnPrepareCoordinator
                 TxnTransitionResult transition = record.TryTransition(CrossWorldTxnState.Prepared);
                 if (!transition.Succeeded)
                 {
-                    voxel.Lease.Release();
-                    game.Lease.Release();
-                    return new TxnPrepareResult(TxnPrepareStatus.Fatal, null, transition.Failure);
+                    return Rollback(game.Lease, voxel.Lease,
+                        new TxnPrepareResult(TxnPrepareStatus.Fatal, null, transition.Failure));
                 }
             }
         }
         catch (Exception ex)
         {
-            voxel.Lease.Release();
-            game.Lease.Release();
-            return new TxnPrepareResult(TxnPrepareStatus.Fatal, null,
-                CoordinationFailure.Infrastructure("PanicBoundary", ex.Message));
+            return Rollback(game.Lease, voxel.Lease,
+                new TxnPrepareResult(TxnPrepareStatus.Fatal, null,
+                    CoordinationFailure.Infrastructure("PanicBoundary", ex.Message)));
         }
 
-        CrossWorldPreparedTxn prepared = new(record, game.Lease, voxel.Lease);
-        _preparedByTxn[record.TxnId] = prepared;
+        CrossWorldPreparedTxn prepared = new(record, game.Lease, voxel.Lease, Retire);
+        lock (_gate) _preparedByTxn[record.TxnId] = prepared;
         return new TxnPrepareResult(TxnPrepareStatus.Prepared, prepared, null);
     }
 
@@ -416,24 +550,29 @@ public sealed class TxnPrepareCoordinator
         lock (_gate) return _preparedByTxn.TryGetValue(txnId, out prepared);
     }
 
+    private void Retire(string txnId)
+    {
+        lock (_gate) _preparedByTxn.Remove(txnId);
+    }
+
     public TxnTransitionResult Abort(string txnId, string reason = "Cancelled")
     {
+        CrossWorldPreparedTxn? prepared;
         lock (_gate)
         {
-            if (!_preparedByTxn.TryGetValue(txnId, out CrossWorldPreparedTxn? prepared))
-                return _transactions.Abort(txnId, reason);
-            return prepared.Abort(reason);
+            _preparedByTxn.TryGetValue(txnId, out prepared);
         }
+        return prepared is null ? _transactions.Abort(txnId, reason) : prepared.Abort(reason);
     }
 
     public TxnTransitionResult Expire(string txnId)
     {
+        CrossWorldPreparedTxn? prepared;
         lock (_gate)
         {
-            if (!_preparedByTxn.TryGetValue(txnId, out CrossWorldPreparedTxn? prepared))
-                return _transactions.Expire(txnId);
-            return prepared.Expire();
+            _preparedByTxn.TryGetValue(txnId, out prepared);
         }
+        return prepared is null ? _transactions.Expire(txnId) : prepared.Expire();
     }
 
     private static bool ChunkRevisionsMatch(IReadOnlyDictionary<string, ulong> left, IReadOnlyDictionary<string, ulong> right)
@@ -450,23 +589,36 @@ public sealed class TxnPrepareCoordinator
     private static TxnPrepareResult Rejected(string errorId, string detail) =>
         new(TxnPrepareStatus.Rejected, null, CoordinationFailure.Rejected(errorId, detail));
 
-    private sealed class NoOpGameReservationPort : IGameReservationPort
+    private static TxnPrepareResult Rollback(
+        ReservationLease? game,
+        PreparedVoxelTokenLease? voxel,
+        TxnPrepareResult result)
     {
-        public GameReservationResult Reserve(in GameReservationRequest request) =>
-            new(GameReservationStatus.Reserved, new ReservationLease(string.Concat("game:", request.TxnId)), null);
+        CoordinationFailure? releaseFailure = ReservationBundle.Release(game, voxel);
+        return releaseFailure is null
+            ? result
+            : new TxnPrepareResult(TxnPrepareStatus.Fatal, null, releaseFailure);
     }
 
-    private sealed class NoOpVoxelWorldPort : IVoxelWorldPort
+    private sealed class FailClosedGameReservationPort : IGameReservationPort
+    {
+        public GameReservationResult Reserve(in GameReservationRequest request) =>
+            new(GameReservationStatus.Fatal, null,
+                CoordinationFailure.Infrastructure("CapabilityMissing", "A real game reservation participant is required."));
+    }
+
+    private sealed class FailClosedVoxelWorldPort : IVoxelWorldPort
     {
         public VoxelPrepareResult Prepare(in VoxelPrepareRequest request) =>
-            VoxelPrepareResult.Prepared(string.Concat("voxel:", request.TxnId), request.DeadlineTick);
+            VoxelPrepareResult.Fatal("CapabilityMissing", "A real Voxel participant is required.");
 
-        public VoxelCommitParticipantResult Commit(in VoxelCommitParticipantRequest request) => VoxelCommitParticipantResult.Applied();
+        public VoxelCommitParticipantResult Commit(in VoxelCommitParticipantRequest request) =>
+            VoxelCommitParticipantResult.Faulted("CapabilityMissing");
 
         public VoxelAbortParticipantResult Abort(in VoxelAbortParticipantRequest request) => new(true, null);
 
         public VoxelParticipantQueryResult Query(string sessionId, string txnId) =>
-            new(TxnParticipantState.NotStarted, true, null, null);
+            VoxelParticipantQueryResult.Unavailable("CapabilityMissing");
 
         public SessionRevisionVectorView ReadRevision() =>
             new(0UL, 0UL, 0UL, new Dictionary<string, ulong>(), 0UL, 0UL, 1UL);

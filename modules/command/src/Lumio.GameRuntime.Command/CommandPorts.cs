@@ -14,7 +14,7 @@ public interface ICommandApplyPort
     CommandApplyReceipt Apply(PreparedGameDelta delta);
 }
 
-public sealed class CommandPreparePort : ICommandPreparePort
+internal sealed class CommandPreparePort : ICommandPreparePort
 {
     private readonly CommandPreflightValidator _validator;
     private readonly CommandBufferMerger _merger;
@@ -35,11 +35,11 @@ public sealed class CommandPreparePort : ICommandPreparePort
         _validator.Prepare(in batch, in context);
 }
 
-public sealed class CommandApplyPort : ICommandApplyPort
+internal sealed class CommandApplyPort : ICommandApplyPort
 {
-    private readonly EcsCommandCommitExecutor _executor;
+    private readonly CommandModule _module;
 
-    public CommandApplyPort(EcsCommandCommitExecutor? executor = null) => _executor = executor ?? new EcsCommandCommitExecutor();
+    internal CommandApplyPort(CommandModule module) => _module = module ?? throw new ArgumentNullException(nameof(module));
 
-    public CommandApplyReceipt Apply(PreparedGameDelta delta) => _executor.Apply(delta);
+    public CommandApplyReceipt Apply(PreparedGameDelta delta) => _module.Apply(delta);
 }

@@ -5,7 +5,10 @@ using Lumio.GameRuntime.Coordination;
 namespace Lumio.GameRuntime.Coordination.VoxelAdapters;
 
 /// <summary>Generated-contract-shaped adapter boundary; native/storage types never cross it.</summary>
-public interface IGeneratedVoxelWorldPort
+// The pinned generated package exposes the voxel schema and metadata only; it
+// does not provide a callable port binding. Keep this substitute seam private
+// until the architecture generator publishes that binding.
+internal interface IGeneratedVoxelWorldPort
 {
     GeneratedVoxelPrepareResult Prepare(in GeneratedVoxelPrepareRequest request);
 
@@ -18,7 +21,7 @@ public interface IGeneratedVoxelWorldPort
     SessionRevisionVectorView ReadRevision();
 }
 
-public readonly record struct GeneratedVoxelPrepareRequest(
+internal readonly record struct GeneratedVoxelPrepareRequest(
     string SessionId,
     string TxnId,
     ulong TickId,
@@ -28,7 +31,7 @@ public readonly record struct GeneratedVoxelPrepareRequest(
     int SchemaEpoch,
     ReadOnlyMemory<byte> PreparedDeltaDigest);
 
-public enum GeneratedVoxelPrepareStatus
+internal enum GeneratedVoxelPrepareStatus
 {
     Prepared,
     Rejected,
@@ -36,19 +39,19 @@ public enum GeneratedVoxelPrepareStatus
     Fatal
 }
 
-public readonly record struct GeneratedVoxelPrepareResult(
+internal readonly record struct GeneratedVoxelPrepareResult(
     GeneratedVoxelPrepareStatus Status,
     string? Token,
     ulong LeaseDeadlineTick,
     string? GeneratedErrorId)
 {
-    public static GeneratedVoxelPrepareResult Prepared(string token, ulong deadlineTick) =>
+    internal static GeneratedVoxelPrepareResult Prepared(string token, ulong deadlineTick) =>
         new(GeneratedVoxelPrepareStatus.Prepared, token, deadlineTick, null);
 }
 
-public readonly record struct GeneratedVoxelCommitRequest(string SessionId, string TxnId, ulong TickId, string Token);
+internal readonly record struct GeneratedVoxelCommitRequest(string SessionId, string TxnId, ulong TickId, string Token);
 
-public enum GeneratedVoxelCommitStatus
+internal enum GeneratedVoxelCommitStatus
 {
     Applied,
     AlreadyApplied,
@@ -57,31 +60,31 @@ public enum GeneratedVoxelCommitStatus
     Faulted
 }
 
-public readonly record struct GeneratedVoxelCommitResult(
+internal readonly record struct GeneratedVoxelCommitResult(
     GeneratedVoxelCommitStatus Status,
     SessionRevisionVectorView? ResultRevision,
     string? GeneratedErrorId);
 
-public readonly record struct GeneratedVoxelAbortRequest(string SessionId, string TxnId, string? Token);
+internal readonly record struct GeneratedVoxelAbortRequest(string SessionId, string TxnId, string? Token);
 
-public readonly record struct GeneratedVoxelAbortResult(bool Succeeded, string? GeneratedErrorId);
+internal readonly record struct GeneratedVoxelAbortResult(bool Succeeded, string? GeneratedErrorId);
 
-public readonly record struct GeneratedVoxelQueryResult(
+internal readonly record struct GeneratedVoxelQueryResult(
     TxnParticipantState State,
     bool Available,
     string? GeneratedErrorId,
     SessionRevisionVectorView? ResultRevision);
 
-public sealed class GeneratedVoxelWorldPortAdapter : IVoxelWorldPort
+internal sealed class GeneratedVoxelWorldPortAdapter : IVoxelWorldPort
 {
     private readonly IGeneratedVoxelWorldPort _inner;
 
-    public GeneratedVoxelWorldPortAdapter(IGeneratedVoxelWorldPort inner)
+    internal GeneratedVoxelWorldPortAdapter(IGeneratedVoxelWorldPort inner)
     {
         _inner = inner ?? throw new ArgumentNullException(nameof(inner));
     }
 
-    public VoxelPrepareResult Prepare(in VoxelPrepareRequest request)
+    VoxelPrepareResult IVoxelWorldPort.Prepare(in VoxelPrepareRequest request)
     {
         GeneratedVoxelPrepareResult result = _inner.Prepare(new GeneratedVoxelPrepareRequest(
             request.SessionId,
@@ -103,7 +106,7 @@ public sealed class GeneratedVoxelWorldPortAdapter : IVoxelWorldPort
         };
     }
 
-    public VoxelCommitParticipantResult Commit(in VoxelCommitParticipantRequest request)
+    VoxelCommitParticipantResult IVoxelWorldPort.Commit(in VoxelCommitParticipantRequest request)
     {
         GeneratedVoxelCommitResult result = _inner.Commit(new GeneratedVoxelCommitRequest(
             request.SessionId, request.TxnId, request.TickId, request.PreparedVoxelToken));
@@ -117,17 +120,17 @@ public sealed class GeneratedVoxelWorldPortAdapter : IVoxelWorldPort
         };
     }
 
-    public VoxelAbortParticipantResult Abort(in VoxelAbortParticipantRequest request)
+    VoxelAbortParticipantResult IVoxelWorldPort.Abort(in VoxelAbortParticipantRequest request)
     {
         GeneratedVoxelAbortResult result = _inner.Abort(new GeneratedVoxelAbortRequest(request.SessionId, request.TxnId, request.PreparedVoxelToken));
         return new VoxelAbortParticipantResult(result.Succeeded, result.GeneratedErrorId);
     }
 
-    public VoxelParticipantQueryResult Query(string sessionId, string txnId)
+    VoxelParticipantQueryResult IVoxelWorldPort.Query(string sessionId, string txnId)
     {
         GeneratedVoxelQueryResult result = _inner.Query(sessionId, txnId);
         return new VoxelParticipantQueryResult(result.State, result.Available, result.GeneratedErrorId, result.ResultRevision);
     }
 
-    public SessionRevisionVectorView ReadRevision() => _inner.ReadRevision();
+    SessionRevisionVectorView IVoxelWorldPort.ReadRevision() => _inner.ReadRevision();
 }

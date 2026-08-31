@@ -40,6 +40,8 @@ public sealed class ReservationLease : IDisposable
 
     public int ReleaseCount { get; private set; }
 
+    public Exception? ReleaseFailure { get; private set; }
+
     public ulong? DeadlineTick => _deadlineTick;
 
     public bool ExpireAt(ulong tick)
@@ -57,7 +59,11 @@ public sealed class ReservationLease : IDisposable
             ReleaseCount++;
         }
 
-        _release?.Invoke();
+        try { _release?.Invoke(); }
+        catch (Exception ex)
+        {
+            lock (_gate) ReleaseFailure ??= ex;
+        }
         return true;
     }
 
@@ -70,11 +76,15 @@ public sealed class ReservationLease : IDisposable
             ReleaseCount++;
         }
 
-        _release?.Invoke();
+        try { _release?.Invoke(); }
+        catch (Exception ex)
+        {
+            lock (_gate) ReleaseFailure ??= ex;
+        }
         return true;
     }
 
-    public bool Commit()
+    internal bool Commit()
     {
         lock (_gate)
         {

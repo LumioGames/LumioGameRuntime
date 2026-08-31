@@ -13,6 +13,7 @@ public sealed class CommitIntentOrderingTests
         "Voxel.Apply",
         "Journal.VoxelMarker.Durable",
         "ECS.Apply",
+        "Evidence.ResultRevision.Durable",
         "Journal.EcsMarker.Durable",
         "Journal.Committed.Durable",
         "Revision.Advance"
@@ -22,13 +23,20 @@ public sealed class CommitIntentOrderingTests
     public void DurableIntentPrecedesVoxelAndEcsApply()
     {
         SessionRevisionVectorView current = PrepareNoSideEffectTests.Vector(1UL);
+        SessionRevisionVectorView resultRevision = PrepareNoSideEffectTests.Vector(2UL);
         var revisions = new SessionRevisionVectorStore(current);
         var journal = new InMemoryTxnJournalPort(16);
-        var voxel = new AppliedVoxelPort(current);
+        var voxel = new AppliedVoxelPort(resultRevision);
         PreparedGameDelta delta = PrepareNoSideEffectTests.Prepared(2UL);
         TxnRecord record = Record(delta);
         var leases = new CrossWorldPreparedTxn(record, new ReservationLease("game"), new PreparedVoxelTokenLease("voxel-token", 10UL));
-        var coordinator = new CommitIntentCoordinator(revisions, journal, voxel, new EcsCommandCommitExecutor());
+        var coordinator = new CommitIntentCoordinator(
+            revisions,
+            journal,
+            voxel,
+            new EcsCommandCommitExecutor(new AppliedEcsPort()),
+            new RevisionProvider(resultRevision),
+            new InMemoryTxnResultEvidencePort());
 
         TxnCommitResult result = coordinator.Commit(record, null, leases);
 
@@ -44,10 +52,18 @@ public sealed class CommitIntentOrderingTests
         var journal = new InMemoryTxnJournalPort(1);
         var filler = TxnJournalRecordFactory.Create("session", "runtime", 1UL, "other", Lumio.Gen.ContractTypes.TxnJournalRecordRecordKind.Prepare, "filler");
         journal.Append(in filler);
-        var voxel = new AppliedVoxelPort(current);
+        var voxel = new AppliedVoxelPort(PrepareNoSideEffectTests.Vector(2UL));
         TxnRecord record = Record(PrepareNoSideEffectTests.Prepared(2UL));
-        var coordinator = new CommitIntentCoordinator(revisions, journal, voxel, new EcsCommandCommitExecutor());
-        TxnCommitResult result = coordinator.Commit(record);
+        var coordinator = new CommitIntentCoordinator(
+            revisions,
+            journal,
+            voxel,
+            new EcsCommandCommitExecutor(new AppliedEcsPort()),
+            new RevisionProvider(current));
+        TxnCommitResult result = coordinator.Commit(new CrossWorldPreparedTxn(
+            record,
+            new ReservationLease("game"),
+            new PreparedVoxelTokenLease("voxel-token", record.DeadlineTick)));
         Assert.Equal(TxnCommitStatus.Retryable, result.Status);
         Assert.Equal(CrossWorldTxnState.Prepared, record.State);
         Assert.Equal(0, voxel.CommitCalls);
@@ -96,5 +112,17 @@ public sealed class CommitIntentOrderingTests
         public VoxelAbortParticipantResult Abort(in VoxelAbortParticipantRequest request) => new(true, null);
         public VoxelParticipantQueryResult Query(string sessionId, string txnId) => new(TxnParticipantState.Applied, true, null, _revision);
         public SessionRevisionVectorView ReadRevision() => _revision;
+    }
+
+    private sealed class AppliedEcsPort : IEcsCommandCommitPort
+    {
+        public EcsCommandPortResult Apply(Lumio.GameRuntime.Command.Command command, string? resolvedEntityId) => EcsCommandPortResult.Applied();
+    }
+
+    private sealed class RevisionProvider : IEcsCommandCommitRevisionPort
+    {
+        private readonly SessionRevisionVectorView _revision;
+        internal RevisionProvider(SessionRevisionVectorView revision) => _revision = revision;
+        public SessionRevisionVectorView? ReadResultRevision(TxnRecord record, CommandApplyReceipt receipt) => _revision;
     }
 }

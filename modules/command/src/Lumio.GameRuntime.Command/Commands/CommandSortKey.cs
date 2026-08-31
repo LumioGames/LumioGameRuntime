@@ -203,7 +203,9 @@ public class Command : IEquatable<Command>
         {
             writer.Write((byte)1);
             writer.Write(token.TickId);
+            WriteString(writer, token.WorldId);
             WriteString(writer, token.ProcessorId);
+            writer.Write(token.BufferGeneration);
             writer.Write(token.LocalSequence);
         }
         else
