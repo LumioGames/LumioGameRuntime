@@ -31,6 +31,22 @@ internal static class SimulationValidation
         return true;
     }
 
+    internal static bool IsStableErrorId(string? value)
+    {
+        if (!IsIdentifier(value)) return false;
+        foreach (string errorId in Lumio.Gen.ContractTypes.Catalog.StableErrorIds)
+            if (string.Equals(errorId, value, StringComparison.Ordinal)) return true;
+        return false;
+    }
+
+    internal static bool IsHash256(string? value)
+    {
+        if (value is null || value.Length != 64) return false;
+        foreach (char item in value)
+            if (!(item is >= '0' and <= '9' or >= 'a' and <= 'f')) return false;
+        return true;
+    }
+
     private static bool IsAsciiAlphaNumeric(char value) => IsAsciiLetter(value) || value is >= '0' and <= '9';
 
     private static bool IsAsciiLetter(char value) => value is >= 'A' and <= 'Z' or >= 'a' and <= 'z';

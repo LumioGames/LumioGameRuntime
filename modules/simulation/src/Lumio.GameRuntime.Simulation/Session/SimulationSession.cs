@@ -1,8 +1,4 @@
 using System;
-using System.Collections.Generic;
-using Lumio.GameRuntime.Simulation.Determinism;
-using Lumio.GameRuntime.Simulation.Ingress;
-using Lumio.GameRuntime.Simulation.Phases;
 using Lumio.GameRuntime.Simulation.Tick;
 
 namespace Lumio.GameRuntime.Simulation.Session;
@@ -29,13 +25,26 @@ public sealed class SimulationSession : IDisposable
     private readonly TickRunner _runner;
     private SimulationSessionState _state = SimulationSessionState.Created;
     private bool _disposed;
+    private bool _tickInFlight;
+    private bool _disposeRequested;
 
-    internal SimulationSession(SimulationSessionOptions options, TickRunner? runner = null)
+    internal SimulationSession(
+        SimulationSessionOptions options,
+        TickExecutorComposition? composition = null,
+        TickRunner? runner = null)
     {
         if (!options.IsValid) throw new ArgumentOutOfRangeException(nameof(options));
         _options = options;
         _owner = new SimulationOwnerThread();
-        _runner = runner ?? new TickRunner(new TickRunnerOptions(options.Seed, options.InitialTickId, options.MaxOutputItems, options.MaxOutputBytes));
+        var runnerOptions = new TickRunnerOptions(options.Seed, options.InitialTickId, options.MaxOutputItems, options.MaxOutputBytes)
+        {
+            IngressCapacity = options.IngressCapacity,
+            MaxIngressBytes = options.IngressBytes,
+            SessionId = options.SessionId
+        };
+        _runner = runner ?? (composition is null
+            ? new TickRunner(runnerOptions)
+            : TickRunner.FromComposition(runnerOptions, composition));
     }
 
     public string SessionId => _options.SessionId;
@@ -49,7 +58,7 @@ public sealed class SimulationSession : IDisposable
 
     public ulong CurrentTickId => _runner.NextTickId;
 
-    public TickRunner Runner => _runner;
+    internal TickRunner Runner => _runner;
 
     public LifecycleResult Initialize(SessionEpoch epoch)
     {
@@ -80,11 +89,28 @@ public sealed class SimulationSession : IDisposable
         lock (_gate)
         {
             if (!_owner.Validate(request.Epoch)) return TickRunResult.Rejected(request.TickId, "WrongContext", "The request is not from the owner epoch.");
-            if (_state != SimulationSessionState.Running) return TickRunResult.Rejected(request.TickId, "ContextClosing", $"Session is {_state}.");
-            TickRunResult result = _runner.Run(in request);
-            if (result.Status == TickRunStatus.Faulted || _runner.IsFaulted)
-                _state = SimulationSessionState.Faulted;
-            return result;
+            bool faultedReplay = _state == SimulationSessionState.Faulted && _runner.IsFaulted;
+            if (_state != SimulationSessionState.Running && !faultedReplay)
+                return TickRunResult.Rejected(request.TickId, "ContextClosing", $"Session is {_state}.");
+            if (_tickInFlight) return TickRunResult.Rejected(request.TickId, "WrongContext", "run_tick is not reentrant.");
+            _tickInFlight = true;
+            try
+            {
+                TickRunResult result = _runner.Run(in request, IsTickLifecycleValid);
+                if (result.Status is TickRunStatus.Faulted or TickRunStatus.PostCommitFaulted || _runner.IsFaulted)
+                    _state = SimulationSessionState.Faulted;
+                return result;
+            }
+            finally
+            {
+                _tickInFlight = false;
+                if (_disposeRequested)
+                {
+                    _disposeRequested = false;
+                    _disposed = true;
+                    _state = SimulationSessionState.Disposed;
+                }
+            }
         }
     }
 
@@ -111,6 +137,12 @@ public sealed class SimulationSession : IDisposable
         lock (_gate)
         {
             if (_disposed) return;
+            if (!_owner.IsOwner) return;
+            if (_tickInFlight)
+            {
+                _disposeRequested = true;
+                return;
+            }
             _disposed = true;
             _state = SimulationSessionState.Disposed;
         }
@@ -132,5 +164,11 @@ public sealed class SimulationSession : IDisposable
             _state = next;
             return LifecycleResult.Accepted(_state);
         }
+    }
+
+    private bool IsTickLifecycleValid()
+    {
+        lock (_gate)
+            return _tickInFlight && !_disposeRequested && !_disposed && _state == SimulationSessionState.Running;
     }
 }

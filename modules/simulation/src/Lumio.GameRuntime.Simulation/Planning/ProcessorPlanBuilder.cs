@@ -120,17 +120,24 @@ public sealed class ProcessorPlanBuilder
         if (!Enum.IsDefined(typeof(ProcessorDescriptorRole), descriptor.Role)) return "Processor role is unknown.";
         if (!Enum.IsDefined(typeof(ProcessorDescriptorPhase), descriptor.Phase)) return "Processor phase is unknown.";
         if (!Enum.IsDefined(typeof(ProcessorDescriptorDeterminismClass), descriptor.DeterminismClass)) return "Determinism class is unknown.";
-        if (descriptor.MayEmitStructuralCommands && (int)descriptor.Phase >= (int)ProcessorDescriptorPhase.VoxelCommit) return "Structural commands must be emitted before the commit phases.";
+        if (descriptor.MayEmitStructuralCommands && !AllowsStructuralCommands(descriptor.Phase)) return "Structural commands may only be emitted in ADR-030 business phases.";
         if (string.IsNullOrWhiteSpace(descriptor.Query) || descriptor.Query.Length > 512) return "Query is invalid.";
         if (descriptor.ReadSet is null || descriptor.WriteSet is null) return "ReadSet and WriteSet are required.";
         if (!ValidateUniqueIdentifiers(descriptor.ReadSet) || !ValidateUniqueIdentifiers(descriptor.WriteSet)) return "ReadSet or WriteSet is invalid.";
         if (descriptor.Before is not null && !ValidateUniqueIdentifiers(descriptor.Before)) return "Before dependencies are invalid.";
         if (descriptor.After is not null && !ValidateUniqueIdentifiers(descriptor.After)) return "After dependencies are invalid.";
-        if (descriptor.Budget is null || descriptor.Budget.MaxMicros == 0) return "Processor budget is invalid.";
+        if (descriptor.Budget is null || descriptor.Budget.MaxMicros == 0 || descriptor.Budget.MaxCommands == 0) return "Processor budget is invalid.";
         if (string.IsNullOrWhiteSpace(descriptor.DiagnosticName) || descriptor.DiagnosticName.Length is < 2 or > 128) return "DiagnosticName is invalid.";
         if (!SimulationValidation.IsDiagnosticName(descriptor.DiagnosticName)) return "DiagnosticName is invalid.";
         return null;
     }
+
+    private static bool AllowsStructuralCommands(ProcessorDescriptorPhase phase) =>
+        phase is ProcessorDescriptorPhase.ApplyInputs
+            or ProcessorDescriptorPhase.ProcessorPlan
+            or ProcessorDescriptorPhase.CrossWorldPrepare
+            or ProcessorDescriptorPhase.CommitDecision
+            or ProcessorDescriptorPhase.GasAndEventFinalize;
 
     private static bool ValidateUniqueIdentifiers(IReadOnlyList<string> values)
     {

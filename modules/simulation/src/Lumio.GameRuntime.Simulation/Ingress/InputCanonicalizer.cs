@@ -35,6 +35,8 @@ public static class InputCanonicalizer
         if (session != 0) return session;
         int sequence = left.ClientCommandSequence.CompareTo(right.ClientCommandSequence);
         if (sequence != 0) return sequence;
+        int targetTick = left.TargetTickId.CompareTo(right.TargetTickId);
+        if (targetTick != 0) return targetTick;
         int generation = left.Generation.CompareTo(right.Generation);
         if (generation != 0) return generation;
         return CompareBytes(left.Payload, right.Payload);

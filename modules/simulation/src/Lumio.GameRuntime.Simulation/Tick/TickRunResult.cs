@@ -12,6 +12,7 @@ public enum TickRunStatus
     Rejected,
     Retryable,
     Faulted,
+    PostCommitFaulted,
     Committed = Succeeded,
     AlreadyCommitted = IdempotentSame
 }
@@ -54,7 +55,10 @@ public sealed class TickRunResult
         PhaseFailureRecord? firstFailure,
         IReadOnlyList<OpaqueOutputView> outputs,
         string? generatedErrorId,
-        TickRunResult? cachedResult)
+        TickRunResult? cachedResult,
+        DurableFailureEvidenceStatus failureEvidenceStatus = DurableFailureEvidenceStatus.NotRequired,
+        string? failureEvidenceId = null,
+        SimulationFailureBundle? failureBundle = null)
     {
         TickId = tickId;
         Status = status;
@@ -69,6 +73,9 @@ public sealed class TickRunResult
         Outputs = new ReadOnlyCollection<OpaqueOutputView>(outputCopies);
         GeneratedErrorId = generatedErrorId;
         CachedResult = cachedResult;
+        FailureEvidenceStatus = failureEvidenceStatus;
+        FailureEvidenceId = failureEvidenceId;
+        FailureBundle = failureBundle;
     }
 
     public ulong TickId { get; }
@@ -106,9 +113,20 @@ public sealed class TickRunResult
 
     public TickRunResult? CachedResult { get; }
 
+    public DurableFailureEvidenceStatus FailureEvidenceStatus { get; }
+
+    public string? FailureEvidenceId { get; }
+
+    internal SimulationFailureBundle? FailureBundle { get; }
+
     public IReadOnlyList<TickPhase> Phases => PhaseTrace;
 
-    public SimulationFailure? Error => FirstFailure is null ? null : new SimulationFailure(PhaseFailureClass.ProcessFault, FirstFailure.GeneratedErrorId, FirstFailure.Detail);
+    public SimulationFailure? Error => FirstFailure is null ? null : new SimulationFailure(
+        Status == TickRunStatus.Rejected
+            ? PhaseFailureClass.BusinessReject
+            : PhaseFailureClass.ProcessFault,
+        FirstFailure.GeneratedErrorId,
+        FirstFailure.Detail);
 
     public bool Succeeded => Status is TickRunStatus.Succeeded or TickRunStatus.IdempotentSame;
 
@@ -118,15 +136,92 @@ public sealed class TickRunResult
         return new TickRunResult(tickId, TickRunStatus.Rejected, false, string.Empty, string.Empty, Array.Empty<TickPhase>(), Array.Empty<PhaseExecutionRecord>(), failure, Array.Empty<OpaqueOutputView>(), errorId, null);
     }
 
+    internal static TickRunResult Rejected(TickExecutionContext context, string requestHashHex, PhaseFailureRecord failure) =>
+        new(context.Request.TickId, TickRunStatus.Rejected, false, requestHashHex, string.Empty, context.PhaseTrace, context.PhaseRecords, failure, Array.Empty<OpaqueOutputView>(), failure.GeneratedErrorId, null);
+
     internal static TickRunResult Success(TickExecutionContext context, string requestHashHex, string stateHashHex) =>
         new(context.Request.TickId, TickRunStatus.Succeeded, context.IsCommitted, requestHashHex, stateHashHex, context.PhaseTrace, context.PhaseRecords, null, context.Outputs, null, null);
 
+    internal static TickRunResult Faulted(
+        TickExecutionContext context,
+        string requestHashHex,
+        PhaseFailureRecord failure,
+        string stateHashHex,
+        FailureEvidenceReceipt evidence) =>
+        new(
+            context.Request.TickId,
+            context.IsCommitted ? TickRunStatus.PostCommitFaulted : TickRunStatus.Faulted,
+            context.IsCommitted,
+            requestHashHex,
+            stateHashHex,
+            context.PhaseTrace,
+            context.PhaseRecords,
+            failure,
+            context.IsCommitted ? context.Outputs : Array.Empty<OpaqueOutputView>(),
+            failure.GeneratedErrorId,
+            null,
+            evidence.Status,
+            evidence.EvidenceId,
+            evidence.Bundle);
+
     internal static TickRunResult Faulted(TickExecutionContext context, string requestHashHex, PhaseFailureRecord failure) =>
-        new(context.Request.TickId, TickRunStatus.Faulted, context.IsCommitted, requestHashHex, string.Empty, context.PhaseTrace, context.PhaseRecords, failure, context.Outputs, failure.GeneratedErrorId, null);
+        Faulted(context, requestHashHex, failure, string.Empty, default);
+
+    internal static TickRunResult Faulted(
+        ulong tickId,
+        string requestHashHex,
+        PhaseFailureRecord failure,
+        FailureEvidenceReceipt evidence) =>
+        new(
+            tickId,
+            TickRunStatus.Faulted,
+            false,
+            requestHashHex,
+            string.Empty,
+            Array.Empty<TickPhase>(),
+            Array.Empty<PhaseExecutionRecord>(),
+            failure,
+            Array.Empty<OpaqueOutputView>(),
+            failure.GeneratedErrorId,
+            null,
+            evidence.Status,
+            evidence.EvidenceId,
+            evidence.Bundle);
 
     internal static TickRunResult Faulted(ulong tickId, string requestHashHex, PhaseFailureRecord failure) =>
-        new(tickId, TickRunStatus.Faulted, failure.CommitPointReached, requestHashHex, string.Empty, Array.Empty<TickPhase>(), Array.Empty<PhaseExecutionRecord>(), failure, Array.Empty<OpaqueOutputView>(), failure.GeneratedErrorId, null);
+        Faulted(tickId, requestHashHex, failure, default);
 
     internal TickRunResult AsIdempotent() =>
-        new(TickId, Status == TickRunStatus.Faulted ? TickRunStatus.Faulted : TickRunStatus.IdempotentSame, IsCommitted, RequestHashHex, StateHashHex, PhaseTrace, PhaseRecords, FirstFailure, Outputs, GeneratedErrorId, this);
+        new(
+            TickId,
+            Status == TickRunStatus.Faulted ? TickRunStatus.Faulted : TickRunStatus.IdempotentSame,
+            IsCommitted,
+            RequestHashHex,
+            StateHashHex,
+            PhaseTrace,
+            PhaseRecords,
+            FirstFailure,
+            Outputs,
+            GeneratedErrorId,
+            this,
+            FailureEvidenceStatus,
+            FailureEvidenceId,
+            FailureBundle);
+
+    internal TickRunResult SnapshotForPersistence() =>
+        new(
+            TickId,
+            Status,
+            IsCommitted,
+            RequestHashHex,
+            StateHashHex,
+            PhaseTrace,
+            PhaseRecords,
+            FirstFailure,
+            Outputs,
+            GeneratedErrorId,
+            null,
+            FailureEvidenceStatus,
+            FailureEvidenceId,
+            FailureBundle);
 }

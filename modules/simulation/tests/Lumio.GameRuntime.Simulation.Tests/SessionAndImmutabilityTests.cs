@@ -13,7 +13,7 @@ public sealed class SessionAndImmutabilityTests
     [Fact]
     public void PhaseRecordsIdentifyTheSingleCommitPoint()
     {
-        var runner = new TickRunner(new TickRunnerOptions(1));
+        var runner = TickRunner.FromComposition(new TickRunnerOptions(1), TickTestExecutors.CompleteComposition());
         TickRunResult result = runner.Run(new HostTickRequest(1, 1, Array.Empty<OpaqueIngressView>()));
 
         Assert.Equal(13, result.PhaseRecords.Count);
@@ -26,17 +26,39 @@ public sealed class SessionAndImmutabilityTests
     public void SessionTransitionsToFaultedWhenTheRunnerFails()
     {
         var module = SimulationModule.Create();
-        using var session = module.CreateSession(SimulationSessionOptions.Default("session-1"));
+        using var session = module.CreateSession(
+            SimulationSessionOptions.Default("session-1"),
+            TickTestExecutors.CompleteComposition());
         SessionEpoch epoch = session.Epoch;
         Assert.True(session.Initialize(epoch).Succeeded);
         Assert.True(session.Prime(epoch).Succeeded);
         Assert.True(session.Start(epoch).Succeeded);
 
         var request = new HostTickRequest(1, epoch.Value, 0, 1, Array.Empty<OpaqueIngressView>());
+        foreach (KeyValuePair<TickPhase, PhaseHandler> executor in TickTestExecutors.Complete())
+            Assert.True(session.Runner.SetHandler(executor.Key, executor.Value));
         session.Runner.SetHandler(TickPhase.ApplyInputs, _ => throw new InvalidOperationException("failure"));
         TickRunResult result = session.RunTick(request);
 
         Assert.Equal(TickRunStatus.Faulted, result.Status);
+        Assert.Equal(SimulationSessionState.Faulted, session.State);
+    }
+
+    [Fact]
+    public void DefaultSessionCannotCommitWithoutRequiredPhaseExecutors()
+    {
+        var module = SimulationModule.Create();
+        using var session = module.CreateSession(SimulationSessionOptions.Default("session-1"));
+        SessionEpoch epoch = session.Epoch;
+        Assert.True(session.Initialize(epoch).Succeeded);
+        Assert.True(session.Prime(epoch).Succeeded);
+        Assert.True(session.Start(epoch).Succeeded);
+
+        TickRunResult result = session.RunTick(new HostTickRequest(1, epoch.Value, Array.Empty<OpaqueIngressView>()));
+
+        Assert.Equal(TickRunStatus.Faulted, result.Status);
+        Assert.False(result.IsCommitted);
+        Assert.Empty(result.Outputs);
         Assert.Equal(SimulationSessionState.Faulted, session.State);
     }
 
