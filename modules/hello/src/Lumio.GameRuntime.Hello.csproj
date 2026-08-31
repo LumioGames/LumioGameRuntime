@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RuntimeProductionProject>true</RuntimeProductionProject>
+    <TargetFrameworks>net10.0;netstandard2.1</TargetFrameworks>
+    <AssemblyName>Lumio.GameRuntime.Hello</AssemblyName>
+    <RootNamespace>Lumio.GameRuntime.Hello</RootNamespace>
+    <NoWarn>$(NoWarn);CA1510</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../../src/Lumio.GameRuntime.GeneratedContracts/Generated/Compatibility/IsExternalInit.cs" Link="Compatibility/IsExternalInit.cs" />
+  </ItemGroup>
+</Project>
