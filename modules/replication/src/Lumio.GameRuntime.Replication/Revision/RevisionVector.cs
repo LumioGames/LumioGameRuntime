@@ -47,7 +47,9 @@ public sealed class RevisionVector : IEquatable<RevisionVector>
     public ulong ConfigRevision { get; }
     public ulong SchemaEpoch { get; }
 
-    public bool IsValid => SchemaEpoch <= int.MaxValue;
+    public bool IsValid => SchemaEpoch <= int.MaxValue &&
+        SchemaEpoch == Lumio.GameRuntime.GeneratedContracts.GeneratedContractManifest.SchemaEpoch &&
+        _chunks.All(item => ReplicationValidation.IsChunkId(item.Key));
 
     public SessionRevisionVector ToGenerated() => new(TickId, GameRevision, VoxelWorldRevision, new Dictionary<string, ulong>(_chunks, StringComparer.Ordinal), ReplicationRevision, ConfigRevision, SchemaEpoch);
 
@@ -149,6 +151,17 @@ public sealed class AuthorityRevisionStore
     private RevisionAdvanceResult TryAdvanceLocked(RevisionVector next, bool committed)
     {
         if (!committed) return new RevisionAdvanceResult(RevisionAdvanceStatus.Rejected, _current, ReplicationFailure.Rejected("InvalidArgument", "Only committed results may advance revisions."));
+        // Validate the complete candidate before comparing it with authority.
+        // Otherwise an invalid extra chunk key can be ignored by the monotonic
+        // comparison and become part of the authoritative vector.
+        if (!next.IsValid)
+        {
+            if (next.SchemaEpoch != _current.SchemaEpoch ||
+                next.SchemaEpoch > int.MaxValue ||
+                next.SchemaEpoch != Lumio.GameRuntime.GeneratedContracts.GeneratedContractManifest.SchemaEpoch)
+                return new RevisionAdvanceResult(RevisionAdvanceStatus.Fatal, _current, ReplicationFailure.Fatal("StaleEpoch", "Schema epoch cannot change in a session."));
+            return new RevisionAdvanceResult(RevisionAdvanceStatus.Rejected, _current, ReplicationFailure.Rejected("InvalidArgument", "Revision vector is malformed."));
+        }
         if (next.SchemaEpoch != _current.SchemaEpoch) return new RevisionAdvanceResult(RevisionAdvanceStatus.Fatal, _current, ReplicationFailure.Fatal("StaleEpoch", "Schema epoch cannot change in a session."));
         if (!next.IsMonotonicFrom(_current)) return new RevisionAdvanceResult(RevisionAdvanceStatus.Rejected, _current, ReplicationFailure.Rejected("RevisionConflict", "Revision would regress."));
         if (next.Equals(_current)) return new RevisionAdvanceResult(RevisionAdvanceStatus.AlreadyCurrent, _current, null);

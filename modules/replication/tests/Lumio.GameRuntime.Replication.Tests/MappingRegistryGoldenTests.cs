@@ -25,7 +25,8 @@ public sealed class MappingRegistryGoldenTests
     {
         var table = new NetEntityMappingTable();
         var net = NetEntityId.Parse("00000000000000010000000000000001");
-        Assert.True(table.Bind(net, "4:2").Succeeded);
+        IdentityStoreToken token = table.CaptureToken();
+        Assert.True(table.Bind(net, "4:2", token).Succeeded);
         Assert.False(table.TryResolveLocal(net, 1, out _));
         Assert.True(table.TryResolveLocal(net, 2, out var local));
         Assert.Equal("4:2", local);

@@ -16,7 +16,7 @@ public sealed class ProjectionValidationTests
     {
         var mapping = new MappingRegistry();
         mapping.Register(MappingDescriptor.Create("mapping-a", "Health", "current"));
-        var revision = new RevisionVector(4, 8, 2, 1, 3, 1, 1);
+        var revision = new RevisionVector(4, 8, 2, 1, 5, 1, 1);
         var projection = new ReplicationProjection(new ReplicationBudget(8, 4096, 8, 4096));
         var full = projection.BuildFullSnapshot("session-1", "product", "release-1", "snap-4", revision, mapping.View);
         Assert.True(full.Succeeded);

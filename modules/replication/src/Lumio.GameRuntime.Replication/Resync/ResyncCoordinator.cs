@@ -19,7 +19,8 @@ public sealed class ResyncCoordinator
     public ResyncDecision Evaluate(ReplicationContext context, string baseSnapshotId, ulong fromRevision, ulong toRevision, ulong sequence, ulong expectedSequence)
     {
         if (context is null) throw new ArgumentNullException(nameof(context));
-        if (!context.Baselines.TryGet(baseSnapshotId, out _)) return ResyncDecision.Required("UnknownBaseline", ReplicationValidationCode.UnknownBaseline);
+        if (!context.Baselines.TryGet(baseSnapshotId, out History.BaselineRecord? baseline) || baseline is null || !baseline.Acknowledged)
+            return ResyncDecision.Required("UnknownBaseline", ReplicationValidationCode.UnknownBaseline);
         ReplicationValidationResult sequenceResult = _validator.ValidateSequence(sequence, expectedSequence);
         if (!sequenceResult.Succeeded) return ResyncDecision.Required(sequenceResult.Detail ?? "Gap", sequenceResult.Code);
         DeltaChainResult chain = context.Deltas.TryGetContiguous(baseSnapshotId, fromRevision, toRevision);

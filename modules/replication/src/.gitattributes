@@ -1,0 +1,6 @@
+*.cs text eol=lf
+*.csproj text eol=lf
+*.json text eol=lf
+**/*.cs text eol=lf
+**/*.csproj text eol=lf
+**/*.json text eol=lf

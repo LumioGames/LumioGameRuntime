@@ -7,6 +7,16 @@ namespace Lumio.GameRuntime.Replication;
 
 internal static class ReplicationValidation
 {
+    internal static bool IsFinite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
+
+    internal static bool IsFiniteNonNegative(double value) => IsFinite(value) && value >= 0;
+
+    internal static bool IsValidWorkItem(ReplicationWorkItem item) =>
+        !string.IsNullOrWhiteSpace(item.Key) &&
+        item.EstimatedBytes > 0 &&
+        IsFinite(item.EnqueuedAtSeconds) &&
+        IsFinite(item.AvailableAtSeconds);
+
     internal static bool IsIdentifier(string? value)
     {
         if (string.IsNullOrEmpty(value) || value.Length > 128 || !IsAsciiAlphaNumeric(value[0])) return false;
@@ -19,7 +29,7 @@ internal static class ReplicationValidation
     }
 
     internal static bool IsProductId(string? value) =>
-        !string.IsNullOrEmpty(value) && value.Length <= 32 && IsIdentifier(value);
+        !string.IsNullOrEmpty(value) && value.Length <= 32 && IsIdentifier(value) && value.IndexOf(':') < 0;
 
     internal static bool IsReleaseId(string? value) =>
         !string.IsNullOrEmpty(value) && value.Length <= 64 && IsIdentifier(value) && value.IndexOf(':') < 0;
@@ -32,11 +42,7 @@ internal static class ReplicationValidation
         string[] parts = value.Split(':');
         if (parts.Length != 4) return false;
         for (var i = 1; i < parts.Length; i++)
-        {
-            string part = parts[i];
-            if (part.Length == 0 || (part.Length > 1 && part[0] == '0') || (part.Length > 1 && part[0] == '-' && part[1] == '0')) return false;
-            if (!long.TryParse(part, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out _)) return false;
-        }
+            if (!IsCanonicalChunkCoordinate(parts[i])) return false;
         return true;
     }
 
@@ -65,7 +71,44 @@ internal static class ReplicationValidation
         return builder.ToString();
     }
 
+    internal static string Crc32CHex(byte[] value)
+    {
+        const uint polynomial = 0x82F63B78U;
+        uint crc = 0xFFFFFFFFU;
+        foreach (byte item in value)
+        {
+            crc ^= item;
+            for (var bit = 0; bit < 8; bit++)
+                crc = (crc >> 1) ^ ((crc & 1U) == 0 ? 0U : polynomial);
+        }
+
+        crc ^= 0xFFFFFFFFU;
+        return crc.ToString("x8", CultureInfo.InvariantCulture);
+    }
+
+    internal static bool ConstantTimeEquals(string? left, string? right)
+    {
+        if (left is null || right is null || left.Length != right.Length) return false;
+        var difference = 0;
+        for (var index = 0; index < left.Length; index++)
+            difference |= left[index] ^ right[index];
+        return difference == 0;
+    }
+
     internal static string LengthPrefix(string value) => string.Concat(value.Length.ToString(CultureInfo.InvariantCulture), ":", value);
+
+    private static bool IsCanonicalChunkCoordinate(string value)
+    {
+        if (value == "0") return true;
+        if (string.IsNullOrEmpty(value)) return false;
+        int start = value[0] == '-' ? 1 : 0;
+        int digitCount = value.Length - start;
+        if (digitCount is < 1 or > 10 || start == 1 && digitCount == 0) return false;
+        if (value[start] is < '1' or > '9') return false;
+        for (var index = start + 1; index < value.Length; index++)
+            if (value[index] is < '0' or > '9') return false;
+        return int.TryParse(value, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out _);
+    }
 
     private static bool IsAsciiAlphaNumeric(char value) => value is >= 'A' and <= 'Z' or >= 'a' and <= 'z' or >= '0' and <= '9';
 }

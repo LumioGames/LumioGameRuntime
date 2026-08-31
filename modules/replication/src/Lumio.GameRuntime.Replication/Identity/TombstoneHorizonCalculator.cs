@@ -18,7 +18,12 @@ public readonly record struct TombstoneHorizonResult(bool Known, ulong Horizon)
     public bool CanCollect(ulong destroyRevision) => Known && Horizon > destroyRevision;
 
     public bool CanCollect(ulong destroyRevision, ulong currentRevision) =>
-        Known && currentRevision > Horizon && destroyRevision < currentRevision;
+        Known && Horizon > destroyRevision && currentRevision > Horizon && destroyRevision < currentRevision;
+
+    /// <summary>Returns false for unknown or understated horizons.</summary>
+    public bool IsValidFor(ulong destroyRevision) => Known && Horizon > destroyRevision;
+
+    public bool IsConservative => !Known;
 }
 
 public static class TombstoneHorizonCalculator
