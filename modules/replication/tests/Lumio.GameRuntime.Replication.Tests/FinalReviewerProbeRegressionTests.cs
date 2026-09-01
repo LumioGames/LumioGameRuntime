@@ -99,8 +99,8 @@ public sealed class FinalReviewerProbeRegressionTests
         NetEntityId second = NetEntityId.Parse("00000000000000010000000000000002");
         NetEntityId authoritative = NetEntityId.Parse("00000000000000010000000000000003");
 
-        Assert.True(remaps.Add(first, authoritative, token).Succeeded);
-        ProvisionalRemapResult conflict = remaps.Add(second, authoritative, token);
+        Assert.True(remaps.Add(ProvisionalIdentity(first), AuthoritativeIdentity(authoritative), token).Succeeded);
+        ProvisionalRemapResult conflict = remaps.Add(ProvisionalIdentity(second), AuthoritativeIdentity(authoritative), token);
 
         Assert.False(conflict.Succeeded);
         Assert.Equal("RevisionConflict", conflict.GeneratedErrorId);
@@ -1019,6 +1019,16 @@ public sealed class FinalReviewerProbeRegressionTests
         Assert.True(context.Activate().Succeeded);
         return context;
     }
+
+    private static EntityIdentity ProvisionalIdentity(NetEntityId id) =>
+        new(id.Value, "client-provisional", 7, 15, 1, "6:1",
+            EntityIdentityNamespace.Provisional, EntityIdentityLifecycle.Alive,
+            null, null, null, null);
+
+    private static EntityIdentity AuthoritativeIdentity(NetEntityId id) =>
+        new(id.Value, "server-a", 7, 15, 1, "7:1",
+            EntityIdentityNamespace.Authoritative, EntityIdentityLifecycle.Alive,
+            null, null, null, null);
 
     private static EntityIdentity AliveIdentity(NetEntityId id, ulong generation) =>
         new(id.Value, "server-a", 7, 15, generation, "4:" + generation,

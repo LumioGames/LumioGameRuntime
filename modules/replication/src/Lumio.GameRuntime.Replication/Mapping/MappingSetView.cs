@@ -133,8 +133,14 @@ public sealed class MappingSetView
 {
     private readonly ReadOnlyCollection<MappingDescriptor> _mappings;
     private readonly byte[] _canonicalBytes;
+    private readonly byte[] _boundInput;
 
     internal MappingSetView(IEnumerable<MappingDescriptor> mappings)
+        : this(mappings, string.Empty, ReadOnlyMemory<byte>.Empty)
+    {
+    }
+
+    internal MappingSetView(IEnumerable<MappingDescriptor> mappings, string mappingSetId, ReadOnlyMemory<byte> boundInput)
     {
         var ordered = mappings.OrderBy(value => value.MappingId, StringComparer.Ordinal).ToList();
         _mappings = new ReadOnlyCollection<MappingDescriptor>(ordered);
@@ -147,6 +153,8 @@ public sealed class MappingSetView
         builder.Append("]}");
         _canonicalBytes = Encoding.UTF8.GetBytes(builder.ToString());
         MappingSetHash = ReplicationValidation.Sha256Hex((byte[])_canonicalBytes.Clone());
+        MappingSetId = mappingSetId ?? string.Empty;
+        _boundInput = boundInput.ToArray();
     }
 
     public static MappingSetView Empty { get; } = new(Array.Empty<MappingDescriptor>());
@@ -155,9 +163,13 @@ public sealed class MappingSetView
 
     public IReadOnlyList<string> MappingIds => _mappings.Select(value => value.MappingId).ToArray();
 
+    public string MappingSetId { get; }
+
     public string MappingSetHash { get; }
 
     public ReadOnlyMemory<byte> CanonicalBytes => (byte[])_canonicalBytes.Clone();
+
+    public ReadOnlyMemory<byte> BoundInputBytes => (byte[])_boundInput.Clone();
 
     public int SchemaEpoch => Lumio.GameRuntime.GeneratedContracts.GeneratedContractManifest.SchemaEpoch;
 
