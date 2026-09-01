@@ -97,7 +97,8 @@ public sealed class EcsWorld
     private readonly EcsWorldContext _context;
     private readonly ComponentRegistrationCapability _componentRegistrationCapability =
         new IssuedComponentRegistrationCapability();
-    private readonly OwnerThreadGuard _ownerThread = new();
+    private readonly OwnerThreadGuard _ownerThread;
+    private readonly EcsFailStopController _failStop;
     private readonly EntitySlotTable _entities;
     private readonly IWorldStorageAdapter _storage;
     private readonly ComponentTypeRegistry _componentTypes;
@@ -127,15 +128,34 @@ public sealed class EcsWorld
         in EcsWorldCreateRequest request,
         IWorldStorageAdapter storage,
         EntitySlotTable entities)
+        : this(
+            request,
+            storage,
+            entities,
+            ManagedOwnerThreadTokenProvider.Instance,
+            NullEcsDurableFailureSink.Instance)
+    {
+    }
+
+    internal EcsWorld(
+        in EcsWorldCreateRequest request,
+        IWorldStorageAdapter storage,
+        EntitySlotTable entities,
+        IOwnerThreadTokenProvider ownerTokens,
+        IEcsDurableFailureSink failureSink)
     {
         if (!request.IsValid)
             throw new ArgumentException("World id and ECS budget must be valid.", nameof(request));
 #if NET10_0_OR_GREATER
         ArgumentNullException.ThrowIfNull(storage);
         ArgumentNullException.ThrowIfNull(entities);
+        ArgumentNullException.ThrowIfNull(ownerTokens);
+        ArgumentNullException.ThrowIfNull(failureSink);
 #else
         if (storage is null) throw new ArgumentNullException(nameof(storage));
         if (entities is null) throw new ArgumentNullException(nameof(entities));
+        if (ownerTokens is null) throw new ArgumentNullException(nameof(ownerTokens));
+        if (failureSink is null) throw new ArgumentNullException(nameof(failureSink));
 #endif
         if (entities.Capacity != request.Budget.MaxEntities)
             throw new ArgumentException("Entity slot capacity must match the World budget.", nameof(entities));
@@ -147,6 +167,8 @@ public sealed class EcsWorld
         _componentTypes = new ComponentTypeRegistry(request.WorldId, _context);
         _entities = entities;
         _storage = storage;
+        _ownerThread = new OwnerThreadGuard(ownerTokens);
+        _failStop = new EcsFailStopController(failureSink);
         _state = EcsWorldState.Created;
     }
 
@@ -183,7 +205,7 @@ public sealed class EcsWorld
     {
         get
         {
-            lock (_lifecycleSync) return _firstFault;
+            lock (_lifecycleSync) return _failStop.First ?? _firstFault;
         }
     }
 
@@ -361,11 +383,12 @@ public sealed class EcsWorld
             }
             if (_state != EcsWorldState.Faulted)
             {
-                _state = EcsWorldState.Faulted;
-                _firstFault = new EcsFaultEvidence(
-                    error,
+                _failStop.CaptureAdapterFailure(
+                    StorageOperationResult.Fatal(error.Code),
+                    ref _state,
                     new FailureContext(WorldId, default, null, default, default, default, "Fault"),
                     0);
+                _firstFault = _failStop.First;
             }
             return StorageOperationResult.Accepted();
         }
@@ -616,6 +639,124 @@ public sealed class EcsWorld
                     partialChangeCount: 1));
         }
         return new EntityDestroyResult(true, entity, StorageOperationResult.Accepted());
+        }
+    }
+
+    internal StorageOperationResult WriteExistingField(in EcsFieldWrite write, IEcsChangeSetAppend changeSet)
+    {
+#if NET10_0_OR_GREATER
+        ArgumentNullException.ThrowIfNull(changeSet);
+#else
+        if (changeSet is null) throw new ArgumentNullException(nameof(changeSet));
+#endif
+        lock (_lifecycleSync)
+        {
+            StorageOperationResult state = EnsureWritableStateUnsafe();
+            if (!state.IsSuccess) return state;
+            StorageOperationResult owner = _ownerThread.ValidateCurrentThread();
+            if (!owner.IsSuccess)
+            {
+                return CompleteBoundary(
+                    StorageOperationResult.Fatal(owner.Error?.Code ?? EcsErrorCodes.OwnerThreadViolation),
+                    "WriteExistingField",
+                    tickId: write.Evidence.TickId,
+                    processorId: write.Evidence.ProcessorId,
+                    entity: write.Entity,
+                    componentType: write.ComponentType,
+                    field: write.Field,
+                    evidenceIdentity: write.Evidence.EvidenceIdentity);
+            }
+
+            ReadOnlySpan<byte> after = write.CanonicalValue.Span;
+            var before = new byte[after.Length];
+            StorageOperationResult read;
+            try
+            {
+                read = _storage.ReadField(
+                    write.Entity,
+                    write.ComponentType,
+                    write.Field,
+                    before,
+                    out int readWritten);
+                if (!read.IsSuccess) return CompleteBoundaryIfFatal(read, write, 0);
+                if (readWritten != after.Length)
+                    return StorageOperationResult.Rejected(EcsErrorCodes.InvalidArgument);
+            }
+            catch (Exception exception)
+            {
+                return CompleteBoundary(
+                    StorageOperationResult.Fatal(EcsErrorCodes.PostWriteFailure),
+                    "WriteExistingField",
+                    exception,
+                    write.Evidence.TickId,
+                    write.Evidence.ProcessorId,
+                    write.Entity,
+                    write.ComponentType,
+                    write.Field,
+                    evidenceIdentity: write.Evidence.EvidenceIdentity);
+            }
+
+            StorageOperationResult written;
+            try
+            {
+                written = _storage.WriteExistingField(
+                    write.Entity,
+                    write.ComponentType,
+                    write.Field,
+                    after);
+            }
+            catch (Exception exception)
+            {
+                return CompleteBoundary(
+                    StorageOperationResult.Fatal(EcsErrorCodes.PostWriteFailure),
+                    "WriteExistingField",
+                    exception,
+                    write.Evidence.TickId,
+                    write.Evidence.ProcessorId,
+                    write.Entity,
+                    write.ComponentType,
+                    write.Field,
+                    partialChangeCount: 1,
+                    evidenceIdentity: write.Evidence.EvidenceIdentity);
+            }
+
+            if (!written.IsSuccess)
+                return CompleteBoundaryIfFatal(written, write, written.Status is StorageOperationStatus.Fatal or StorageOperationStatus.Indeterminate ? 1 : 0);
+
+            try
+            {
+                StorageOperationResult appended = changeSet.TryAppend(new ChangeEntry(
+                    write.Entity,
+                    write.ComponentType,
+                    write.Field,
+                    before,
+                    after.ToArray()));
+                if (appended.IsSuccess) return written;
+                return CompleteBoundary(
+                    StorageOperationResult.Fatal(EcsErrorCodes.PostWriteFailure),
+                    "WriteExistingField",
+                    tickId: write.Evidence.TickId,
+                    processorId: write.Evidence.ProcessorId,
+                    entity: write.Entity,
+                    componentType: write.ComponentType,
+                    field: write.Field,
+                    partialChangeCount: 1,
+                    evidenceIdentity: write.Evidence.EvidenceIdentity);
+            }
+            catch (Exception exception)
+            {
+                return CompleteBoundary(
+                    StorageOperationResult.Fatal(EcsErrorCodes.PostWriteFailure),
+                    "WriteExistingField",
+                    exception,
+                    write.Evidence.TickId,
+                    write.Evidence.ProcessorId,
+                    write.Entity,
+                    write.ComponentType,
+                    write.Field,
+                    partialChangeCount: 1,
+                    evidenceIdentity: write.Evidence.EvidenceIdentity);
+            }
         }
     }
 
@@ -1088,6 +1229,25 @@ public sealed class EcsWorld
         return new ComponentInitBatch(componentTypes.ToArray(), values.ToArray());
     }
 
+    private StorageOperationResult CompleteBoundaryIfFatal(
+        StorageOperationResult result,
+        in EcsFieldWrite write,
+        int partialChangeCount)
+    {
+        if (result.Status is not StorageOperationStatus.Fatal and not StorageOperationStatus.Indeterminate)
+            return result;
+        return CompleteBoundary(
+            result,
+            "WriteExistingField",
+            tickId: write.Evidence.TickId,
+            processorId: write.Evidence.ProcessorId,
+            entity: write.Entity,
+            componentType: write.ComponentType,
+            field: write.Field,
+            partialChangeCount: partialChangeCount,
+            evidenceIdentity: write.Evidence.EvidenceIdentity);
+    }
+
     private StorageOperationResult CompleteBoundary(
         StorageOperationResult result,
         string operation,
@@ -1102,32 +1262,25 @@ public sealed class EcsWorld
     {
         if (result.Status is not StorageOperationStatus.Fatal and not StorageOperationStatus.Indeterminate)
             return result;
-#if NET10_0_OR_GREATER
-        ArgumentOutOfRangeException.ThrowIfNegative(partialChangeCount);
-#else
-        if (partialChangeCount < 0) throw new ArgumentOutOfRangeException(nameof(partialChangeCount));
-#endif
         lock (_lifecycleSync)
         {
-            if (_state != EcsWorldState.Disposed && _state != EcsWorldState.Faulted)
-            {
-                _state = EcsWorldState.Faulted;
-                _firstFault = new EcsFaultEvidence(
-                    result.Error ?? new ErrorIdentity(EcsErrorCodes.InvalidState),
-                    new FailureContext(
-                        WorldId,
-                        tickId,
-                        processorId,
-                        entity,
-                        componentType,
-                        field,
-                        operation,
-                        evidenceIdentity,
-                        exception?.Message),
-                    partialChangeCount,
-                    exception?.GetType().FullName);
-            }
+            StorageOperationResult captured = _failStop.CaptureAdapterFailure(
+                result,
+                ref _state,
+                new FailureContext(
+                    WorldId,
+                    tickId,
+                    processorId,
+                    entity,
+                    componentType,
+                    field,
+                    operation,
+                    evidenceIdentity,
+                    exception?.Message),
+                partialChangeCount,
+                exception);
+            _firstFault = _failStop.First;
+            return captured;
         }
-        return StorageOperationResult.Fatal(result.Error?.Code ?? EcsErrorCodes.InvalidState);
     }
 }
