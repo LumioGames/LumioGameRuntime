@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../../src/Lumio.GameRuntime.Command/Lumio.GameRuntime.Command.csproj" />
+    <ProjectReference Include="../../../ecs/src/Lumio.GameRuntime.Ecs/Lumio.GameRuntime.Ecs.csproj" />
     <PackageReference Include="xunit.v3" />
     <PackageReference Include="Microsoft.Testing.Platform" />
     <PackageReference Include="coverlet.MTP" />

@@ -55,7 +55,7 @@ public sealed class PreparedGameDelta
 
     public CommandBufferState State => Batch.State;
 
-    public static PreparedGameDelta Create(
+    internal static PreparedGameDelta Create(
         MergedCommandBatch batch,
         int schemaEpoch,
         CommandReservationSet? reservations = null,

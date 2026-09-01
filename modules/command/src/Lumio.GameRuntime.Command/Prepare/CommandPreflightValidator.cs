@@ -1,18 +1,19 @@
 using System;
 using System.Collections.Generic;
+using Lumio.GameRuntime.Ecs;
 using Lumio.GameRuntime.GeneratedContracts;
 
 namespace Lumio.GameRuntime.Command;
 
 public interface ICommandValidationContext
 {
-    bool IsKnownComponent(string componentType) => true;
+    bool IsKnownComponent(string componentType);
 
-    bool IsKnownField(string componentType, string fieldName) => true;
+    bool IsKnownField(string componentType, string fieldName);
 
-    bool EntityExists(string entityId) => true;
+    bool EntityExists(string entityId);
 
-    bool CanWrite(string processorId, Command command) => true;
+    bool CanWrite(string processorId, Command command);
 }
 
 public sealed class CommandPreflightOptions
@@ -28,6 +29,23 @@ public sealed class CommandPreflightOptions
     public ulong AvailableChangeEntries { get; init; } = ulong.MaxValue;
 
     public ICommandValidationContext? Context { get; init; }
+
+    internal static CommandPreflightOptions FromWorld(EcsWorld world)
+    {
+#if NET10_0_OR_GREATER
+        ArgumentNullException.ThrowIfNull(world);
+#else
+        if (world is null) throw new ArgumentNullException(nameof(world));
+#endif
+        int availableSlots = world.Budget.MaxEntities - world.ActiveEntityCount;
+        return new CommandPreflightOptions
+        {
+            SchemaEpoch = GeneratedContractManifest.SchemaEpoch,
+            AvailableEntitySlots = availableSlots <= 0 ? 0UL : (ulong)availableSlots,
+            AvailableChangeEntries = (ulong)world.Budget.MaxChangeEntries,
+            Context = new EcsWorldCommandValidationContext(world)
+        };
+    }
 }
 
 public readonly record struct CommandPrepareContext(
@@ -110,7 +128,7 @@ public sealed class CommandPreflightValidator
         ulong bytes = 0UL;
         ulong changes = 0UL;
         ulong tokenReferences = 0UL;
-        ICommandValidationContext context = _options.Context ?? new AcceptAllValidationContext();
+        ICommandValidationContext context = _options.Context ?? FailClosedCommandValidationContext.Instance;
 
         try
         {
@@ -188,7 +206,7 @@ public sealed class CommandPreflightValidator
                         if (command.DeferredTarget is not DeferredEntityToken createToken ||
                             string.IsNullOrWhiteSpace(command.ComponentType) ||
                             !CommandValidation.IsIdentifier(command.ComponentType) ||
-                            !context.IsKnownComponent(command.ComponentType))
+                            !IsKnownCreateType(context, command.ComponentType))
                         {
                             return RejectAndRelease(reservations, "ManifestMalformed", "Create command has an unknown component type.");
                         }
@@ -343,6 +361,11 @@ public sealed class CommandPreflightValidator
         return result.IsPrepared;
     }
 
+    private static bool IsKnownCreateType(ICommandValidationContext context, string componentType) =>
+        context is EcsWorldCommandValidationContext worldContext
+            ? worldContext.IsKnownEntityType(componentType)
+            : context.IsKnownComponent(componentType);
+
     private static bool HasTarget(Command command) =>
         command.TargetEntityId is not null || command.DeferredTarget is not null;
 
@@ -375,8 +398,6 @@ public sealed class CommandPreflightValidator
             status == CommandPreflightStatus.Fatal ? CommandFailureClass.Fatal : CommandFailureClass.Rejected,
             errorId, detail, evidence));
 
-    private sealed class AcceptAllValidationContext : ICommandValidationContext;
-
     private readonly record struct BufferScope(
         Lumio.Gen.ContractTypes.ProcessorDescriptorPhase Phase,
         string ProcessorId,
@@ -393,4 +414,63 @@ public sealed class CommandPreflightException : InvalidOperationException
     }
 
     public CommandFailure? Failure { get; }
+}
+
+internal sealed class FailClosedCommandValidationContext : ICommandValidationContext
+{
+    internal static readonly FailClosedCommandValidationContext Instance = new();
+
+    public bool IsKnownComponent(string componentType) => false;
+
+    public bool IsKnownField(string componentType, string fieldName) => false;
+
+    public bool EntityExists(string entityId) => false;
+
+    public bool CanWrite(string processorId, Command command) => false;
+}
+
+internal sealed class EcsWorldCommandValidationContext : ICommandValidationContext
+{
+    private readonly EcsWorld _world;
+
+    internal EcsWorldCommandValidationContext(EcsWorld world) =>
+        _world = world ?? throw new ArgumentNullException(nameof(world));
+
+    public bool IsKnownComponent(string componentType) =>
+        _world.TryGetRegisteredComponent(componentType, out _);
+
+    public bool IsKnownField(string componentType, string fieldName) =>
+        _world.TryGetRegisteredField(componentType, fieldName, out _, out _);
+
+    public bool EntityExists(string entityId) =>
+        LocalEntityId.TryParse(entityId, out LocalEntityId id) && _world.EntityIsAlive(id);
+
+    public bool CanWrite(string processorId, Command command)
+    {
+        if (string.IsNullOrWhiteSpace(processorId) || command is null) return false;
+        switch (command.Kind)
+        {
+            case CommandKind.Create:
+                return IsKnownEntityType(command.ComponentType);
+            case CommandKind.Write:
+                if (string.IsNullOrWhiteSpace(command.ComponentType) ||
+                    string.IsNullOrWhiteSpace(command.FieldName) ||
+                    !IsKnownComponent(command.ComponentType) ||
+                    !IsKnownField(command.ComponentType, command.FieldName))
+                {
+                    return false;
+                }
+
+                if (command.DeferredTarget is not null) return true;
+                return command.TargetEntityId is string targetId && EntityExists(targetId);
+            case CommandKind.Destroy:
+                if (command.DeferredTarget is not null) return true;
+                return command.TargetEntityId is string destroyId && EntityExists(destroyId);
+            default:
+                return false;
+        }
+    }
+
+    internal bool IsKnownEntityType(string? name) =>
+        !string.IsNullOrWhiteSpace(name) && _world.TryGetRegisteredEntityType(name, out _, out _);
 }

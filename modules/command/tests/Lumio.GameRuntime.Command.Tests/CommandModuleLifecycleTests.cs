@@ -114,7 +114,12 @@ public sealed class CommandModuleLifecycleTests
 
     private static CommandModule ModuleAt(CommandModuleState state, IEcsCommandCommitPort port)
     {
-        CommandModule module = CommandModule.Create(executor: new EcsCommandCommitExecutor(port));
+        CommandModule module = CommandModule.Create(
+            preflight: new CommandPreflightValidator(new CommandPreflightOptions
+            {
+                Context = AllowAllCommandValidationContext.Instance
+            }),
+            executor: new EcsCommandCommitExecutor(port));
         switch (state)
         {
             case CommandModuleState.Created:
@@ -150,7 +155,10 @@ public sealed class CommandModuleLifecycleTests
     }
 
     private static PreparedGameDelta Prepared(ulong tick) =>
-        new CommandPreflightValidator().Prepare(Merged(tick));
+        new CommandPreflightValidator(new CommandPreflightOptions
+        {
+            Context = AllowAllCommandValidationContext.Instance
+        }).Prepare(Merged(tick));
 
     private static MergedCommandBatch Merged(ulong tick)
     {

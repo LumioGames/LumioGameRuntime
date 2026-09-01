@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using Lumio.GameRuntime.Ecs;
+using Lumio.GameRuntime.GeneratedContracts;
 
 [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Lumio.GameRuntime.Command.Tests")]
 
@@ -33,22 +35,45 @@ public sealed class CommandModule
     private readonly CommandBufferMerger _merger;
     private readonly CommandPreflightValidator _preflight;
     private readonly EcsCommandCommitExecutor _executor;
+    private readonly EcsWorld? _world;
+    private readonly bool _prepareFromWorld;
     private readonly CommandBufferFactory _bufferFactory = new();
     private int _inFlight;
     private bool _applyInFlight;
 
-    private CommandModule(CommandBufferMerger merger, CommandPreflightValidator preflight, EcsCommandCommitExecutor executor)
+    private CommandModule(
+        CommandBufferMerger merger,
+        CommandPreflightValidator preflight,
+        EcsCommandCommitExecutor executor,
+        EcsWorld? world,
+        bool prepareFromWorld)
     {
         _merger = merger ?? throw new ArgumentNullException(nameof(merger));
         _preflight = preflight ?? throw new ArgumentNullException(nameof(preflight));
         _executor = executor ?? throw new ArgumentNullException(nameof(executor));
+        _world = world;
+        _prepareFromWorld = prepareFromWorld;
         _services = new CommandServices(this);
     }
 
     public static CommandModule Create(
         CommandPreflightValidator? preflight = null,
-        EcsCommandCommitExecutor? executor = null) =>
-        new(new CommandBufferMerger(), preflight ?? new CommandPreflightValidator(), executor ?? new EcsCommandCommitExecutor());
+        EcsCommandCommitExecutor? executor = null,
+        EcsWorld? world = null)
+    {
+        bool prepareFromWorld = preflight is null && world is not null;
+        CommandPreflightValidator resolvedPreflight = preflight ??
+            (world is null
+                ? new CommandPreflightValidator()
+                : new CommandPreflightValidator(CommandPreflightOptions.FromWorld(world)));
+        EcsCommandCommitExecutor resolvedExecutor = executor ??
+            (world is null
+                ? new EcsCommandCommitExecutor()
+                : new EcsCommandCommitExecutor(
+                    new EcsWorldCommandCommitPort(world),
+                    errorId => world.FaultFromParticipant(errorId)));
+        return new CommandModule(new CommandBufferMerger(), resolvedPreflight, resolvedExecutor, world, prepareFromWorld);
+    }
 
     public CommandModuleState State
     {
@@ -92,6 +117,12 @@ public sealed class CommandModule
 
         using (operation)
         {
+            if (_prepareFromWorld && _world is not null)
+            {
+                CommandPrepareResult prepared = _preflight.Prepare(in batch, BindWorldPrepareContext(batch));
+                return new CommandPreflightResult(prepared.Status, prepared.Delta, prepared.Failure);
+            }
+
             return _preflight.TryPrepare(batch);
         }
     }
@@ -188,6 +219,20 @@ public sealed class CommandModule
             operation = new CommandOperationLease(this, permitsApply);
             return true;
         }
+    }
+
+    private CommandPrepareContext BindWorldPrepareContext(MergedCommandBatch batch)
+    {
+        EcsWorld world = _world!;
+        int availableSlots = world.Budget.MaxEntities - world.ActiveEntityCount;
+        return new CommandPrepareContext(
+            batch.TickId,
+            batch.WorldId,
+            GeneratedContractManifest.SchemaEpoch,
+            CommandBufferBudget.Unlimited,
+            availableSlots <= 0 ? 0UL : (ulong)availableSlots,
+            (ulong)world.Budget.MaxChangeEntries,
+            new EcsWorldCommandValidationContext(world));
     }
 
     private static CommandApplyReceipt RejectedApply(PreparedGameDelta? delta, string errorId) =>
