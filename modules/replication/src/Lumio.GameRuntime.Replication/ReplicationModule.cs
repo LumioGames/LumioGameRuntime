@@ -1,5 +1,3 @@
-using System;
-using Lumio.GameRuntime.Replication.History;
 using Lumio.GameRuntime.Replication.Lifecycle;
 using Lumio.GameRuntime.Replication.Mapping;
 
@@ -11,14 +9,4 @@ public sealed class ReplicationModule
         new(sessionId, productId, gameReleaseId, mappings, budget, connectionGeneration);
 
     public static ReplicationModule Create() => new();
-}
-
-public sealed class ReplicationServices
-{
-    public ReplicationServices(ReplicationBudget budget)
-    {
-        Budget = budget;
-    }
-
-    public ReplicationBudget Budget { get; }
 }

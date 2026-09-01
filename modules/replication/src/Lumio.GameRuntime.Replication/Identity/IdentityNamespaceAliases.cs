@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Lumio.GameRuntime.Ecs;
 
 namespace Lumio.GameRuntime.Replication.Identity;
 
@@ -96,6 +97,18 @@ public sealed class NetEntityMappingTable
         _inner = new Mapping.NetEntityMappingTable(initialGeneration);
     }
 
+    public NetEntityMappingTable(WorldId worldId)
+    {
+        _inner = new Mapping.NetEntityMappingTable(worldId);
+    }
+
+    public NetEntityMappingTable(WorldId worldId, ulong initialGeneration)
+    {
+        _inner = new Mapping.NetEntityMappingTable(worldId, initialGeneration);
+    }
+
+    public WorldId WorldId => _inner.WorldId;
+
     public int Count => _inner.Count;
 
     public ulong Generation => _inner.Generation;
@@ -158,6 +171,12 @@ public sealed class NetEntityMappingTable
 
     internal MappingBindingResult TryBind(NetEntityId netEntityId, string localEntityId, ulong currentRevision) => Bind(netEntityId, localEntityId, currentRevision);
 
+    public bool TryBind(NetEntityId netEntityId, LocalEntityId localEntityId) =>
+        _inner.TryBind((Mapping.NetEntityId)netEntityId, localEntityId);
+
+    public bool TryBind(NetEntityId netEntityId, LocalEntityId localEntityId, WorldId worldId) =>
+        _inner.TryBind((Mapping.NetEntityId)netEntityId, localEntityId, worldId);
+
     internal bool DestroyAndTombstone(NetEntityId netEntityId, ulong destroyRevision, in TombstoneHorizonResult horizon) =>
         Remove(netEntityId, destroyRevision, horizon);
 
@@ -166,6 +185,21 @@ public sealed class NetEntityMappingTable
 
     public bool TryResolveLocal(NetEntityId netEntityId, ulong expectedGeneration, out string? localEntityId, IdentityStoreToken token) =>
         _inner.TryResolveLocal((Mapping.NetEntityId)netEntityId, expectedGeneration, out localEntityId, token.Inner);
+
+    public bool TryResolveLocal(NetEntityId netEntityId, out LocalEntityId localEntityId) =>
+        _inner.TryResolveLocal((Mapping.NetEntityId)netEntityId, out localEntityId);
+
+    public bool TryResolveNet(LocalEntityId localEntityId, out NetEntityId netEntityId)
+    {
+        if (_inner.TryResolveNet(localEntityId, out Mapping.NetEntityId value))
+        {
+            netEntityId = value;
+            return true;
+        }
+
+        netEntityId = default;
+        return false;
+    }
 
     public bool TryResolveNet(string localEntityId, out NetEntityId netEntityId)
     {

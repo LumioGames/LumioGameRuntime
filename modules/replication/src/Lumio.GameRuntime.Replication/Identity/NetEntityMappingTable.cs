@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using Lumio.GameRuntime.Ecs;
 using Lumio.GameRuntime.Replication.Lifecycle;
 
 namespace Lumio.GameRuntime.Replication.Mapping;
@@ -95,21 +96,41 @@ public sealed class NetEntityMappingTable
     // Keep source ordering independently of the horizon so an expired
     // tombstone cannot admit an older same-generation lifecycle update.
     private readonly Dictionary<NetEntityId, LifecycleFence> _lifecycleFences = new();
+    private readonly int _ownerThreadId;
 
     public NetEntityMappingTable() : this(1)
     {
     }
 
     public NetEntityMappingTable(ulong initialGeneration)
-        : this(new ReplicationStoreScope(initialGeneration))
+        : this(new ReplicationStoreScope(initialGeneration), default)
+    {
+    }
+
+    public NetEntityMappingTable(WorldId worldId)
+        : this(worldId, 1)
+    {
+    }
+
+    public NetEntityMappingTable(WorldId worldId, ulong initialGeneration)
+        : this(new ReplicationStoreScope(initialGeneration), worldId)
     {
     }
 
     internal NetEntityMappingTable(ReplicationStoreScope scope)
+        : this(scope, default)
+    {
+    }
+
+    private NetEntityMappingTable(ReplicationStoreScope scope, WorldId worldId)
     {
         _scope = scope ?? throw new ArgumentNullException(nameof(scope));
         _tombstones = scope.Tombstones;
+        WorldId = worldId;
+        _ownerThreadId = Environment.CurrentManagedThreadId;
     }
+
+    public WorldId WorldId { get; }
 
     public int Count
     {
@@ -211,6 +232,15 @@ public sealed class NetEntityMappingTable
 
     internal MappingBindingResult TryBind(NetEntityId netEntityId, string localEntityId, ulong currentRevision) => Bind(netEntityId, localEntityId, currentRevision);
 
+    public bool TryBind(NetEntityId netEntityId, LocalEntityId localEntityId) =>
+        TryBind(netEntityId, localEntityId, WorldId);
+
+    public bool TryBind(NetEntityId netEntityId, LocalEntityId localEntityId, WorldId worldId)
+    {
+        if (worldId != WorldId || localEntityId.IsDefault || !IsOwnerThread()) return false;
+        return Bind(netEntityId, localEntityId.ToString(), CaptureToken()).Succeeded;
+    }
+
     internal bool DestroyAndTombstone(NetEntityId netEntityId, ulong destroyRevision, in TombstoneHorizonResult horizon) =>
         Remove(netEntityId, destroyRevision, horizon);
 
@@ -219,6 +249,23 @@ public sealed class NetEntityMappingTable
 
     public bool TryResolveLocal(NetEntityId netEntityId, ulong expectedGeneration, out string? localEntityId, IdentityStoreToken token) =>
         TryResolveLocalCore(netEntityId, expectedGeneration, out localEntityId, token, true);
+
+    public bool TryResolveLocal(NetEntityId netEntityId, out LocalEntityId localEntityId)
+    {
+        localEntityId = default;
+        lock (_scope.Gate)
+        {
+            if (_scope.State == IdentityStoreState.Active &&
+                _byNet.TryGetValue(netEntityId, out LocalBinding? binding) &&
+                LocalEntityId.TryParse(binding.LocalEntityId, out localEntityId))
+                return true;
+            localEntityId = default;
+            return false;
+        }
+    }
+
+    public bool TryResolveNet(LocalEntityId localEntityId, out NetEntityId netEntityId) =>
+        TryResolveNet(localEntityId.ToString(), out netEntityId);
 
     public bool TryResolveNet(string localEntityId, out NetEntityId netEntityId)
     {
@@ -668,6 +715,9 @@ public sealed class NetEntityMappingTable
     }
 
     internal void ClearContextLocked() => ClearLocked();
+
+    private bool IsOwnerThread() =>
+        WorldId.IsDefault || Environment.CurrentManagedThreadId == _ownerThreadId;
 
     private MappingBindingResult StaleToken(IdentityStoreToken token) =>
         _scope.ClassifyLocked(token) == ReplicationTokenStatus.GenerationMismatch
