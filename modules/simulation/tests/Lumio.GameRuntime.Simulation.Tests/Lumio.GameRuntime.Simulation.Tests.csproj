@@ -5,7 +5,7 @@
     <IsPackable>false</IsPackable>
     <OutputType>Exe</OutputType>
     <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
-    <NoWarn>$(NoWarn);CA1861;xUnit2013</NoWarn>
+    <NoWarn>$(NoWarn);CA1861;CA1707;CA1859;xUnit2013;xUnit2031</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/Lumio.GameRuntime.Simulation/Lumio.GameRuntime.Simulation.csproj" />
