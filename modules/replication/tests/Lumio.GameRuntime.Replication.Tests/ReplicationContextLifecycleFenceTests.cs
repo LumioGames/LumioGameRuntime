@@ -1,5 +1,5 @@
 using System;
-using System.Threading.Tasks;
+using System.Threading;
 using Lumio.GameRuntime.Replication.History;
 using Lumio.GameRuntime.Replication.Lifecycle;
 using Lumio.GameRuntime.Replication.Mapping;
@@ -79,7 +79,7 @@ public sealed class ReplicationContextLifecycleFenceTests
     }
 
     [Fact]
-    public async Task RejectedGenerationAdvancesLeaveUsableStateUnchanged()
+    public void RejectedGenerationAdvancesLeaveUsableStateUnchanged()
     {
         using ReplicationContext context = CreateContext(7);
         Assert.True(context.BeginSnapshot().Succeeded);
@@ -91,7 +91,7 @@ public sealed class ReplicationContextLifecycleFenceTests
         Assert.True(context.IsWorkTokenCurrent(token));
         Assert.Equal(1, context.Baselines.Count);
 
-        (bool Succeeded, ulong Next) nonOwner = await Task.Run(() =>
+        (bool Succeeded, ulong Next) nonOwner = RunOnDedicatedNonOwnerThread(() =>
         {
             bool succeeded = context.TryAdvanceConnectionGeneration(7, out ulong next);
             return (succeeded, next);
@@ -290,5 +290,39 @@ public sealed class ReplicationContextLifecycleFenceTests
         return new ReplicationContext(
             "session-1", "product", "release-1", mappings.View,
             new ReplicationBudget(16, 8192, 16, 8192), generation);
+    }
+
+    // Task.Run can resume on the owner ManagedThreadId under xunit collection parallel.
+    private static T RunOnDedicatedNonOwnerThread<T>(Func<T> work)
+    {
+        int ownerThreadId = Environment.CurrentManagedThreadId;
+        T result = default!;
+        Exception? error = null;
+        int workerThreadId = ownerThreadId;
+        for (int attempt = 0; attempt < 3 && workerThreadId == ownerThreadId; attempt++)
+        {
+            error = null;
+            var worker = new Thread(() =>
+            {
+                workerThreadId = Environment.CurrentManagedThreadId;
+                if (workerThreadId == ownerThreadId)
+                    return;
+                try
+                {
+                    result = work();
+                }
+                catch (Exception ex)
+                {
+                    error = ex;
+                }
+            });
+            worker.Start();
+            Assert.True(worker.Join(TimeSpan.FromSeconds(5)));
+        }
+
+        Assert.NotEqual(ownerThreadId, workerThreadId);
+        if (error is not null)
+            throw error;
+        return result;
     }
 }

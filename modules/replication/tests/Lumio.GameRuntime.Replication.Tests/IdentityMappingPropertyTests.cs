@@ -1,6 +1,6 @@
 using System;
 using System.Globalization;
-using System.Threading.Tasks;
+using System.Threading;
 using Lumio.GameRuntime.Ecs;
 using Lumio.GameRuntime.Replication.Lifecycle;
 using Lumio.GameRuntime.Replication.Mapping;
@@ -126,11 +126,12 @@ public sealed class IdentityMappingPropertyTests
     }
 
     [Fact]
-    public async Task WorldBoundTableRejectsNonOwnerThreadMutation()
+    public void WorldBoundTableRejectsNonOwnerThreadMutation()
     {
         var table = new NetEntityMappingTable(Fixtures.WorldId);
         Assert.True(table.TryBind(Fixtures.Net(1), new LocalEntityId(4, 1)));
-        bool boundOnWorker = await Task.Run(() => table.TryBind(Fixtures.Net(2), new LocalEntityId(5, 1)));
+        bool boundOnWorker = RunOnDedicatedNonOwnerThread(
+            () => table.TryBind(Fixtures.Net(2), new LocalEntityId(5, 1)));
 
         Assert.False(boundOnWorker);
         Assert.Equal(1, table.Count);
@@ -138,11 +139,12 @@ public sealed class IdentityMappingPropertyTests
     }
 
     [Fact]
-    public async Task TokenBindFromWorkerAfterOwnerCaptureFails()
+    public void TokenBindFromWorkerAfterOwnerCaptureFails()
     {
         var table = new NetEntityMappingTable(Fixtures.WorldId);
         IdentityStoreToken token = table.CaptureToken();
-        MappingBindingResult worker = await Task.Run(() => table.Bind(Fixtures.Net(2), "5:1", token));
+        MappingBindingResult worker = RunOnDedicatedNonOwnerThread(
+            () => table.Bind(Fixtures.Net(2), "5:1", token));
 
         Assert.False(worker.Succeeded);
         Assert.Equal("WrongContext", worker.GeneratedErrorId);
@@ -223,6 +225,40 @@ public sealed class IdentityMappingPropertyTests
         return new ReplicationContext(
             "session-1", "product", "release-1", mappings.View,
             new ReplicationBudget(16, 8192, 16, 8192));
+    }
+
+    // Task.Run can resume on the owner ManagedThreadId under xunit collection parallel.
+    private static T RunOnDedicatedNonOwnerThread<T>(Func<T> work)
+    {
+        int ownerThreadId = Environment.CurrentManagedThreadId;
+        T result = default!;
+        Exception? error = null;
+        int workerThreadId = ownerThreadId;
+        for (int attempt = 0; attempt < 3 && workerThreadId == ownerThreadId; attempt++)
+        {
+            error = null;
+            var worker = new Thread(() =>
+            {
+                workerThreadId = Environment.CurrentManagedThreadId;
+                if (workerThreadId == ownerThreadId)
+                    return;
+                try
+                {
+                    result = work();
+                }
+                catch (Exception ex)
+                {
+                    error = ex;
+                }
+            });
+            worker.Start();
+            Assert.True(worker.Join(TimeSpan.FromSeconds(5)));
+        }
+
+        Assert.NotEqual(ownerThreadId, workerThreadId);
+        if (error is not null)
+            throw error;
+        return result;
     }
 
     private static class Fixtures
