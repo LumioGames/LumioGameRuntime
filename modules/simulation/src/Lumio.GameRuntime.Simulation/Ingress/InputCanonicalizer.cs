@@ -1,8 +1,8 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.Linq;
-using System.Security.Cryptography;
+using Lumio.Gen.ContractTypes;
+using Lumio.Gen.ProtocolPermissionValidator;
 
 namespace Lumio.GameRuntime.Simulation.Ingress;
 
@@ -17,7 +17,9 @@ public static class InputCanonicalizer
         WriteUInt64(stream, tickId);
         foreach (OpaqueIngress value in ordered)
         {
+            WriteUInt64(stream, (ulong)(int)value.ArrivalClass);
             WriteString(stream, value.SessionId);
+            WriteString(stream, value.CommandId);
             WriteUInt64(stream, value.ClientCommandSequence);
             WriteUInt64(stream, value.TargetTickId);
             WriteUInt64(stream, value.Generation);
@@ -29,12 +31,43 @@ public static class InputCanonicalizer
         return new CanonicalInputBatch(tickId, ordered, SimulationHash.Sha256Hex(stream.ToArray()));
     }
 
+    public static bool TryValidate(in OpaqueIngress value, long maxBytes, out IngressEnqueueStatus status)
+    {
+        if (!SimulationValidation.IsIdentifier(value.SessionId) ||
+            !SimulationValidation.IsIdentifier(value.CommandId) ||
+            value.Payload is null ||
+            value.Length <= 0)
+        {
+            status = IngressEnqueueStatus.Invalid;
+            return false;
+        }
+
+        if (maxBytes <= 0 || value.Length > maxBytes)
+        {
+            status = IngressEnqueueStatus.Rejected;
+            return false;
+        }
+
+        if (ProtocolGate.RegisteredMessageIds.Length == 0 || Catalog.StableErrorIds.Length == 0)
+        {
+            status = IngressEnqueueStatus.Invalid;
+            return false;
+        }
+
+        status = IngressEnqueueStatus.Accepted;
+        return true;
+    }
+
     private static int Compare(OpaqueIngress left, OpaqueIngress right)
     {
-        int session = StringComparer.Ordinal.Compare(left.SessionId, right.SessionId);
-        if (session != 0) return session;
+        int arrival = left.ArrivalClass.CompareTo(right.ArrivalClass);
+        if (arrival != 0) return arrival;
         int sequence = left.ClientCommandSequence.CompareTo(right.ClientCommandSequence);
         if (sequence != 0) return sequence;
+        int command = StringComparer.Ordinal.Compare(left.CommandId, right.CommandId);
+        if (command != 0) return command;
+        int session = StringComparer.Ordinal.Compare(left.SessionId, right.SessionId);
+        if (session != 0) return session;
         int targetTick = left.TargetTickId.CompareTo(right.TargetTickId);
         if (targetTick != 0) return targetTick;
         int generation = left.Generation.CompareTo(right.Generation);
@@ -56,7 +89,7 @@ public static class InputCanonicalizer
 
     private static void WriteString(System.IO.Stream stream, string value)
     {
-        byte[] bytes = System.Text.Encoding.UTF8.GetBytes(value);
+        byte[] bytes = System.Text.Encoding.UTF8.GetBytes(value ?? string.Empty);
         WriteUInt64(stream, (ulong)bytes.Length);
         stream.Write(bytes, 0, bytes.Length);
     }
