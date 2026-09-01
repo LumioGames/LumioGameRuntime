@@ -5,3 +5,4 @@
 *.yaml text eol=lf
 src/Lumio.GameRuntime.GeneratedContracts/Generated/** text eol=lf
 modules/replication/contracts/entity-binding-and-query-v1.json text eol=lf
+modules/replication/contracts/gameplay-command-envelope-v1.json text eol=lf
