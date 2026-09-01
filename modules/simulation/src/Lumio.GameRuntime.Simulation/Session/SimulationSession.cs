@@ -1,7 +1,18 @@
 using System;
+using Lumio.GameRuntime.Coordination;
+using Lumio.GameRuntime.Ecs;
+using Lumio.GameRuntime.Simulation.Phases;
 using Lumio.GameRuntime.Simulation.Tick;
 
 namespace Lumio.GameRuntime.Simulation.Session;
+
+/// <summary>Forwards Revision/Txn reads to Coordination. The session never caches a mutable copy.</summary>
+internal interface ICoordinationReadPort
+{
+    SessionRevisionVectorView ReadRevision();
+
+    TxnResolutionResult QueryTxn(string txnId);
+}
 
 public readonly record struct SimulationSessionOptions(
     string SessionId,
@@ -12,17 +23,22 @@ public readonly record struct SimulationSessionOptions(
     int MaxOutputItems,
     long MaxOutputBytes)
 {
-    public static SimulationSessionOptions Default(string sessionId) => new(sessionId, 0, 1, 256, 1_048_576, 256, 1_048_576);
+    public static SimulationSessionOptions Default(string sessionId) =>
+        new(sessionId, 0, 1, 256, 1_048_576, 256, 1_048_576) { WorldId = new WorldId(1UL) };
+
+    public WorldId WorldId { get; init; }
 
     public bool IsValid => SimulationValidation.IsIdentifier(SessionId) && IngressCapacity > 0 && IngressBytes > 0 && MaxOutputItems > 0 && MaxOutputBytes > 0;
 }
 
-public sealed class SimulationSession : IDisposable
+public sealed class SimulationSession : IRuntimeSession
 {
     private readonly object _gate = new();
     private readonly SimulationSessionOptions _options;
     private readonly SimulationOwnerThread _owner;
     private readonly TickRunner _runner;
+    private readonly WorldId _worldId;
+    private readonly ICoordinationReadPort? _coordination;
     private SimulationSessionState _state = SimulationSessionState.Created;
     private bool _disposed;
     private bool _tickInFlight;
@@ -31,11 +47,14 @@ public sealed class SimulationSession : IDisposable
     internal SimulationSession(
         SimulationSessionOptions options,
         TickExecutorComposition? composition = null,
-        TickRunner? runner = null)
+        TickRunner? runner = null,
+        ICoordinationReadPort? coordination = null)
     {
         if (!options.IsValid) throw new ArgumentOutOfRangeException(nameof(options));
         _options = options;
+        _worldId = options.WorldId.IsDefault ? new WorldId(1UL) : options.WorldId;
         _owner = new SimulationOwnerThread();
+        _coordination = coordination;
         var runnerOptions = new TickRunnerOptions(options.Seed, options.InitialTickId, options.MaxOutputItems, options.MaxOutputBytes)
         {
             IngressCapacity = options.IngressCapacity,
@@ -48,6 +67,8 @@ public sealed class SimulationSession : IDisposable
     }
 
     public string SessionId => _options.SessionId;
+
+    public WorldId WorldId => _worldId;
 
     public SimulationSessionState State
     {
@@ -84,10 +105,30 @@ public sealed class SimulationSession : IDisposable
         }
     }
 
+    TickRunResult IRuntimeSession.RunTick(in TickInput input)
+    {
+        HostTickRequest request = input.Request;
+        return RunTick(in request);
+    }
+
     public TickRunResult RunTick(in HostTickRequest request)
     {
         lock (_gate)
         {
+            if (_state == SimulationSessionState.Disposed)
+                return TickRunResult.Rejected(request.TickId, "ContextClosing", $"Session is {_state}.");
+            if (!_owner.IsOwner)
+            {
+                _state = SimulationSessionState.Faulted;
+                var ownerFailure = new PhaseFailureRecord(
+                    request.TickId,
+                    TickPhase.IngressCapture,
+                    null,
+                    "WrongContext",
+                    "Tick execution belongs to the owner thread.",
+                    false);
+                return TickRunResult.Faulted(request.TickId, string.Empty, ownerFailure);
+            }
             if (!_owner.Validate(request.Epoch)) return TickRunResult.Rejected(request.TickId, "WrongContext", "The request is not from the owner epoch.");
             bool faultedReplay = _state == SimulationSessionState.Faulted && _runner.IsFaulted;
             if (_state != SimulationSessionState.Running && !faultedReplay)
@@ -112,6 +153,18 @@ public sealed class SimulationSession : IDisposable
                 }
             }
         }
+    }
+
+    public SessionRevisionVectorView ReadRevision()
+    {
+        ICoordinationReadPort port = _coordination ?? throw new InvalidOperationException("Coordination read port is not bound.");
+        return port.ReadRevision();
+    }
+
+    public TxnResolutionResult QueryTxn(string txnId)
+    {
+        ICoordinationReadPort port = _coordination ?? throw new InvalidOperationException("Coordination read port is not bound.");
+        return port.QueryTxn(txnId);
     }
 
     public LifecycleResult MarkSnapshotted(SessionEpoch epoch)

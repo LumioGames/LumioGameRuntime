@@ -8,6 +8,14 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="../../../ecs/src/Lumio.GameRuntime.Ecs/Lumio.GameRuntime.Ecs.csproj" Condition="Exists('../../../ecs/src/Lumio.GameRuntime.Ecs/Lumio.GameRuntime.Ecs.csproj')" />
+    <ProjectReference Include="../../../command/src/Lumio.GameRuntime.Command/Lumio.GameRuntime.Command.csproj" Condition="Exists('../../../command/src/Lumio.GameRuntime.Command/Lumio.GameRuntime.Command.csproj')" />
+    <ProjectReference Include="../../../coordination/src/Lumio.GameRuntime.Coordination/Lumio.GameRuntime.Coordination.csproj" Condition="Exists('../../../coordination/src/Lumio.GameRuntime.Coordination/Lumio.GameRuntime.Coordination.csproj')" />
+    <ProjectReference Include="../../../gas/src/Lumio.GameRuntime.Gas/Lumio.GameRuntime.Gas.csproj" Condition="Exists('../../../gas/src/Lumio.GameRuntime.Gas/Lumio.GameRuntime.Gas.csproj')" />
+    <ProjectReference Include="../../../replication/src/Lumio.GameRuntime.Replication/Lumio.GameRuntime.Replication.csproj" Condition="Exists('../../../replication/src/Lumio.GameRuntime.Replication/Lumio.GameRuntime.Replication.csproj')" />
+    <ProjectReference Include="../../../config/src/Lumio.GameRuntime.Config/Lumio.GameRuntime.Config.csproj" Condition="Exists('../../../config/src/Lumio.GameRuntime.Config/Lumio.GameRuntime.Config.csproj')" />
+    <ProjectReference Include="../../../observability/src/Lumio.GameRuntime.Observability/Lumio.GameRuntime.Observability.csproj" Condition="Exists('../../../observability/src/Lumio.GameRuntime.Observability/Lumio.GameRuntime.Observability.csproj')" />
+    <!-- Persistence is README-only on this SHA; do not invent LumioBinV1 or a missing csproj. -->
     <ProjectReference Include="../../../../src/Lumio.GameRuntime.GeneratedContracts/Lumio.GameRuntime.GeneratedContracts.csproj" />
     <Compile Include="../../../../src/Lumio.GameRuntime.GeneratedContracts/Generated/Compatibility/IsExternalInit.cs" Link="Compatibility/IsExternalInit.cs" />
   </ItemGroup>

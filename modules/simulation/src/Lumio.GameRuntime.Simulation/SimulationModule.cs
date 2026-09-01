@@ -6,6 +6,8 @@ namespace Lumio.GameRuntime.Simulation;
 
 public sealed class SimulationModule
 {
+    public SimulationServices Services { get; } = new();
+
     public SimulationSession CreateSession(SimulationSessionOptions options) => new(options);
 
     internal SimulationSession CreateSession(SimulationSessionOptions options, TickExecutorComposition composition) =>
