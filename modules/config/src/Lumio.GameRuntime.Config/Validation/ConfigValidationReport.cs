@@ -18,6 +18,7 @@ internal enum ConfigValidationIssueCode
     JsonMalformed,
     RefTargetMissing,
     RefTargetTableUnknown,
+    MissingRef,
     ArtifactDeclarationInvalid,
     SignatureMissing,
     SourceHashMalformed,

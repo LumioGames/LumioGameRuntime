@@ -9,8 +9,11 @@ namespace Lumio.GameRuntime.Config;
 /// <summary>
 /// Validates a generated config artifact against generated <see cref="ConfigTable"/>
 /// column metadata (type, required, min/max, enumValues, refTarget, activation).
-/// Returns every issue; never swallows failures into a valid report.
-/// Canonical JSON rules come from generated <c>CanonicalForm</c> constants.
+/// Ref cells resolve to a row key of <c>RefTarget</c> only within this artifact
+/// (ADR-033 missing-ref). Cross-layer / cross-artifact refs are not resolved here;
+/// T07 may do that after merge, or not. Returns every issue; never swallows
+/// failures into a valid report. Canonical JSON rules come from generated
+/// <c>CanonicalForm</c> constants.
 /// </summary>
 internal sealed class GeneratedConfigValidator
 {
@@ -43,6 +46,7 @@ internal sealed class GeneratedConfigValidator
         }
 
         var tableIds = new HashSet<string>(StringComparer.Ordinal);
+        var rowKeysByTable = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
         foreach (var table in artifact.Tables)
         {
             if (string.IsNullOrWhiteSpace(table.TableId))
@@ -64,6 +68,20 @@ internal sealed class GeneratedConfigValidator
                     string.Empty,
                     string.Empty,
                     "tableId declared twice in one artifact"));
+            }
+
+            if (!rowKeysByTable.ContainsKey(table.TableId))
+            {
+                var keys = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var row in table.Rows)
+                {
+                    if (!string.IsNullOrWhiteSpace(row.Key))
+                    {
+                        keys.Add(row.Key);
+                    }
+                }
+
+                rowKeysByTable.Add(table.TableId, keys);
             }
         }
 
@@ -89,7 +107,7 @@ internal sealed class GeneratedConfigValidator
             var rowKeys = new HashSet<string>(StringComparer.Ordinal);
             foreach (var row in table.Rows)
             {
-                ValidateRow(table, row, rowKeys, limits, issues, ref artifactRowBytesTotal);
+                ValidateRow(table, row, rowKeys, rowKeysByTable, limits, issues, ref artifactRowBytesTotal);
             }
         }
 
@@ -207,6 +225,7 @@ internal sealed class GeneratedConfigValidator
         ConfigTable table,
         ConfigTableRowsItem row,
         HashSet<string> rowKeys,
+        IReadOnlyDictionary<string, HashSet<string>> rowKeysByTable,
         ConfigValidationLimits limits,
         List<ConfigValidationIssue> issues,
         ref long artifactRowBytesTotal)
@@ -313,7 +332,7 @@ internal sealed class GeneratedConfigValidator
             }
 
             presentColumns.Add(member);
-            ValidateMemberValue(table, row, column, members[member], issues);
+            ValidateMemberValue(table, row, column, members[member], rowKeysByTable, issues);
         }
 
         foreach (var column in table.Columns)
@@ -335,6 +354,7 @@ internal sealed class GeneratedConfigValidator
         ConfigTableRowsItem row,
         ConfigTableColumnsItem column,
         CanonicalJsonValue value,
+        IReadOnlyDictionary<string, HashSet<string>> rowKeysByTable,
         List<ConfigValidationIssue> issues)
     {
         switch (column.Type)
@@ -348,12 +368,21 @@ internal sealed class GeneratedConfigValidator
                 break;
 
             case ConfigTableColumnsItemType.String:
-            case ConfigTableColumnsItemType.Ref:
                 if (value.Kind != CanonicalJsonKind.String)
                 {
                     TypeMismatch(table, row, column, value, issues, "expected string");
                 }
 
+                break;
+
+            case ConfigTableColumnsItemType.Ref:
+                if (value.Kind != CanonicalJsonKind.String)
+                {
+                    TypeMismatch(table, row, column, value, issues, "expected string");
+                    break;
+                }
+
+                ValidateRefRowKey(table, row, column, value.Text!, rowKeysByTable, issues);
                 break;
 
             case ConfigTableColumnsItemType.Enum:
@@ -451,6 +480,36 @@ internal sealed class GeneratedConfigValidator
                 row.Key,
                 column.Name,
                 $"value {literal} above declared maximum {column.Maximum}"));
+        }
+    }
+
+    private static void ValidateRefRowKey(
+        ConfigTable table,
+        ConfigTableRowsItem row,
+        ConfigTableColumnsItem column,
+        string referencedKey,
+        IReadOnlyDictionary<string, HashSet<string>> rowKeysByTable,
+        List<ConfigValidationIssue> issues)
+    {
+        var target = column.RefTarget;
+        if (string.IsNullOrWhiteSpace(target))
+        {
+            return;
+        }
+
+        if (!rowKeysByTable.TryGetValue(target, out var keys))
+        {
+            return;
+        }
+
+        if (!keys.Contains(referencedKey))
+        {
+            issues.Add(new ConfigValidationIssue(
+                ConfigValidationIssueCode.MissingRef,
+                table.TableId,
+                row.Key,
+                column.Name,
+                $"ref cell '{referencedKey}' does not resolve to a row key in table '{target}'"));
         }
     }
 

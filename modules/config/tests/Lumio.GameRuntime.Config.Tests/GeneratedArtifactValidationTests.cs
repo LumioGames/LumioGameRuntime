@@ -12,7 +12,8 @@ namespace Lumio.GameRuntime.Config.Tests;
 /// T06.S01 / S04 / S06: generated artifact validation and public-surface constraints.
 /// Row values are toolchain canonical JSON (<see cref="OpaqueJson"/>), not human source.
 /// Validator applies generated <see cref="ConfigTable"/> column metadata; it does not
-/// invent defaults, import, or cross-row reference resolution.
+/// invent defaults or import. Ref cells resolve to a row key of RefTarget within the
+/// same artifact (ADR-033 missing-ref); cross-layer refs are not resolved here.
 /// </summary>
 public sealed class GeneratedArtifactValidationTests
 {
@@ -175,7 +176,10 @@ public sealed class GeneratedArtifactValidationTests
                     TableFactory.Row("orphan", "{\"reward\":\"sword\"}"))),
             TableFactory.Table(
                 "items",
-                TableFactory.Column("name", "string", required: true)));
+                TableFactory.Cols(
+                    TableFactory.Column("name", "string", required: true)),
+                TableFactory.Rows(
+                    TableFactory.Row("sword", "{\"name\":\"sword\"}"))));
         var noTargetArtifact = TableFactory.Artifact(
             TableFactory.Table(
                 "t",
@@ -191,6 +195,30 @@ public sealed class GeneratedArtifactValidationTests
         Assert.Contains(
             missingTargetReport.Issues,
             issue => issue.Code == ConfigValidationIssueCode.RefTargetTableUnknown);
+    }
+
+    [Fact]
+    public void RefCellMustResolveToARowKeyInTheRefTargetTable()
+    {
+        // Homomorphic to architecture fixture config/missing-ref: table build-costs
+        // declares next: ref → build-costs; row stone.next = "obsidian"; no obsidian row.
+        var artifact = TableFactory.Artifact(
+            TableFactory.Table(
+                "build-costs",
+                TableFactory.Cols(
+                    TableFactory.Column("next", "ref", required: true, refTarget: "build-costs")),
+                TableFactory.Rows(
+                    TableFactory.Row("stone", "{\"next\":\"obsidian\"}"))));
+
+        var report = new GeneratedConfigValidator().Validate(artifact, ConfigValidationLimits.Default);
+
+        Assert.False(report.IsValid);
+        Assert.Contains(
+            report.Issues,
+            issue => issue.Code == ConfigValidationIssueCode.MissingRef
+                && issue.TableId == "build-costs"
+                && issue.RowKey == "stone"
+                && issue.Column == "next");
     }
 
     [Fact]
