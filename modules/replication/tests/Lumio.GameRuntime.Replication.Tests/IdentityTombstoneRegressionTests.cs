@@ -173,12 +173,12 @@ public sealed class IdentityTombstoneRegressionTests
         IdentityStoreToken tableToken = table.CaptureToken();
         IdentityStoreToken remapToken = remaps.CaptureToken();
         Assert.True(table.Bind(Id, "4:2", tableToken).Succeeded);
-        Assert.True(remaps.Add(Id, Id2, remapToken).Succeeded);
+        Assert.True(remaps.Add(ProvisionalIdentity(Id), AuthoritativeIdentity(Id2), remapToken).Succeeded);
 
         Assert.True(table.Invalidate(tableToken));
         Assert.True(remaps.Invalidate(remapToken));
         Assert.False(table.Bind(Id, "4:3", tableToken).Succeeded);
-        Assert.False(remaps.Add(Id, Id2, remapToken).Succeeded);
+        Assert.False(remaps.Add(ProvisionalIdentity(Id), AuthoritativeIdentity(Id2), remapToken).Succeeded);
         Assert.Empty(table.Snapshot());
         Assert.Empty(remaps.Snapshot());
         Assert.Empty(table.Snapshot(tableToken));
@@ -211,16 +211,16 @@ public sealed class IdentityTombstoneRegressionTests
         IdentityStoreToken tombstoneToken = tombstones.CaptureToken();
 
         Assert.True(mapping.Bind(Id, "4:2", mappingToken).Succeeded);
-        Assert.False(remaps.Add(Id, Id2, mappingToken).Succeeded);
+        Assert.False(remaps.Add(ProvisionalIdentity(Id), AuthoritativeIdentity(Id2), mappingToken).Succeeded);
         Assert.False(tombstones.Add(Id, 20, mappingToken));
-        Assert.True(remaps.Add(Id, Id2, remapToken).Succeeded);
+        Assert.True(remaps.Add(ProvisionalIdentity(Id), AuthoritativeIdentity(Id2), remapToken).Succeeded);
         Assert.True(tombstones.Add(Id, 20, tombstoneToken));
         Assert.False(mapping.IsTokenCurrent(new IdentityStoreToken(1)));
         Assert.True(mapping.Reset(mappingToken, 2));
         Assert.True(remaps.Reset(remapToken, 2));
         Assert.True(tombstones.Reset(tombstoneToken, 2));
 
-        Assert.False(remaps.Add(Id, Id2, remapToken).Succeeded);
+        Assert.False(remaps.Add(ProvisionalIdentity(Id), AuthoritativeIdentity(Id2), remapToken).Succeeded);
         Assert.False(tombstones.Contains(Id, 1, tombstoneToken));
     }
 
@@ -231,4 +231,14 @@ public sealed class IdentityTombstoneRegressionTests
             "server-a", 7, 15, generation, "4:" + generation,
             EntityIdentityNamespace.Authoritative, lifecycle, until, null, 10, null);
     }
+
+    private static EntityIdentity ProvisionalIdentity(NetEntityId id) =>
+        new(id.Value, "client-provisional", 7, 15, 1, "6:1",
+            EntityIdentityNamespace.Provisional, EntityIdentityLifecycle.Alive,
+            null, null, null, null);
+
+    private static EntityIdentity AuthoritativeIdentity(NetEntityId id) =>
+        new(id.Value, "server-a", 7, 15, 1, "7:1",
+            EntityIdentityNamespace.Authoritative, EntityIdentityLifecycle.Alive,
+            null, null, null, null);
 }

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Lumio.GameRuntime.Ecs;
 using Lumio.GameRuntime.Replication.Lifecycle;
 
 namespace Lumio.GameRuntime.Replication.Mapping;
@@ -18,20 +19,42 @@ public sealed class ProvisionalRemapTable
     private readonly ReplicationStoreScope _scope;
     private readonly Dictionary<NetEntityId, NetEntityId> _remaps = new();
     private readonly Dictionary<NetEntityId, NetEntityId> _byAuthoritative = new();
+    private readonly int _ownerThreadId;
 
-    public ProvisionalRemapTable() : this(1)
+    public ProvisionalRemapTable() : this(new WorldId(1), 1)
     {
     }
 
     public ProvisionalRemapTable(ulong initialGeneration)
-        : this(new ReplicationStoreScope(initialGeneration))
+        : this(new WorldId(1), initialGeneration)
+    {
+    }
+
+    public ProvisionalRemapTable(WorldId worldId)
+        : this(worldId, 1)
+    {
+    }
+
+    public ProvisionalRemapTable(WorldId worldId, ulong initialGeneration)
+        : this(new ReplicationStoreScope(initialGeneration), worldId)
     {
     }
 
     internal ProvisionalRemapTable(ReplicationStoreScope scope)
+        : this(scope, new WorldId(1))
     {
-        _scope = scope ?? throw new ArgumentNullException(nameof(scope));
     }
+
+    private ProvisionalRemapTable(ReplicationStoreScope scope, WorldId worldId)
+    {
+        if (worldId.IsDefault)
+            throw new ArgumentOutOfRangeException(nameof(worldId), worldId, "A non-default WorldId is required.");
+        _scope = scope ?? throw new ArgumentNullException(nameof(scope));
+        WorldId = worldId;
+        _ownerThreadId = Environment.CurrentManagedThreadId;
+    }
+
+    public WorldId WorldId { get; }
 
     public int Count
     {
@@ -135,6 +158,7 @@ public sealed class ProvisionalRemapTable
     {
         lock (_scope.Gate)
         {
+            if (!IsOwnerThread()) return false;
             if (_scope.Mode != ReplicationStoreScopeMode.Standalone || !_scope.TryAdvanceConnectionGenerationLocked(nextGeneration)) return false;
             ClearLocked();
             return true;
@@ -145,6 +169,7 @@ public sealed class ProvisionalRemapTable
     {
         lock (_scope.Gate)
         {
+            if (!IsOwnerThread()) return false;
             if (_scope.Mode != ReplicationStoreScopeMode.Standalone || !_scope.TryAdvanceConnectionGenerationLocked()) return false;
             ClearLocked();
             return true;
@@ -159,6 +184,7 @@ public sealed class ProvisionalRemapTable
     {
         lock (_scope.Gate)
         {
+            if (!IsOwnerThread()) return false;
             if (_scope.Mode != ReplicationStoreScopeMode.Standalone || !_scope.IsCurrentLocked(expectedToken) || !_scope.TryAdvanceConnectionGenerationLocked()) return false;
             ClearLocked();
             return true;
@@ -169,6 +195,7 @@ public sealed class ProvisionalRemapTable
     {
         lock (_scope.Gate)
         {
+            if (!IsOwnerThread()) return false;
             if (_scope.Mode != ReplicationStoreScopeMode.Standalone || !_scope.IsCurrentLocked(expectedToken) || !_scope.TryAdvanceConnectionGenerationLocked(nextGeneration)) return false;
             ClearLocked();
             return true;
@@ -179,6 +206,7 @@ public sealed class ProvisionalRemapTable
     {
         lock (_scope.Gate)
         {
+            if (!IsOwnerThread()) return false;
             if (_scope.Mode != ReplicationStoreScopeMode.Standalone || !_scope.TryTransitionTerminalLocked(false)) return false;
             ClearLocked();
             return true;
@@ -189,6 +217,7 @@ public sealed class ProvisionalRemapTable
     {
         lock (_scope.Gate)
         {
+            if (!IsOwnerThread()) return false;
             if (_scope.Mode != ReplicationStoreScopeMode.Standalone || expectedGeneration != _scope.ConnectionGeneration || !_scope.TryTransitionTerminalLocked(false)) return false;
             ClearLocked();
             return true;
@@ -199,6 +228,7 @@ public sealed class ProvisionalRemapTable
     {
         lock (_scope.Gate)
         {
+            if (!IsOwnerThread()) return false;
             if (_scope.Mode != ReplicationStoreScopeMode.Standalone || !_scope.IsCurrentLocked(expectedToken) || !_scope.TryTransitionTerminalLocked(false)) return false;
             ClearLocked();
             return true;
@@ -209,6 +239,7 @@ public sealed class ProvisionalRemapTable
     {
         lock (_scope.Gate)
         {
+            if (!IsOwnerThread()) return false;
             if (_scope.Mode != ReplicationStoreScopeMode.Standalone || !_scope.TryTransitionTerminalLocked(true)) return false;
             ClearLocked();
             return true;
@@ -219,6 +250,7 @@ public sealed class ProvisionalRemapTable
     {
         lock (_scope.Gate)
         {
+            if (!IsOwnerThread()) return false;
             if (_scope.Mode != ReplicationStoreScopeMode.Standalone || !_scope.IsCurrentLocked(expectedToken) || !_scope.TryTransitionTerminalLocked(true)) return false;
             ClearLocked();
             return true;
@@ -238,16 +270,11 @@ public sealed class ProvisionalRemapTable
     {
         lock (_scope.Gate)
         {
+            if (!IsOwnerThread()) return ProvisionalRemapResult.Rejected("WrongContext");
             if (tokenRequired ? !_scope.IsCurrentLocked(token) : _scope.State != IdentityStoreState.Active) return StaleToken(token, tokenRequired);
-            if (!provisional.IsValid || !authoritative.IsValid || provisional == authoritative)
-                return ProvisionalRemapResult.Rejected("InvalidArgument");
-            if (_remaps.TryGetValue(provisional, out NetEntityId existing))
-                return existing == authoritative ? ProvisionalRemapResult.Accepted(existing) : ProvisionalRemapResult.Rejected("RevisionConflict");
-            if (_byAuthoritative.ContainsKey(authoritative))
-                return ProvisionalRemapResult.Rejected("RevisionConflict");
-            _remaps.Add(provisional, authoritative);
-            _byAuthoritative.Add(authoritative, provisional);
-            return ProvisionalRemapResult.Accepted(authoritative);
+            _ = provisional;
+            _ = authoritative;
+            return ProvisionalRemapResult.Rejected("ManifestMalformed");
         }
     }
 
@@ -259,6 +286,7 @@ public sealed class ProvisionalRemapTable
     {
         lock (_scope.Gate)
         {
+            if (!IsOwnerThread()) return ProvisionalRemapResult.Rejected("WrongContext");
             if (tokenRequired ? !_scope.IsCurrentLocked(token) : _scope.State != IdentityStoreState.Active) return StaleToken(token, tokenRequired);
             Identity.EntityIdentityValidationResult provisionalValidation = Identity.EntityIdentityValidator.Validate(provisional!);
             Identity.EntityIdentityValidationResult authoritativeValidation = Identity.EntityIdentityValidator.Validate(authoritative!);
@@ -308,6 +336,8 @@ public sealed class ProvisionalRemapTable
         _remaps.Clear();
         _byAuthoritative.Clear();
     }
+
+    private bool IsOwnerThread() => Environment.CurrentManagedThreadId == _ownerThreadId;
 
     private ProvisionalRemapResult StaleToken(IdentityStoreToken token, bool tokenRequired)
     {

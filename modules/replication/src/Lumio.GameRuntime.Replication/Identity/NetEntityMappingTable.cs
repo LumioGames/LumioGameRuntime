@@ -98,12 +98,12 @@ public sealed class NetEntityMappingTable
     private readonly Dictionary<NetEntityId, LifecycleFence> _lifecycleFences = new();
     private readonly int _ownerThreadId;
 
-    public NetEntityMappingTable() : this(1)
+    public NetEntityMappingTable() : this(new WorldId(1), 1)
     {
     }
 
     public NetEntityMappingTable(ulong initialGeneration)
-        : this(new ReplicationStoreScope(initialGeneration), default)
+        : this(new WorldId(1), initialGeneration)
     {
     }
 
@@ -118,12 +118,14 @@ public sealed class NetEntityMappingTable
     }
 
     internal NetEntityMappingTable(ReplicationStoreScope scope)
-        : this(scope, default)
+        : this(scope, new WorldId(1))
     {
     }
 
     internal NetEntityMappingTable(ReplicationStoreScope scope, WorldId worldId)
     {
+        if (worldId.IsDefault)
+            throw new ArgumentOutOfRangeException(nameof(worldId), worldId, "A non-default WorldId is required.");
         _scope = scope ?? throw new ArgumentNullException(nameof(scope));
         _tombstones = scope.Tombstones;
         WorldId = worldId;
@@ -413,6 +415,7 @@ public sealed class NetEntityMappingTable
     {
         lock (_scope.Gate)
         {
+            if (!IsOwnerThread()) return false;
             if (_scope.Mode != ReplicationStoreScopeMode.Standalone || !_scope.TryAdvanceConnectionGenerationLocked(nextGeneration)) return false;
             ClearLocked();
             return true;
@@ -424,6 +427,7 @@ public sealed class NetEntityMappingTable
     {
         lock (_scope.Gate)
         {
+            if (!IsOwnerThread()) return false;
             if (_scope.Mode != ReplicationStoreScopeMode.Standalone || !_scope.TryAdvanceConnectionGenerationLocked()) return false;
             ClearLocked();
             return true;
@@ -438,6 +442,7 @@ public sealed class NetEntityMappingTable
     {
         lock (_scope.Gate)
         {
+            if (!IsOwnerThread()) return false;
             if (_scope.Mode != ReplicationStoreScopeMode.Standalone || !_scope.IsCurrentLocked(expectedToken) || !_scope.TryAdvanceConnectionGenerationLocked()) return false;
             ClearLocked();
             return true;
@@ -448,6 +453,7 @@ public sealed class NetEntityMappingTable
     {
         lock (_scope.Gate)
         {
+            if (!IsOwnerThread()) return false;
             if (_scope.Mode != ReplicationStoreScopeMode.Standalone || !_scope.IsCurrentLocked(expectedToken) || !_scope.TryAdvanceConnectionGenerationLocked(nextGeneration)) return false;
             ClearLocked();
             return true;
@@ -459,6 +465,7 @@ public sealed class NetEntityMappingTable
     {
         lock (_scope.Gate)
         {
+            if (!IsOwnerThread()) return false;
             if (_scope.Mode != ReplicationStoreScopeMode.Standalone || !_scope.TryTransitionTerminalLocked(false)) return false;
             ClearLocked();
             return true;
@@ -469,6 +476,7 @@ public sealed class NetEntityMappingTable
     {
         lock (_scope.Gate)
         {
+            if (!IsOwnerThread()) return false;
             if (_scope.Mode != ReplicationStoreScopeMode.Standalone || expectedGeneration != _scope.ConnectionGeneration || !_scope.TryTransitionTerminalLocked(false)) return false;
             ClearLocked();
             return true;
@@ -479,6 +487,7 @@ public sealed class NetEntityMappingTable
     {
         lock (_scope.Gate)
         {
+            if (!IsOwnerThread()) return false;
             if (_scope.Mode != ReplicationStoreScopeMode.Standalone || !_scope.IsCurrentLocked(expectedToken) || !_scope.TryTransitionTerminalLocked(false)) return false;
             ClearLocked();
             return true;
@@ -489,6 +498,7 @@ public sealed class NetEntityMappingTable
     {
         lock (_scope.Gate)
         {
+            if (!IsOwnerThread()) return false;
             if (_scope.Mode != ReplicationStoreScopeMode.Standalone || !_scope.TryTransitionTerminalLocked(true)) return false;
             ClearLocked();
             return true;
@@ -499,6 +509,7 @@ public sealed class NetEntityMappingTable
     {
         lock (_scope.Gate)
         {
+            if (!IsOwnerThread()) return false;
             if (_scope.Mode != ReplicationStoreScopeMode.Standalone || !_scope.IsCurrentLocked(expectedToken) || !_scope.TryTransitionTerminalLocked(true)) return false;
             ClearLocked();
             return true;
@@ -518,6 +529,8 @@ public sealed class NetEntityMappingTable
     {
         lock (_scope.Gate)
         {
+            if (!IsOwnerThread())
+                return MappingBindingResult.Rejected("WrongContext", "Identity mutation requires the Simulation Owner Thread.");
             if (tokenRequired ? !_scope.IsCurrentLocked(token) : _scope.State != IdentityStoreState.Active)
                 return tokenRequired ? StaleToken(token) : MappingBindingResult.Stale();
             return BindLocked(netEntityId, localEntityId, currentRevision);
@@ -558,6 +571,8 @@ public sealed class NetEntityMappingTable
     {
         lock (_scope.Gate)
         {
+            if (!IsOwnerThread())
+                return MappingBindingResult.Rejected("WrongContext", "Identity mutation requires the Simulation Owner Thread.");
             if (tokenRequired ? !_scope.IsCurrentLocked(token) : _scope.State != IdentityStoreState.Active)
                 return tokenRequired ? StaleToken(token) : MappingBindingResult.Stale();
             return BindGeneratedLocked(identity, currentRevision);
@@ -644,6 +659,7 @@ public sealed class NetEntityMappingTable
     {
         lock (_scope.Gate)
         {
+            if (!IsOwnerThread()) return false;
             if (tokenRequired ? !_scope.IsCurrentLocked(token) : _scope.State != IdentityStoreState.Active) return false;
             if (!netEntityId.IsValid) return false;
             bool removed = _byNet.Remove(netEntityId, out LocalBinding? binding);
@@ -677,6 +693,7 @@ public sealed class NetEntityMappingTable
     {
         lock (_scope.Gate)
         {
+            if (!IsOwnerThread()) return 0;
             if ((tokenRequired ? !_scope.IsCurrentLocked(token) : _scope.State != IdentityStoreState.Active) ||
                 !horizon.Known || currentRevision <= horizon.Horizon) return 0;
             var ids = new List<NetEntityId>();
@@ -691,6 +708,7 @@ public sealed class NetEntityMappingTable
     {
         lock (_scope.Gate)
         {
+            if (!IsOwnerThread()) return false;
             if ((tokenRequired ? !_scope.IsCurrentLocked(token) : _scope.State != IdentityStoreState.Active) ||
                 !_tombstones.TryGetValue(netEntityId, out ulong until) || !horizon.CanCollect(until, currentRevision)) return false;
             return _tombstones.Remove(netEntityId);
@@ -717,7 +735,7 @@ public sealed class NetEntityMappingTable
     internal void ClearContextLocked() => ClearLocked();
 
     private bool IsOwnerThread() =>
-        WorldId.IsDefault || Environment.CurrentManagedThreadId == _ownerThreadId;
+        Environment.CurrentManagedThreadId == _ownerThreadId;
 
     private MappingBindingResult StaleToken(IdentityStoreToken token) =>
         _scope.ClassifyLocked(token) == ReplicationTokenStatus.GenerationMismatch

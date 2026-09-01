@@ -138,6 +138,52 @@ public sealed class IdentityMappingPropertyTests
     }
 
     [Fact]
+    public async Task TokenBindFromWorkerAfterOwnerCaptureFails()
+    {
+        var table = new NetEntityMappingTable(Fixtures.WorldId);
+        IdentityStoreToken token = table.CaptureToken();
+        MappingBindingResult worker = await Task.Run(() => table.Bind(Fixtures.Net(2), "5:1", token));
+
+        Assert.False(worker.Succeeded);
+        Assert.Equal("WrongContext", worker.GeneratedErrorId);
+        Assert.Equal(0, table.Count);
+        Assert.False(table.TryResolveLocal(Fixtures.Net(2), out _));
+    }
+
+    [Fact]
+    public void NetEntityIdRemapRejectsHexOnlySuccessPath()
+    {
+        var remaps = new ProvisionalRemapTable();
+        IdentityStoreToken token = remaps.CaptureToken();
+        ProvisionalRemapResult hexOnly = remaps.Add(Fixtures.Net(1), Fixtures.Net(2), token);
+
+        Assert.False(hexOnly.Succeeded);
+        Assert.Equal("ManifestMalformed", hexOnly.GeneratedErrorId);
+        Assert.Equal(0, remaps.Count);
+        Assert.False(remaps.TryResolve(Fixtures.Net(1), out _));
+    }
+
+    [Fact]
+    public void DefaultConstructorDoesNotBypassOwnerThreadOrDefaultWorldId()
+    {
+        var table = new NetEntityMappingTable();
+        Assert.False(table.WorldId.IsDefault);
+        Assert.Throws<ArgumentOutOfRangeException>(() => new NetEntityMappingTable(default(WorldId)));
+    }
+
+    [Fact]
+    public void NetLocalGenerationMismatchDoesNotResolve()
+    {
+        var table = new NetEntityMappingTable(Fixtures.WorldId);
+        var net = NetEntityId.Parse("00000000000000010000000000000001");
+        IdentityStoreToken token = table.CaptureToken();
+        Assert.True(table.Bind(net, "4:2", token).Succeeded);
+        Assert.False(table.TryResolveLocal(net, 1, out _));
+        Assert.True(table.TryResolveLocal(net, 2, out var local));
+        Assert.Equal("4:2", local);
+    }
+
+    [Fact]
     public void FoundationContextExposesExactLifecycleAndAllowsCloseOrFaultFromCreated()
     {
         string[] names = Enum.GetNames<ReplicationContextState>();

@@ -7,9 +7,11 @@
     <NoWarn>$(NoWarn);CA1711;CA1822;CA1825;CA1846;CA1850;CA1859;CA1861;CA2263;CA1510;CA1512;CA1834</NoWarn>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="../../../ecs/src/Lumio.GameRuntime.Ecs/Lumio.GameRuntime.Ecs.csproj" Condition="Exists('../../../ecs/src/Lumio.GameRuntime.Ecs/Lumio.GameRuntime.Ecs.csproj')" />
-    <ProjectReference Include="../../../config/src/Lumio.GameRuntime.Config/Lumio.GameRuntime.Config.csproj" Condition="Exists('../../../config/src/Lumio.GameRuntime.Config/Lumio.GameRuntime.Config.csproj')" />
-    <ProjectReference Include="../../../observability/src/Lumio.GameRuntime.Observability/Lumio.GameRuntime.Observability.csproj" Condition="Exists('../../../observability/src/Lumio.GameRuntime.Observability/Lumio.GameRuntime.Observability.csproj')" />
+    <ProjectReference Include="../../../ecs/src/Lumio.GameRuntime.Ecs/Lumio.GameRuntime.Ecs.csproj" />
+    <ProjectReference Include="../../../gas/src/Lumio.GameRuntime.Gas/Lumio.GameRuntime.Gas.csproj" />
+    <ProjectReference Include="../../../coordination/src/Lumio.GameRuntime.Coordination/Lumio.GameRuntime.Coordination.csproj" />
+    <ProjectReference Include="../../../config/src/Lumio.GameRuntime.Config/Lumio.GameRuntime.Config.csproj" />
+    <ProjectReference Include="../../../observability/src/Lumio.GameRuntime.Observability/Lumio.GameRuntime.Observability.csproj" />
     <ProjectReference Include="../../../../src/Lumio.GameRuntime.GeneratedContracts/Lumio.GameRuntime.GeneratedContracts.csproj" />
     <Compile Include="../../../../src/Lumio.GameRuntime.GeneratedContracts/Generated/Compatibility/IsExternalInit.cs" Link="Compatibility/IsExternalInit.cs" />
   </ItemGroup>
