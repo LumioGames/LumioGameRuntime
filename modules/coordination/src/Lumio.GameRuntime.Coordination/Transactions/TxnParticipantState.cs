@@ -1,5 +1,10 @@
 namespace Lumio.GameRuntime.Coordination;
 
+/// <summary>
+/// Runtime view of <c>cross-world-txn.schema.json</c> <c>participantMarkers.voxelCommit</c> /
+/// <c>ecsCommandBufferCommit</c>. Wire names and declaration order match the schema enum
+/// <c>NotStarted|Unknown|Applied|Failed</c>. Generated C# has no standalone enum type.
+/// </summary>
 public enum TxnParticipantState
 {
     NotStarted,

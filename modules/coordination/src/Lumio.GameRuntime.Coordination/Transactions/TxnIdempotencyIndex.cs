@@ -25,7 +25,7 @@ public sealed class TxnIdempotencyIndex
     private readonly object _gate = new();
     private readonly int _capacity;
     private readonly Dictionary<string, TxnRecord> _records = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, string> _identityDigests = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _requestDigests = new(StringComparer.Ordinal);
 
     public TxnIdempotencyIndex(int capacity = 4096)
     {
@@ -53,8 +53,7 @@ public sealed class TxnIdempotencyIndex
         {
             if (_records.TryGetValue(record.TxnId, out TxnRecord? existing))
             {
-                string identityDigest = TxnIdentity.From(record).DigestHex;
-                if (string.Equals(_identityDigests[record.TxnId], identityDigest, StringComparison.Ordinal))
+                if (string.Equals(_requestDigests[record.TxnId], record.RequestDigest, StringComparison.Ordinal))
                     return new TxnLookupResult(TxnLookupStatus.Duplicate, existing, null);
                 return new TxnLookupResult(
                     TxnLookupStatus.Conflict,
@@ -71,7 +70,7 @@ public sealed class TxnIdempotencyIndex
             }
 
             _records.Add(record.TxnId, record);
-            _identityDigests.Add(record.TxnId, TxnIdentity.From(record).DigestHex);
+            _requestDigests.Add(record.TxnId, record.RequestDigest);
             return new TxnLookupResult(TxnLookupStatus.New, record, null);
         }
     }

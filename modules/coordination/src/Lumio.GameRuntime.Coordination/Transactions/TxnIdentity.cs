@@ -1,5 +1,6 @@
 using System;
 using System.Buffers.Binary;
+using System.Globalization;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
@@ -74,6 +75,7 @@ internal sealed class TxnIdentity : IEquatable<TxnIdentity>
 
     public override int GetHashCode() => StringComparer.Ordinal.GetHashCode(DigestHex);
 
+    // Internal identity key for journal proofs. Not LumioBinV1 (that profile is LittleEndian).
     private byte[] Encode()
     {
         using var stream = new MemoryStream();
@@ -118,7 +120,49 @@ internal sealed class TxnIdentity : IEquatable<TxnIdentity>
     {
         var builder = new StringBuilder(bytes.Length * 2);
         foreach (byte value in bytes)
-            builder.Append(value.ToString("x2", System.Globalization.CultureInfo.InvariantCulture));
+            builder.Append(value.ToString("x2", CultureInfo.InvariantCulture));
+        return builder.ToString();
+    }
+}
+
+/// <summary>
+/// Request digest hasher used until Task 20 injects the Persistence canonical Port.
+/// SHA-256 over UTF-8 fields joined by LF (U+000A), no trailing LF:
+/// sessionId, gameReleaseId, txnId, commandId, tickId (decimal invariant), expectedRevisionDigest.
+/// This is not LumioBinV1. A caller-supplied 64-hex digest is stored opaquely on the record.
+/// </summary>
+internal static class TxnRequestDigest
+{
+    internal static string HashHex(
+        string sessionId,
+        string gameReleaseId,
+        string txnId,
+        string commandId,
+        ulong tickId,
+        string expectedRevisionDigest)
+    {
+        string payload = string.Concat(
+            sessionId,
+            "\n",
+            gameReleaseId,
+            "\n",
+            txnId,
+            "\n",
+            commandId,
+            "\n",
+            tickId.ToString(CultureInfo.InvariantCulture),
+            "\n",
+            expectedRevisionDigest);
+        byte[] bytes = Encoding.UTF8.GetBytes(payload);
+#if NET10_0_OR_GREATER
+        byte[] hash = SHA256.HashData(bytes);
+#else
+        using SHA256 sha = SHA256.Create();
+        byte[] hash = sha.ComputeHash(bytes);
+#endif
+        var builder = new StringBuilder(hash.Length * 2);
+        foreach (byte value in hash)
+            builder.Append(value.ToString("x2", CultureInfo.InvariantCulture));
         return builder.ToString();
     }
 }

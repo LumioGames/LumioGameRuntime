@@ -311,9 +311,12 @@ public class TxnRecord
             (CrossWorldTxnState.Created, CrossWorldTxnState.Prepared) => true,
             (CrossWorldTxnState.Created, CrossWorldTxnState.Aborted) => true,
             (CrossWorldTxnState.Created, CrossWorldTxnState.Expired) => true,
+            (CrossWorldTxnState.Prepared, CrossWorldTxnState.CommitIntent) => true,
             (CrossWorldTxnState.Prepared, CrossWorldTxnState.Aborted) => true,
             (CrossWorldTxnState.Prepared, CrossWorldTxnState.Expired) => true,
+            (CrossWorldTxnState.CommitIntent, CrossWorldTxnState.Committed) => true,
             (CrossWorldTxnState.CommitIntent, CrossWorldTxnState.Indeterminate) => true,
+            (CrossWorldTxnState.Indeterminate, CrossWorldTxnState.Committed) => true,
             _ => false
         };
 

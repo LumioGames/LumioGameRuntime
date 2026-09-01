@@ -278,6 +278,66 @@ public sealed class CrossWorldCoordinator : ICoordinationServices
 
     public bool TryGet(string txnId, out TxnRecord? record) => _index.TryGet(txnId, out record);
 
+    public TxnCommitResult QueryResult(TxnId txnId)
+    {
+        if (string.IsNullOrWhiteSpace(txnId.Value) || !_index.TryGet(txnId.Value, out TxnRecord? record) || record is null)
+        {
+            return new TxnCommitResult(
+                TxnCommitStatus.Fatal,
+                TxnParticipantState.NotStarted,
+                TxnParticipantState.NotStarted,
+                null,
+                Array.Empty<string>(),
+                CoordinationFailure.Rejected("InvalidArgument", "Unknown transaction."));
+        }
+
+        return record.State switch
+        {
+            CrossWorldTxnState.Committed => new TxnCommitResult(
+                record.ResultRevision is null ? TxnCommitStatus.Indeterminate : TxnCommitStatus.AlreadyCommitted,
+                record.VoxelParticipant,
+                record.EcsParticipant,
+                record.ResultRevision,
+                Array.Empty<string>(),
+                record.ResultRevision is null
+                    ? CoordinationFailure.Infrastructure("RevisionConflict", "Committed transaction has no verified participant revision.")
+                    : null,
+                record),
+            CrossWorldTxnState.Aborted => new TxnCommitResult(
+                TxnCommitStatus.Aborted,
+                record.VoxelParticipant,
+                record.EcsParticipant,
+                record.ResultRevision,
+                Array.Empty<string>(),
+                null,
+                record),
+            CrossWorldTxnState.Expired => new TxnCommitResult(
+                TxnCommitStatus.Expired,
+                record.VoxelParticipant,
+                record.EcsParticipant,
+                record.ResultRevision,
+                Array.Empty<string>(),
+                null,
+                record),
+            CrossWorldTxnState.Indeterminate => new TxnCommitResult(
+                TxnCommitStatus.Indeterminate,
+                record.VoxelParticipant,
+                record.EcsParticipant,
+                record.ResultRevision,
+                Array.Empty<string>(),
+                CoordinationFailure.Infrastructure("PanicBoundary", "Participant state is not proven."),
+                record),
+            _ => new TxnCommitResult(
+                TxnCommitStatus.Retryable,
+                record.VoxelParticipant,
+                record.EcsParticipant,
+                record.ResultRevision,
+                Array.Empty<string>(),
+                CoordinationFailure.Retryable("QueueFull", "Transaction is still pending."),
+                record)
+        };
+    }
+
     internal TxnTransitionResult Abort(string txnId, string reason) =>
         _index.TryGet(txnId, out TxnRecord? record) && record is not null
             ? record.Abort(reason)

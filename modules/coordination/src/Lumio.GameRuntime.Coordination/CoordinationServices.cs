@@ -28,6 +28,8 @@ public sealed class CoordinationServices : ICoordinationServices
 
     public TxnTransitionResult AbortTxn(string txnId, string reason) => Transactions.AbortTxn(txnId, reason);
 
+    public TxnCommitResult QueryResult(TxnId txnId) => Transactions.QueryResult(txnId);
+
     public SnapshotCutOpenResult BeginSnapshotCut(in SnapshotCutRequest request) => Transactions.BeginSnapshotCut(in request);
 }
 
@@ -40,6 +42,8 @@ public interface ICoordinationServices
     TxnCommitResult CommitTxn(CrossWorldPreparedTxn prepared);
 
     TxnTransitionResult AbortTxn(string txnId, string reason);
+
+    TxnCommitResult QueryResult(TxnId txnId);
 
     SnapshotCutOpenResult BeginSnapshotCut(in SnapshotCutRequest request);
 }
