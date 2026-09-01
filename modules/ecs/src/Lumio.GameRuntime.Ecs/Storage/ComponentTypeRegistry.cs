@@ -119,9 +119,18 @@ internal sealed class EntityTypeDefinition : IEquatable<EntityTypeDefinition>
     public override string ToString() => Name;
 }
 
+internal enum ComponentFieldPersistence
+{
+    None = 0,
+    PersistOnly = 1
+}
+
 internal readonly struct ComponentFieldDefinition : IEquatable<ComponentFieldDefinition>
 {
-    public ComponentFieldDefinition(ComponentFieldId id, int sizeBytes)
+    public ComponentFieldDefinition(
+        ComponentFieldId id,
+        int sizeBytes,
+        ComponentFieldPersistence persistence = ComponentFieldPersistence.None)
     {
         if (id.IsDefault) throw new ArgumentOutOfRangeException(nameof(id));
 #if NET10_0_OR_GREATER
@@ -129,23 +138,29 @@ internal readonly struct ComponentFieldDefinition : IEquatable<ComponentFieldDef
 #else
         if (sizeBytes <= 0) throw new ArgumentOutOfRangeException(nameof(sizeBytes));
 #endif
+        if (persistence is not ComponentFieldPersistence.None and not ComponentFieldPersistence.PersistOnly)
+            throw new ArgumentOutOfRangeException(nameof(persistence));
         Id = id;
         SizeBytes = sizeBytes;
+        Persistence = persistence;
     }
 
     public ComponentFieldId Id { get; }
 
     public int SizeBytes { get; }
 
+    public ComponentFieldPersistence Persistence { get; }
+
     public static bool operator ==(ComponentFieldDefinition left, ComponentFieldDefinition right) => left.Equals(right);
 
     public static bool operator !=(ComponentFieldDefinition left, ComponentFieldDefinition right) => !left.Equals(right);
 
-    public bool Equals(ComponentFieldDefinition other) => Id == other.Id && SizeBytes == other.SizeBytes;
+    public bool Equals(ComponentFieldDefinition other) =>
+        Id == other.Id && SizeBytes == other.SizeBytes && Persistence == other.Persistence;
 
     public override bool Equals(object? obj) => obj is ComponentFieldDefinition other && Equals(other);
 
-    public override int GetHashCode() => HashCode.Combine(Id, SizeBytes);
+    public override int GetHashCode() => HashCode.Combine(Id, SizeBytes, Persistence);
 }
 
 internal sealed class ComponentTypeDefinition : IEquatable<ComponentTypeDefinition>
