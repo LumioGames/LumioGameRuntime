@@ -19,4 +19,8 @@
     <ProjectReference Include="../../../../src/Lumio.GameRuntime.GeneratedContracts/Lumio.GameRuntime.GeneratedContracts.csproj" />
     <Compile Include="../../../../src/Lumio.GameRuntime.GeneratedContracts/Generated/Compatibility/IsExternalInit.cs" Link="Compatibility/IsExternalInit.cs" />
   </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.1'">
+    <PackageReference Include="System.Threading.Channels" />
+  </ItemGroup>
 </Project>
