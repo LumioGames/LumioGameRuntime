@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
+using System.IO;
 using Lumio.Gen.ContractTypes;
 
 namespace Lumio.GameRuntime.Ecs;
@@ -133,3 +134,115 @@ internal readonly record struct EcsFaultEvidence(
     FailureContext Context,
     int PartialChangeCount,
     string? Detail = null);
+
+internal readonly record struct EcsFieldWrite(
+    LocalEntityId Entity,
+    ComponentTypeId ComponentType,
+    ComponentFieldId Field,
+    ReadOnlyMemory<byte> CanonicalValue,
+    EcsOperationEvidence Evidence = default);
+
+internal interface IEcsChangeSetAppend
+{
+    StorageOperationResult TryAppend(in ChangeEntry entry);
+}
+
+internal interface IEcsDurableFailureSink
+{
+    void Publish(in EcsFaultEvidence evidence);
+}
+
+internal sealed class NullEcsDurableFailureSink : IEcsDurableFailureSink
+{
+    public static NullEcsDurableFailureSink Instance { get; } = new();
+
+    public void Publish(in EcsFaultEvidence evidence)
+    {
+    }
+}
+
+internal sealed class EcsFailStopController
+{
+    private readonly object _gate = new();
+    private readonly IEcsDurableFailureSink _sink;
+    private EcsFaultEvidence? _first;
+
+    public EcsFailStopController(IEcsDurableFailureSink? sink = null)
+    {
+        _sink = sink ?? NullEcsDurableFailureSink.Instance;
+    }
+
+    public EcsFaultEvidence? First
+    {
+        get { lock (_gate) return _first; }
+    }
+
+    public static string Hash(
+        TickId tickId,
+        ProcessorId? processorId,
+        LocalEntityId entity,
+        ComponentTypeId componentType,
+        ComponentFieldId field)
+    {
+        using var stream = new MemoryStream();
+        using (var writer = new BinaryWriter(stream, System.Text.Encoding.UTF8, leaveOpen: true))
+        {
+            writer.Write(tickId.Value);
+            writer.Write(processorId?.Value ?? 0UL);
+            writer.Write(entity.Index);
+            writer.Write(entity.Generation);
+            writer.Write(componentType.Value);
+            writer.Write(field.Value);
+            writer.Flush();
+        }
+
+        return CanonicalHash.Of(stream.ToArray());
+    }
+
+    public static string ToGeneratedFatalCode(string? requestedCode, Exception? exception)
+    {
+        if (!string.IsNullOrWhiteSpace(requestedCode) &&
+            EcsBoundaryErrors.IsGeneratedStableError(requestedCode) &&
+            (exception is null || !string.Equals(requestedCode, exception.Message, StringComparison.Ordinal)))
+            return requestedCode;
+        return EcsErrorCodes.InvalidState;
+    }
+
+    public StorageOperationResult CaptureAdapterFailure(
+        StorageOperationResult result,
+        ref EcsWorldState state,
+        in FailureContext context,
+        int partialChangeCount,
+        Exception? exception = null)
+    {
+        if (result.Status is not StorageOperationStatus.Fatal and not StorageOperationStatus.Indeterminate)
+            return result;
+#if NET10_0_OR_GREATER
+        ArgumentOutOfRangeException.ThrowIfNegative(partialChangeCount);
+#else
+        if (partialChangeCount < 0) throw new ArgumentOutOfRangeException(nameof(partialChangeCount));
+#endif
+
+        string code = ToGeneratedFatalCode(result.Error?.Code, exception);
+        string identity = string.IsNullOrWhiteSpace(context.EvidenceIdentity)
+            ? Hash(context.TickId, context.ProcessorId, context.Entity, context.ComponentType, context.Field)
+            : context.EvidenceIdentity!;
+        var evidence = new EcsFaultEvidence(
+            new ErrorIdentity(code),
+            context with { EvidenceIdentity = identity },
+            partialChangeCount,
+            exception?.GetType().FullName);
+
+        lock (_gate)
+        {
+            if (state != EcsWorldState.Disposed && state != EcsWorldState.Faulted)
+            {
+                state = EcsWorldState.Faulted;
+                _first = evidence;
+                _sink.Publish(evidence);
+            }
+        }
+
+        return StorageOperationResult.Fatal(code);
+    }
+}
