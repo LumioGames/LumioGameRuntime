@@ -2,45 +2,6 @@ using System;
 
 namespace Lumio.GameRuntime.Ecs;
 
-internal readonly record struct QuerySpec(
-    ReadOnlyMemory<ComponentTypeId> Required,
-    ReadOnlyMemory<ComponentTypeId> Excluded,
-    ReadOnlyMemory<ComponentFieldId> ReadSet,
-    ReadOnlyMemory<ComponentFieldId> WriteSet)
-{
-    public static QuerySpec Empty => new(
-        ReadOnlyMemory<ComponentTypeId>.Empty,
-        ReadOnlyMemory<ComponentTypeId>.Empty,
-        ReadOnlyMemory<ComponentFieldId>.Empty,
-        ReadOnlyMemory<ComponentFieldId>.Empty);
-
-    public bool IsWellFormed => AreSortedUnique(Required) && AreSortedUnique(Excluded) &&
-                                 AreSortedUnique(ReadSet) && AreSortedUnique(WriteSet) &&
-                                 !Intersects(Required, Excluded);
-
-    private static bool AreSortedUnique<T>(ReadOnlyMemory<T> values) where T : IComparable<T>
-    {
-        ReadOnlySpan<T> span = values.Span;
-        for (int i = 1; i < span.Length; i++)
-        {
-            if (span[i - 1].CompareTo(span[i]) >= 0) return false;
-        }
-
-        return true;
-    }
-
-    private static bool Intersects<T>(ReadOnlyMemory<T> left, ReadOnlyMemory<T> right) where T : IEquatable<T>
-    {
-        ReadOnlySpan<T> values = left.Span;
-        for (int i = 0; i < values.Length; i++)
-        {
-            if (right.Span.IndexOf(values[i]) >= 0) return true;
-        }
-
-        return false;
-    }
-}
-
 /// <summary>
 /// Internal storage boundary. Concrete ECS engines must not escape this assembly.
 /// </summary>
