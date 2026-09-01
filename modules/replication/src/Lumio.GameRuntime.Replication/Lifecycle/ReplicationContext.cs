@@ -201,7 +201,7 @@ public sealed class ReplicationContext : IDisposable
         lock (_scope.Gate)
         {
             if (!IsOwnerThread) return ReplicationContextTransitionResult.Rejected(_state, "WrongContext");
-            if (_state != ReplicationContextState.Draining)
+            if (_state is not (ReplicationContextState.Created or ReplicationContextState.Draining))
                 return ReplicationContextTransitionResult.Rejected(_state, "InvalidArgument");
             CloseStoresLocked();
             _state = ReplicationContextState.Closed;
