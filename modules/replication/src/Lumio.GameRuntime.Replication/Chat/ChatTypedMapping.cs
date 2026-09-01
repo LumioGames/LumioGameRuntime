@@ -40,6 +40,7 @@ public sealed class ChatTypedMapping
     private readonly Dictionary<string, Queue<ChatMessageEvent>> _pendingDelta = new(StringComparer.Ordinal);
     private readonly Dictionary<string, ulong> _observedSequence = new(StringComparer.Ordinal);
     private readonly Dictionary<string, ulong> _observedMessageId = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _awaitingLiveBaseline = new(StringComparer.Ordinal);
 
     public ChatTypedMapping(EntityBindingQuery bindings)
     {
@@ -171,6 +172,12 @@ public sealed class ChatTypedMapping
         if (occupancy.Outcome != "ok")
             return FromBinding(occupancy);
 
+        if (!ChatPayload.TryParseSender(binding.NetEntityId, out _))
+            return ChatMappingResult.Reject(
+                "bad_envelope",
+                "bound NetEntityId is not a C-1 senderNetEntityId u64",
+                ChatMapping.InputMappingId);
+
         string senderKey = roomId + "\n" + binding.NetEntityId;
         if (_committedTick.TryGetValue(senderKey, out ulong usedTick) && usedTick == authoritativeTick)
             return ChatMappingResult.Reject("chat_rate_exceeded", "second chat.input within the authoritative tick", ChatMapping.InputMappingId);
@@ -235,8 +242,9 @@ public sealed class ChatTypedMapping
             return ChatMappingResult.Reject("state_block_kind_mismatch", "chat.event must not appear in FullSnapshot.stateBlocks");
 
         _displayed[connectionId] = new List<ChatMessageEvent>();
-        _observedSequence[connectionId] = 0;
-        _observedMessageId[connectionId] = 0;
+        _observedSequence.Remove(connectionId);
+        _observedMessageId.Remove(connectionId);
+        _awaitingLiveBaseline.Add(connectionId);
         return ChatMappingResult.Ok();
     }
 
@@ -250,11 +258,14 @@ public sealed class ChatTypedMapping
         if (events.Length == 0) return ChatMappingResult.Ok();
 
         ChatMessageEvent mapped = events[0];
-        _observedSequence.TryGetValue(connectionId, out ulong lastSequence);
-        _observedMessageId.TryGetValue(connectionId, out ulong lastMessage);
-        bool sequenceOk = mapped.RoomSequence == lastSequence + 1UL;
-        if (!sequenceOk || mapped.MessageId <= lastMessage)
-            return ChatMappingResult.Reject("bad_envelope", "chat.event roomSequence must strictly increase");
+        if (!_awaitingLiveBaseline.Remove(connectionId))
+        {
+            _observedSequence.TryGetValue(connectionId, out ulong lastSequence);
+            _observedMessageId.TryGetValue(connectionId, out ulong lastMessage);
+            bool sequenceOk = mapped.RoomSequence == lastSequence + 1UL;
+            if (!sequenceOk || mapped.MessageId <= lastMessage)
+                return ChatMappingResult.Reject("bad_envelope", "chat.event roomSequence must strictly increase");
+        }
 
         if (!_displayed.TryGetValue(connectionId, out List<ChatMessageEvent>? window))
         {

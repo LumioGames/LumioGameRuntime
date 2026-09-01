@@ -68,10 +68,13 @@ internal static class ChatPayload
         return true;
     }
 
+    internal static bool TryParseSender(string? netEntityId, out ulong sender) =>
+        ulong.TryParse(netEntityId, NumberStyles.None, CultureInfo.InvariantCulture, out sender);
+
     internal static byte[] EncodeEvent(ChatMessageEvent mapped)
     {
-        if (!ulong.TryParse(mapped.SenderNetEntityId, NumberStyles.None, CultureInfo.InvariantCulture, out ulong sender))
-            sender = 0;
+        if (!TryParseSender(mapped.SenderNetEntityId, out ulong sender))
+            throw new ArgumentException("senderNetEntityId is not a C-1 u64.", nameof(mapped));
         byte[] utf8 = Encoding.UTF8.GetBytes(mapped.Text ?? string.Empty);
         byte[] bytes = new byte[8 + 8 + 8 + 4 + utf8.Length + 8];
         int offset = 0;

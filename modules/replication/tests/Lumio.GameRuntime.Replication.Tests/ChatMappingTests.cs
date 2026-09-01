@@ -280,6 +280,65 @@ public sealed class ChatMappingTests
     }
 
     [Fact]
+    public void LiveSeq2AfterEmptySnapshotIsSessionBaselineNotBadEnvelope()
+    {
+        using EntityBindingQuery bindings = EntityBindingQuery.Create();
+        AssertOk(Admit(bindings, net: "101"));
+        var mapping = new ChatTypedMapping(bindings);
+        AssertOk(mapping.AttachMember("room-01", "C1"));
+        AssertOk(mapping.SubmitInput("room-01", "C1", 1, 7, new ChatInput("one")));
+        AssertOk(mapping.SubmitInput("room-01", "C1", 1, 8, new ChatInput("two")));
+
+        string snapshot = mapping.BuildFullSnapshotJson(8, 1);
+        AssertOk(mapping.ApplyDownstream("observer", snapshot));
+        Assert.Empty(mapping.DisplayedEvents("observer"));
+
+        mapping.BuildDeltaJson("room-01", 7, 1);
+        string live = mapping.BuildDeltaJson("room-01", 8, 2);
+        ChatMappingResult applied = mapping.ApplyDownstream("observer", live);
+        AssertOk(applied);
+        ChatMessageEvent shown = Assert.Single(mapping.DisplayedEvents("observer"));
+        Assert.Equal(2UL, shown.RoomSequence);
+        Assert.Equal(2UL, shown.MessageId);
+        Assert.Equal("two", shown.Text);
+        Assert.Equal("101", shown.SenderNetEntityId);
+
+        ChatMappingResult duplicate = mapping.ApplyDownstream("observer", live);
+        AssertRejected(duplicate, "bad_envelope");
+        Assert.Single(mapping.DisplayedEvents("observer"));
+
+        (string Payload, string Sha256) rollbackBytes = EncodeChatEvent(1, 1, 101, "one", 7);
+        ChatMappingResult rollback = mapping.ApplyDownstream(
+            "observer",
+            Delta(rollbackBytes.Payload, rollbackBytes.Sha256, 7, 1));
+        AssertRejected(rollback, "bad_envelope");
+        ChatMessageEvent remaining = Assert.Single(mapping.DisplayedEvents("observer"));
+        Assert.Equal(2UL, remaining.RoomSequence);
+        Assert.Equal("two", remaining.Text);
+    }
+
+    [Fact]
+    public void NonDecimalBoundNetEntityIdIsRejectedAndDoesNotForgeSenderZero()
+    {
+        using EntityBindingQuery bindings = EntityBindingQuery.Create();
+        AssertOk(Admit(bindings, net: "N1"));
+        var mapping = new ChatTypedMapping(bindings);
+        AssertOk(mapping.AttachMember("room-01", "C1"));
+
+        ChatMappingResult submitted = mapping.SubmitInput("room-01", "C1", 1, 7, new ChatInput("gg"));
+        AssertRejected(submitted, "bad_envelope", ChatMapping.InputMappingId);
+        Assert.Empty(mapping.TakeDelivered("C1"));
+        AssertUnchangedChatComponent(bindings, "N1");
+
+        string delta = mapping.BuildDeltaJson("room-01", 7, 1);
+        Assert.DoesNotContain("chat.event", delta, StringComparison.Ordinal);
+        Assert.Contains("\"changedBlocks\":[]", delta, StringComparison.Ordinal);
+        AssertOk(mapping.ApplyDownstream("observer", delta));
+        Assert.Empty(mapping.DisplayedEvents("observer"));
+        Assert.DoesNotContain(mapping.DisplayedEvents("observer"), static item => item.SenderNetEntityId == "0");
+    }
+
+    [Fact]
     public void ExtraClientSequenceOrSenderOnEnvelopeIsRejectedWithNoWrite()
     {
         using EntityBindingQuery bindings = EntityBindingQuery.Create();
