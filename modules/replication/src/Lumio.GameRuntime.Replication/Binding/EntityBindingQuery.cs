@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 using Lumio.GameRuntime.Ecs;
+using Lumio.GameRuntime.Replication.Lifecycle;
 using Lumio.GameRuntime.Replication.Mapping;
 
 namespace Lumio.GameRuntime.Replication.Binding;
@@ -13,6 +14,7 @@ public sealed class EntityBindingQuery : IDisposable
 
     private const string EntityTypeAttribute = "EntityIdentity.entityType";
     private const string ClaimedAttribute = "EntityIdentity.claimedMark";
+    private const string UnmappedMarkAttribute = "EntityIdentity.unmappedMark";
     private const string PersistOnlyAttribute = "ChatComponent.lastMessagePersistOnly";
     private const string LastMessageTextAttribute = "ChatComponent.lastMessageText";
     private const string LastMessageTickAttribute = "ChatComponent.lastMessageTick";
@@ -23,6 +25,7 @@ public sealed class EntityBindingQuery : IDisposable
     private readonly Dictionary<string, ConnectionBinding> _byConnection = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _liveConnectionByAccount = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Occupancy> _entities = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _retired = new(StringComparer.Ordinal);
     private readonly Dictionary<string, AttributeDeclaration> _declarations = new(StringComparer.Ordinal);
     private readonly Dictionary<AttributeKey, object> _values = new();
     private readonly Dictionary<string, HashSet<string>> _claims = new(StringComparer.Ordinal);
@@ -81,14 +84,15 @@ public sealed class EntityBindingQuery : IDisposable
             if (!entityTypeMapping.Succeeded || !claimedMapping.Succeeded)
                 throw new InvalidOperationException("Failed to register replicated attribute mappings.");
 
+            var identityScope = new ReplicationStoreScope(1);
             return new EntityBindingQuery(
                 authoritativeModule,
                 replicaModule,
                 authoritative.World,
                 replica.World,
                 mappings,
-                new NetEntityMappingTable(authoritative.World.WorldId),
-                new TombstoneRegistry());
+                new NetEntityMappingTable(identityScope, authoritative.World.WorldId),
+                new TombstoneRegistry(identityScope));
         }
         catch
         {
@@ -138,8 +142,7 @@ public sealed class EntityBindingQuery : IDisposable
                 return RankedError(hits, "room binding capacity exceeded");
             }
 
-            if (_entities.TryGetValue(netEntityId, out Occupancy? existing) &&
-                existing.Presence == OccupancyState.Tombstoned)
+            if (IsRetired(netEntityId))
                 return BindingQueryResult.OutcomeFailure("tombstoned");
 
             var binding = new ConnectionBinding(accountId, roomId, netEntityId, entityType, generation);
@@ -266,7 +269,7 @@ public sealed class EntityBindingQuery : IDisposable
             if (IsClientReplica(request.CallerScope))
             {
                 if (!entity.InReplica ||
-                    !string.Equals(declaration.Replication, "replicated", StringComparison.Ordinal) ||
+                    !IsMappedReplicated(declaration) ||
                     string.Equals(declaration.Visibility, "server-only", StringComparison.Ordinal))
                     return BindingQueryResult.OutcomeFailure("invisible");
                 if (string.Equals(declaration.Visibility, "claim-scoped", StringComparison.Ordinal) &&
@@ -294,6 +297,8 @@ public sealed class EntityBindingQuery : IDisposable
             ThrowIfDisposed();
             if (string.IsNullOrEmpty(roomId) || string.IsNullOrEmpty(netEntityId) || !IsEntityType(entityType))
                 return BindingQueryResult.RequestError("invalid_binding_shape", "spawn requires room, netEntityId, and entityType");
+            if (IsRetired(netEntityId))
+                return BindingQueryResult.OutcomeFailure("tombstoned");
             Occupancy occupancy = EnsureLiveEntity(netEntityId, roomId, entityType, connectionGeneration: 0, replicateToReplica);
             occupancy.InReplica = replicateToReplica;
             return BindingQueryResult.OkEntity(netEntityId, roomId, entityType, occupancy.Revision);
@@ -313,6 +318,7 @@ public sealed class EntityBindingQuery : IDisposable
 
             occupancy.Presence = OccupancyState.Tombstoned;
             occupancy.Revision++;
+            _retired.Add(id);
             RetireLiveBinding(id);
             if (NetEntityId.TryParse(id, out NetEntityId parsed))
             {
@@ -336,12 +342,13 @@ public sealed class EntityBindingQuery : IDisposable
                 return BindingQueryResult.OutcomeFailure("non_existent");
 
             string entityType = occupancy.EntityType;
+            _retired.Add(id);
             _entities.Remove(id);
             ClearValues(roomId, id);
             if (NetEntityId.TryParse(id, out NetEntityId parsed))
             {
-                IdentityStoreToken token = Tombstones.CaptureToken();
-                Tombstones.Remove(parsed, token);
+                IdentityStoreToken token = Identities.CaptureToken();
+                Identities.Remove(parsed, token);
             }
 
             return BindingQueryResult.OkEntity(id, roomId, entityType, occupancy.Revision);
@@ -383,8 +390,15 @@ public sealed class EntityBindingQuery : IDisposable
     {
         if (!_entities.TryGetValue(netEntityId, out Occupancy? occupancy))
             return BindingQueryResult.OutcomeFailure("non_existent");
+        bool replicaUnknownLive = IsClientReplica(callerScope) &&
+            occupancy.Presence == OccupancyState.Live &&
+            !occupancy.InReplica;
         if (!string.Equals(occupancy.RoomId, roomId, StringComparison.Ordinal))
+        {
+            if (replicaUnknownLive)
+                return BindingQueryResult.OutcomeFailure("non_existent");
             return BindingQueryResult.RequestError("cross_room_reference", "entity is not in the requested room");
+        }
 
         if (RequiresAuthoritativeStorage(callerScope))
             ProbeAuthoritativeStorage(occupancy.LocalId);
@@ -408,6 +422,8 @@ public sealed class EntityBindingQuery : IDisposable
     {
         if (_entities.TryGetValue(netEntityId, out Occupancy? occupancy))
         {
+            if (occupancy.Presence == OccupancyState.Tombstoned || _retired.Contains(netEntityId))
+                return occupancy;
             occupancy.Presence = OccupancyState.Live;
             occupancy.RoomId = roomId;
             occupancy.EntityType = entityType;
@@ -537,6 +553,33 @@ public sealed class EntityBindingQuery : IDisposable
         _claims.TryGetValue(connection, out HashSet<string>? held) &&
         held.Contains(attributeId);
 
+    private bool IsRetired(string netEntityId)
+    {
+        if (_retired.Contains(netEntityId)) return true;
+        if (_entities.TryGetValue(netEntityId, out Occupancy? occupancy) &&
+            occupancy.Presence == OccupancyState.Tombstoned)
+            return true;
+        return NetEntityId.TryParse(netEntityId, out NetEntityId parsed) && Tombstones.Contains(parsed);
+    }
+
+    private bool IsMappedReplicated(AttributeDeclaration declaration)
+    {
+        if (!string.Equals(declaration.Replication, "replicated", StringComparison.Ordinal))
+            return false;
+        int dot = declaration.AttributeId.IndexOf('.');
+        if (dot <= 0) return false;
+        string component = declaration.AttributeId.Substring(0, dot);
+        string field = declaration.AttributeId.Substring(dot + 1);
+        foreach (MappingDescriptor mapping in Mappings.View.Mappings)
+        {
+            if (string.Equals(mapping.Source.Component, component, StringComparison.Ordinal) &&
+                string.Equals(mapping.Source.Field, field, StringComparison.Ordinal))
+                return true;
+        }
+
+        return false;
+    }
+
     private void ProbeAuthoritativeStorage(LocalEntityId localId) =>
         AuthoritativeWorld.TryResolve(AuthoritativeWorld, localId, out _);
 
@@ -555,6 +598,7 @@ public sealed class EntityBindingQuery : IDisposable
     {
         Declare(new AttributeDeclaration(EntityTypeAttribute, "enum:entityType", "ephemeral", "replicated", "room-public"));
         Declare(new AttributeDeclaration(ClaimedAttribute, "utf8-string", "ephemeral", "replicated", "claim-scoped"));
+        Declare(new AttributeDeclaration(UnmappedMarkAttribute, "utf8-string", "ephemeral", "replicated", "room-public"));
         Declare(new AttributeDeclaration(PersistOnlyAttribute, "utf8-string", "persistent", "not-replicated", "server-only"));
         Declare(new AttributeDeclaration(LastMessageTextAttribute, "utf8-string", "persistent", "not-replicated", "server-only"));
         Declare(new AttributeDeclaration(LastMessageTickAttribute, "u64", "persistent", "not-replicated", "server-only"));

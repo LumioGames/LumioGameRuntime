@@ -122,7 +122,7 @@ public sealed class NetEntityMappingTable
     {
     }
 
-    private NetEntityMappingTable(ReplicationStoreScope scope, WorldId worldId)
+    internal NetEntityMappingTable(ReplicationStoreScope scope, WorldId worldId)
     {
         _scope = scope ?? throw new ArgumentNullException(nameof(scope));
         _tombstones = scope.Tombstones;

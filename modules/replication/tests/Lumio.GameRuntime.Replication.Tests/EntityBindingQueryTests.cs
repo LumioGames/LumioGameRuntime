@@ -418,6 +418,108 @@ public sealed class EntityBindingQueryTests
         AssertRequestError(result, "binding_not_found");
     }
 
+    [Fact]
+    public void ClientReplicaDoesNotLeakUnreplicatedForeignRoomOccupancy()
+    {
+        using EntityBindingQuery sut = EntityBindingQuery.Create();
+        AssertOk(Admit(sut));
+        AssertOk(sut.Spawn("room-02", "N7", "player", replicateToReplica: false));
+
+        BindingQueryResult query = Query(sut, "N7", EntityTypeId, "client-replica", "C1", roomId: "room-01");
+        BindingQueryResult resolve = sut.ResolveByNetEntityId("room-01", "N7", null, "client-replica");
+
+        Assert.True(query.Outcome == "non_existent" || query.Outcome == "invisible", query.Outcome);
+        Assert.Null(query.Code);
+        Assert.Null(query.Value);
+        Assert.True(resolve.Outcome == "non_existent" || resolve.Outcome == "invisible", resolve.Outcome);
+        Assert.Null(resolve.Code);
+        Assert.NotEqual("cross_room_reference", query.Code);
+        Assert.NotEqual("cross_room_reference", resolve.Code);
+    }
+
+    [Fact]
+    public void DestroyedIdCannotBeRevivedBySpawnOrBind()
+    {
+        using EntityBindingQuery sut = EntityBindingQuery.Create();
+        AssertOk(Admit(sut));
+        AssertOk(sut.Destroy("room-01", "N1"));
+
+        BindingQueryResult spawn = sut.Spawn("room-01", "N1", "player");
+        BindingQueryResult bind = Admit(sut, connection: "C-revive", account: "acct-revive", net: "N1");
+        BindingQueryResult query = Query(sut, "N1", EntityTypeId, "server-authoritative");
+        BindingQueryResult resolve = sut.ResolveByNetEntityId("room-01", "N1", null, "server-authoritative");
+
+        Assert.Equal("tombstoned", spawn.Outcome);
+        Assert.Null(spawn.Code);
+        Assert.Equal("tombstoned", bind.Outcome);
+        Assert.Null(bind.Code);
+        Assert.Equal("tombstoned", query.Outcome);
+        Assert.Equal("tombstoned", resolve.Outcome);
+        Assert.Null(query.Value);
+    }
+
+    [Fact]
+    public void ForgottenIdCannotBeReusedByBindOrSpawn()
+    {
+        using EntityBindingQuery sut = EntityBindingQuery.Create();
+        AssertOk(Admit(sut));
+        AssertOk(sut.Destroy("room-01", "N1"));
+        AssertOk(sut.Forget("room-01", "N1"));
+
+        BindingQueryResult query = Query(sut, "N1", EntityTypeId, "server-authoritative");
+        BindingQueryResult bind = Admit(sut, connection: "C-reuse", account: "acct-reuse", net: "N1");
+        BindingQueryResult spawn = sut.Spawn("room-01", "N1", "player");
+        BindingQueryResult after = Query(sut, "N1", EntityTypeId, "server-authoritative");
+        BindingQueryResult resolve = sut.ResolveByNetEntityId("room-01", "N1", null, "server-authoritative");
+
+        Assert.Equal("non_existent", query.Outcome);
+        Assert.NotEqual("ok", bind.Outcome);
+        Assert.Null(bind.Binding);
+        Assert.NotEqual("ok", spawn.Outcome);
+        Assert.Equal("non_existent", after.Outcome);
+        Assert.Equal("non_existent", resolve.Outcome);
+        Assert.Null(after.Value);
+    }
+
+    [Fact]
+    public void DestroyedHexNetEntityIdIsRecordedInTombstoneRegistry()
+    {
+        const string hex = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        using EntityBindingQuery sut = EntityBindingQuery.Create();
+        AssertOk(sut.Spawn("room-01", hex, "player"));
+        Assert.True(NetEntityId.TryParse(hex, out NetEntityId id));
+        Assert.True(sut.Identities.TryResolveLocal(id, out _));
+
+        BindingQueryResult destroy = sut.Destroy("room-01", hex);
+        AssertOk(destroy);
+        Assert.True(sut.Tombstones.Contains(id));
+        Assert.True(sut.Identities.IsTombstoned(id));
+
+        BindingQueryResult resolve = sut.ResolveByNetEntityId("room-01", hex, null, "server-authoritative");
+        Assert.Equal("tombstoned", resolve.Outcome);
+        Assert.Null(resolve.Code);
+
+        BindingQueryResult revive = sut.Spawn("room-01", hex, "player");
+        Assert.NotEqual("ok", revive.Outcome);
+        Assert.True(sut.Tombstones.Contains(id));
+    }
+
+    [Fact]
+    public void ClientReplicaUnmappedDeclaredAttributeIsInvisible()
+    {
+        using EntityBindingQuery sut = EntityBindingQuery.Create();
+        AssertOk(Admit(sut));
+        Assert.True(sut.Mappings.TryGet("mapping-entity-identity-entity-type", out MappingDescriptor? mapped));
+        Assert.Equal("entityType", mapped!.Source.Field);
+        Assert.False(HasSourceMapping(sut, "EntityIdentity", "unmappedMark"));
+
+        BindingQueryResult result = Query(sut, "N1", "EntityIdentity.unmappedMark", "client-replica", "C1");
+
+        Assert.Equal("invisible", result.Outcome);
+        Assert.Null(result.Code);
+        Assert.Null(result.Value);
+    }
+
     private static BindingQueryResult Admit(
         EntityBindingQuery sut,
         string connection = "C1",
@@ -468,6 +570,18 @@ public sealed class EntityBindingQueryTests
         Assert.Equal(code, result.Code);
         Assert.False(string.IsNullOrEmpty(result.Detail));
         Assert.Null(result.Value);
+    }
+
+    private static bool HasSourceMapping(EntityBindingQuery sut, string component, string field)
+    {
+        foreach (MappingDescriptor mapping in sut.Mappings.View.Mappings)
+        {
+            if (string.Equals(mapping.Source.Component, component, StringComparison.Ordinal) &&
+                string.Equals(mapping.Source.Field, field, StringComparison.Ordinal))
+                return true;
+        }
+
+        return false;
     }
 
     private static ConnectionBinding AssertBinding(
