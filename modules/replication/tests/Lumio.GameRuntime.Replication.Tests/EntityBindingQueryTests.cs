@@ -438,6 +438,26 @@ public sealed class EntityBindingQueryTests
     }
 
     [Fact]
+    public void ClientReplicaDoesNotLeakUnreplicatedForeignTombstone()
+    {
+        using EntityBindingQuery sut = EntityBindingQuery.Create();
+        AssertOk(Admit(sut));
+        AssertOk(sut.Spawn("room-02", "N7", "player", replicateToReplica: false));
+        AssertOk(sut.Destroy("room-02", "N7"));
+
+        BindingQueryResult query = Query(sut, "N7", EntityTypeId, "client-replica", "C1", roomId: "room-01");
+        BindingQueryResult resolve = sut.ResolveByNetEntityId("room-01", "N7", null, "client-replica");
+
+        Assert.True(query.Outcome == "non_existent" || query.Outcome == "invisible", query.Outcome);
+        Assert.Null(query.Code);
+        Assert.Null(query.Value);
+        Assert.True(resolve.Outcome == "non_existent" || resolve.Outcome == "invisible", resolve.Outcome);
+        Assert.Null(resolve.Code);
+        Assert.NotEqual("cross_room_reference", query.Code);
+        Assert.NotEqual("cross_room_reference", resolve.Code);
+    }
+
+    [Fact]
     public void DestroyedIdCannotBeRevivedBySpawnOrBind()
     {
         using EntityBindingQuery sut = EntityBindingQuery.Create();

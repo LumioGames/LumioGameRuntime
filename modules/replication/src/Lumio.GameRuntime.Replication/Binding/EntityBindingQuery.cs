@@ -390,12 +390,10 @@ public sealed class EntityBindingQuery : IDisposable
     {
         if (!_entities.TryGetValue(netEntityId, out Occupancy? occupancy))
             return BindingQueryResult.OutcomeFailure("non_existent");
-        bool replicaUnknownLive = IsClientReplica(callerScope) &&
-            occupancy.Presence == OccupancyState.Live &&
-            !occupancy.InReplica;
+        bool replicaUnknown = IsClientReplica(callerScope) && !occupancy.InReplica;
         if (!string.Equals(occupancy.RoomId, roomId, StringComparison.Ordinal))
         {
-            if (replicaUnknownLive)
+            if (replicaUnknown)
                 return BindingQueryResult.OutcomeFailure("non_existent");
             return BindingQueryResult.RequestError("cross_room_reference", "entity is not in the requested room");
         }
@@ -510,7 +508,7 @@ public sealed class EntityBindingQuery : IDisposable
     {
         if (string.IsNullOrEmpty(roomId) || string.IsNullOrEmpty(netEntityId)) return;
         if (!_entities.TryGetValue(netEntityId, out Occupancy? occupancy)) return;
-        if (IsClientReplica(callerScope) && !occupancy.InReplica && occupancy.Presence == OccupancyState.Live)
+        if (IsClientReplica(callerScope) && !occupancy.InReplica)
             return;
         if (!string.Equals(occupancy.RoomId, roomId, StringComparison.Ordinal))
             hits.Add("cross_room_reference");
