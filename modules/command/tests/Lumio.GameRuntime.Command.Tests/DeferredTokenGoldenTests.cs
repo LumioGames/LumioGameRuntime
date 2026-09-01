@@ -15,7 +15,7 @@ public sealed class DeferredTokenGoldenTests
 
         Assert.NotEqual(first, secondProcessor);
         Assert.NotEqual(first, nextTick);
-        Assert.Equal("12:default:processor-a:0:1", first.CanonicalKey);
+        Assert.Equal("12:default:processor-a:1:1", first.CanonicalKey);
 
         var map = new DeferredEntityMap(12UL);
         Assert.True(map.TryAdd(first, "local-entity-1", out _));
@@ -34,6 +34,36 @@ public sealed class DeferredTokenGoldenTests
         Assert.Equal(1UL, first.LocalSequence);
         Assert.Equal(1UL, second.LocalSequence);
         Assert.NotEqual(first, second);
+    }
+
+    [Fact]
+    public void ThreeArgConstructorMatchesWriterIssuedToken()
+    {
+        var buffer = new ProcessorCommandBuffer(12UL, "processor-a", ProcessorDescriptorPhase.ProcessorPlan);
+        Assert.Equal(CommandAppendStatus.Accepted, buffer.Writer.Create("avatar", out DeferredEntityToken issued).Status);
+
+        var reconstructed = new DeferredEntityToken(buffer.TickId, buffer.ProcessorId, issued.LocalSequence);
+
+        Assert.Equal(issued, reconstructed);
+        Assert.Equal(issued.CanonicalKey, reconstructed.CanonicalKey);
+        Assert.Equal("12:default:processor-a:1:1", reconstructed.CanonicalKey);
+
+        var map = new DeferredEntityMap(buffer.TickId);
+        Assert.True(map.TryAdd(issued, "local-entity-1", out _));
+        Assert.True(map.TryResolve(reconstructed, buffer.TickId, out string? resolved));
+        Assert.Equal("local-entity-1", resolved);
+    }
+
+    [Fact]
+    public void FourArgConstructorMatchesWriterIssuedToken()
+    {
+        var buffer = new ProcessorCommandBuffer(12UL, "world-a", "processor-a", ProcessorDescriptorPhase.ProcessorPlan);
+        Assert.Equal(CommandAppendStatus.Accepted, buffer.Writer.Create("avatar", out DeferredEntityToken issued).Status);
+
+        var reconstructed = new DeferredEntityToken(buffer.TickId, buffer.WorldId, buffer.ProcessorId, issued.LocalSequence);
+
+        Assert.Equal(issued, reconstructed);
+        Assert.Equal(issued.CanonicalKey, reconstructed.CanonicalKey);
     }
 
     [Fact]
