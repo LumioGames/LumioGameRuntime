@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Lumio.GameRuntime.Ecs;
 
 namespace Lumio.GameRuntime.Command;
 
@@ -165,5 +166,100 @@ public sealed class EcsCommandCommitExecutor
     {
         public EcsCommandPortResult Apply(Command command, string? resolvedEntityId) =>
             EcsCommandPortResult.Fault("CapabilityMissing");
+    }
+}
+
+internal sealed class EcsWorldCommandCommitPort : IEcsCommandCommitPort
+{
+    private readonly EcsWorld _world;
+    private readonly IEcsChangeSetAppend _changeSet = new DiscardingChangeSetAppend();
+
+    public EcsWorldCommandCommitPort(EcsWorld world) =>
+        _world = world ?? throw new ArgumentNullException(nameof(world));
+
+    public EcsCommandPortResult Apply(Command command, string? resolvedEntityId)
+    {
+        try
+        {
+            return command.Kind switch
+            {
+                CommandKind.Create => ApplyCreate(command),
+                CommandKind.Write => ApplyWrite(command, resolvedEntityId),
+                CommandKind.Destroy => ApplyDestroy(command, resolvedEntityId),
+                _ => EcsCommandPortResult.Rejected("InvalidArgument")
+            };
+        }
+        catch (Exception)
+        {
+            _world.FaultFromParticipant("PanicBoundary");
+            return EcsCommandPortResult.Fault("PanicBoundary");
+        }
+    }
+
+    private EcsCommandPortResult ApplyCreate(Command command)
+    {
+        if (string.IsNullOrWhiteSpace(command.ComponentType) ||
+            !_world.TryGetRegisteredEntityType(command.ComponentType, out EntityTypeHandle handle, out _))
+        {
+            return EcsCommandPortResult.Rejected("InvalidArgument");
+        }
+
+        EntityCreateResult created = _world.CreateEntityForCommit(
+            _world.Context,
+            new EntityCreateRequest(handle));
+        return created.Created
+            ? EcsCommandPortResult.Applied(created.Entity.ToString())
+            : MapStorage(created.Result);
+    }
+
+    private EcsCommandPortResult ApplyWrite(Command command, string? resolvedEntityId)
+    {
+        if (!TryResolveEntity(command, resolvedEntityId, out LocalEntityId entity) ||
+            string.IsNullOrWhiteSpace(command.ComponentType) ||
+            string.IsNullOrWhiteSpace(command.FieldName) ||
+            !_world.TryGetRegisteredField(
+                command.ComponentType,
+                command.FieldName,
+                out ComponentTypeDefinition component,
+                out ComponentFieldDefinition field))
+        {
+            return EcsCommandPortResult.Rejected("InvalidArgument");
+        }
+
+        var write = new EcsFieldWrite(entity, component.Id, field.Id, command.Payload);
+        return MapStorage(_world.WriteExistingField(in write, _changeSet));
+    }
+
+    private EcsCommandPortResult ApplyDestroy(Command command, string? resolvedEntityId)
+    {
+        if (!TryResolveEntity(command, resolvedEntityId, out LocalEntityId entity) ||
+            !_world.TryGetCommitTarget(entity, out EcsWorld.WorldEntityTarget target))
+        {
+            return EcsCommandPortResult.Rejected("InvalidHandle");
+        }
+
+        EntityDestroyResult destroyed = _world.DestroyEntityForCommit(target);
+        return destroyed.Destroyed ? EcsCommandPortResult.Applied() : MapStorage(destroyed.Result);
+    }
+
+    private static bool TryResolveEntity(Command command, string? resolvedEntityId, out LocalEntityId entity) =>
+        LocalEntityId.TryParse(resolvedEntityId ?? command.TargetEntityId, out entity);
+
+    private static EcsCommandPortResult MapStorage(StorageOperationResult result)
+    {
+        string code = result.Error?.Code ?? "PanicBoundary";
+        return result.Status switch
+        {
+            StorageOperationStatus.Accepted or StorageOperationStatus.AlreadyApplied => EcsCommandPortResult.Applied(),
+            StorageOperationStatus.Rejected => EcsCommandPortResult.Rejected(code),
+            StorageOperationStatus.Indeterminate => EcsCommandPortResult.Indeterminate(code),
+            StorageOperationStatus.Fatal => EcsCommandPortResult.Fault(code),
+            _ => EcsCommandPortResult.Fault(code)
+        };
+    }
+
+    private sealed class DiscardingChangeSetAppend : IEcsChangeSetAppend
+    {
+        public StorageOperationResult TryAppend(in ChangeEntry entry) => StorageOperationResult.Accepted();
     }
 }

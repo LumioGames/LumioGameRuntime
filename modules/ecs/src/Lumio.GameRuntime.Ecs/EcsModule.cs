@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 
 [assembly: InternalsVisibleTo("Lumio.GameRuntime.Ecs.Tests")]
 [assembly: InternalsVisibleTo("Lumio.GameRuntime.Command")]
+[assembly: InternalsVisibleTo("Lumio.GameRuntime.Command.Tests")]
 
 namespace Lumio.GameRuntime.Ecs;
 

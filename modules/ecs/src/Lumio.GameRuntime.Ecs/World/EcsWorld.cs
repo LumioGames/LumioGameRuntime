@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 
 namespace Lumio.GameRuntime.Ecs;
 
@@ -103,6 +104,9 @@ public sealed class EcsWorld
     private readonly IWorldStorageAdapter _storage;
     private readonly ComponentTypeRegistry _componentTypes;
     private readonly Dictionary<EntityTypeHandle, EntityTypeDefinition> _entityTypes = new();
+    private readonly Dictionary<string, ComponentTypeDefinition> _componentsByName = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (EntityTypeHandle Handle, EntityTypeDefinition Definition)> _entityTypesByName =
+        new(StringComparer.Ordinal);
     private readonly HashSet<EntityTypeDefinition> _entityTypeDefinitions = new();
     private readonly HashSet<StorageReadSnapshotHandle> _activeSnapshotLeases = new();
     private readonly HashSet<StorageReadSnapshotHandle> _releasedSnapshotLeases = new();
@@ -274,6 +278,7 @@ public sealed class EcsWorld
                     StorageOperationResult.Fatal(registryResult.Error?.Code ?? EcsErrorCodes.InvalidState),
                     "RegisterComponentType",
                     componentType: definition.Id));
+            _componentsByName.TryAdd(definition.Name, definition);
             return new ComponentTypeRegistrationResult(true, handle, StorageOperationResult.Accepted());
         }
     }
@@ -315,6 +320,7 @@ public sealed class EcsWorld
 
         var handle = new EntityTypeHandle(WorldId, ++_nextEntityTypeHandle, _context);
         _entityTypes.Add(handle, definition);
+            _entityTypesByName.TryAdd(definition.Name, (handle, definition));
             return new EntityTypeRegistrationResult(true, handle, StorageOperationResult.Accepted());
         }
     }
@@ -781,6 +787,96 @@ public sealed class EcsWorld
                 ? StorageOperationResult.Accepted()
                 : StorageOperationResult.Rejected(EcsErrorCodes.StaleEntity);
         }
+    }
+
+    internal bool TryGetRegisteredComponent(string nameOrId, out ComponentTypeDefinition definition)
+    {
+        definition = null!;
+        if (string.IsNullOrWhiteSpace(nameOrId)) return false;
+        lock (_lifecycleSync)
+        {
+            if (ulong.TryParse(nameOrId, NumberStyles.None, CultureInfo.InvariantCulture, out ulong id) &&
+                id != 0UL &&
+                _componentTypes.TryGet(new ComponentTypeId(id), out definition))
+            {
+                return true;
+            }
+
+            return _componentsByName.TryGetValue(nameOrId, out definition!);
+        }
+    }
+
+    internal bool TryGetRegisteredField(
+        string componentType,
+        string fieldName,
+        out ComponentTypeDefinition component,
+        out ComponentFieldDefinition field)
+    {
+        field = default;
+        if (!TryGetRegisteredComponent(componentType, out component) || string.IsNullOrWhiteSpace(fieldName))
+            return false;
+        if (ulong.TryParse(fieldName, NumberStyles.None, CultureInfo.InvariantCulture, out ulong fieldId) &&
+            fieldId != 0UL)
+        {
+            return component.TryGetField(new ComponentFieldId(fieldId), out field);
+        }
+
+        if (component.Fields.Length == 1 &&
+            string.Equals(fieldName, component.Name, StringComparison.Ordinal))
+        {
+            field = component.Fields.Span[0];
+            return true;
+        }
+
+        return false;
+    }
+
+    internal bool TryGetRegisteredEntityType(
+        string name,
+        out EntityTypeHandle handle,
+        out EntityTypeDefinition definition)
+    {
+        handle = default;
+        definition = null!;
+        if (string.IsNullOrWhiteSpace(name)) return false;
+        lock (_lifecycleSync)
+        {
+            if (!_entityTypesByName.TryGetValue(name, out (EntityTypeHandle Handle, EntityTypeDefinition Definition) found))
+                return false;
+            handle = found.Handle;
+            definition = found.Definition;
+            return true;
+        }
+    }
+
+    internal bool EntityIsAlive(LocalEntityId entity)
+    {
+        lock (_lifecycleSync)
+        {
+            if (_state is EcsWorldState.Faulted or EcsWorldState.Disposed) return false;
+            if (!_entities.TryResolve(entity, out EntityLifecycleState state, out _, out _)) return false;
+            return state is EntityLifecycleState.Alive or EntityLifecycleState.Disabled;
+        }
+    }
+
+    internal bool TryGetCommitTarget(LocalEntityId entity, out WorldEntityTarget target)
+    {
+        target = null!;
+        lock (_lifecycleSync)
+        {
+            if (!_entities.TryResolve(entity, out EntityLifecycleState state, out _, out _)) return false;
+            if (state is EntityLifecycleState.Tombstoned or EntityLifecycleState.Destroyed) return false;
+            target = new IssuedWorldEntityTarget(_context, entity);
+            return true;
+        }
+    }
+
+    internal StorageOperationResult FaultFromParticipant(string generatedErrorId)
+    {
+        string code = generatedErrorId;
+        if (string.IsNullOrWhiteSpace(code) || !EcsBoundaryErrors.IsGeneratedStableError(code))
+            code = EcsErrorCodes.InvalidState;
+        return Fault(new ErrorIdentity(code));
     }
 
     public StorageOperationResult EnumerateActiveEntities(

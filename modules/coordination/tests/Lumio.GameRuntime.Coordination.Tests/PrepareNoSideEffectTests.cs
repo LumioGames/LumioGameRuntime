@@ -95,11 +95,25 @@ public sealed class PrepareNoSideEffectTests
     {
         var buffer = new ProcessorCommandBuffer(tick, "processor", ProcessorDescriptorPhase.ProcessorPlan);
         buffer.Writer.Destroy("entity");
-        return new CommandPreflightValidator().Prepare(new CommandBufferMerger().Merge(tick, new[] { buffer.Seal() }));
+        return new CommandPreflightValidator(new CommandPreflightOptions
+        {
+            Context = new AllowAllCommandValidationContext()
+        }).Prepare(new CommandBufferMerger().Merge(tick, new[] { buffer.Seal() }));
     }
 
     internal static SessionRevisionVectorView Vector(ulong revision) =>
         new(revision, revision, revision, new Dictionary<string, ulong>(), revision, 1UL, 1UL);
+
+    private sealed class AllowAllCommandValidationContext : ICommandValidationContext
+    {
+        public bool IsKnownComponent(string componentType) => true;
+
+        public bool IsKnownField(string componentType, string fieldName) => true;
+
+        public bool EntityExists(string entityId) => true;
+
+        public bool CanWrite(string processorId, Lumio.GameRuntime.Command.Command command) => true;
+    }
 
     private sealed class CountingGamePort : IGameReservationPort
     {
