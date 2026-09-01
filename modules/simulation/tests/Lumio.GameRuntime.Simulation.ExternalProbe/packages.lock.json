@@ -55,7 +55,9 @@
         "type": "Project",
         "dependencies": {
           "Lumio.GameRuntime.Config": "[1.0.0, )",
+          "Lumio.GameRuntime.Coordination": "[1.0.0, )",
           "Lumio.GameRuntime.Ecs": "[1.0.0, )",
+          "Lumio.GameRuntime.Gas": "[1.0.0, )",
           "Lumio.GameRuntime.GeneratedContracts": "[1.0.0, )",
           "Lumio.GameRuntime.Observability": "[1.0.0, )"
         }
