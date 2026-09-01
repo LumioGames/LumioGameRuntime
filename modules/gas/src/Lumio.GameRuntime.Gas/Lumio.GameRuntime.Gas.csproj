@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RuntimeProductionProject>true</RuntimeProductionProject>
+    <TargetFrameworks>net10.0;netstandard2.1</TargetFrameworks>
+    <AssemblyName>Lumio.GameRuntime.Gas</AssemblyName>
+    <RootNamespace>Lumio.GameRuntime.Gas</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../../ecs/src/Lumio.GameRuntime.Ecs/Lumio.GameRuntime.Ecs.csproj" />
+    <ProjectReference Include="../../../command/src/Lumio.GameRuntime.Command/Lumio.GameRuntime.Command.csproj" />
+    <ProjectReference Include="../../../config/src/Lumio.GameRuntime.Config/Lumio.GameRuntime.Config.csproj" />
+    <ProjectReference Include="../../../observability/src/Lumio.GameRuntime.Observability/Lumio.GameRuntime.Observability.csproj" />
+    <ProjectReference Include="../../../../src/Lumio.GameRuntime.GeneratedContracts/Lumio.GameRuntime.GeneratedContracts.csproj" />
+    <Compile Include="../../../../src/Lumio.GameRuntime.GeneratedContracts/Generated/Compatibility/IsExternalInit.cs" Link="Compatibility/IsExternalInit.cs" />
+  </ItemGroup>
+</Project>
