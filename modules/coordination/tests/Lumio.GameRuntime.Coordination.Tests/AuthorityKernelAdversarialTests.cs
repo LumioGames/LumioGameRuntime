@@ -398,7 +398,7 @@ public sealed class AuthorityKernelAdversarialTests
     }
 
     [Fact]
-    public void DuplicateIndexComparesFullIdentityNotOnlyRequestDigest()
+    public void DuplicateIndexComparesTxnIdAndRequestDigestNotCommandId()
     {
         SessionRevisionVectorView expected = Vector(1UL, 1UL);
         var first = new TxnRecord("session", "txn-full-identity", 2UL, "command-a", expected, 10UL, "same-digest");
@@ -408,8 +408,8 @@ public sealed class AuthorityKernelAdversarialTests
         Assert.Equal(TxnLookupStatus.New, index.Register(first).Status);
         TxnLookupResult duplicate = index.Register(second);
 
-        Assert.Equal(TxnLookupStatus.Conflict, duplicate.Status);
-        Assert.Equal("InvalidArgument", duplicate.Failure?.GeneratedErrorId);
+        Assert.Equal(TxnLookupStatus.Duplicate, duplicate.Status);
+        Assert.Same(first, duplicate.Record);
     }
 
     [Fact]

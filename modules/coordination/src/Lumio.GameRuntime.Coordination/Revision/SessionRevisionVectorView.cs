@@ -123,6 +123,8 @@ public sealed class SessionRevisionVectorView : IEquatable<SessionRevisionVector
 
     public static SessionRevisionVectorView FromGenerated(SessionRevisionVector vector) => new(vector);
 
+    // SHA-256 over UTF-8: tick|game|voxel|{chunkId=rev;}|repl|config|epoch
+    // Chunk keys are ordinal-sorted. Not LumioBinV1 (LittleEndian binary profile).
     private byte[] ComputeDigest()
     {
         var builder = new StringBuilder();
