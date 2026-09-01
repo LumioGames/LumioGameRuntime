@@ -47,10 +47,6 @@ public sealed class GasModule
 
     public GasTypeRegistry Types => _types;
 
-    public GasWorldContext CreateWorldContext(WorldId worldId, IGasEcsProjectionPort projection)
-    {
-        if (_services is null)
-            throw new InvalidOperationException("GAS services are required.");
-        return new GasWorldContext(worldId, projection);
-    }
+    public GasWorldContext CreateWorldContext(WorldId worldId, IGasEcsProjectionPort projection) =>
+        new(worldId, projection, _types);
 }

@@ -199,6 +199,71 @@ public sealed class TypeHandlePropertyTests
     }
 
     [Fact]
+    public void ModuleCatalogIsTheSameInstanceAsWorldContextAndFreezesOnReady()
+    {
+        GasModule module = GasModule.Create();
+        AbilityTypeId typeId = new(40U);
+        GasTypeDescriptor descriptor = GasTestHarness.Descriptor("ability.shared", 1U, 4);
+        Assert.Equal(
+            GasRegistrationStatus.Registered,
+            module.Services.Types.RegisterAbility(typeId, descriptor).Status);
+
+        using GasWorldContext context = module.CreateWorldContext(
+            new WorldId(118UL),
+            new RecordingGasEcsProjectionPort());
+
+        Assert.Same(module.Services.Types, context.Types);
+        Assert.Same(module.Types, context.Types);
+        Assert.True(context.Types.TryGetAbility(typeId, out GasTypeDescriptor stored));
+        Assert.Equal("ability.shared", stored.SchemaId);
+        Assert.Equal(1U, stored.SchemaVersion);
+
+        Assert.True(context.Register().Succeeded);
+        Assert.True(context.MarkReady().Succeeded);
+        Assert.True(module.Types.IsFrozen);
+        Assert.True(module.Services.Types.IsFrozen);
+
+        GasRegistrationResult afterReady = module.Types.RegisterAbility(
+            new AbilityTypeId(41U),
+            GasTestHarness.Descriptor("ability.late", 1U, 5));
+        Assert.Equal(GasRegistrationStatus.Rejected, afterReady.Status);
+        Assert.Equal("InvalidArgument", afterReady.GeneratedErrorId);
+        Assert.False(module.Types.TryGetAbility(new AbilityTypeId(41U), out _));
+    }
+
+    [Fact]
+    public void ModuleWorldsShareCatalogAndKeepIndependentHandleTables()
+    {
+        GasModule module = GasModule.Create();
+        using GasWorldContext first = module.CreateWorldContext(
+            new WorldId(119UL),
+            new RecordingGasEcsProjectionPort());
+        using GasWorldContext second = module.Services.CreateWorldContext(
+            new WorldId(120UL),
+            new RecordingGasEcsProjectionPort());
+
+        Assert.Same(first.Types, second.Types);
+        Assert.True(first.Register().Succeeded);
+        Assert.True(first.MarkReady().Succeeded);
+        Assert.True(first.Start().Succeeded);
+        Assert.True(second.Register().Succeeded);
+        Assert.True(second.MarkReady().Succeeded);
+        Assert.True(second.Start().Succeeded);
+
+        var instance = new AbilityInstanceId(7UL);
+        AbilityHandleResult issuedFirst = first.CreateAbilityHandle(instance);
+        AbilityHandleResult issuedSecond = second.CreateAbilityHandle(instance);
+        Assert.True(issuedFirst.Succeeded);
+        Assert.True(issuedSecond.Succeeded);
+        Assert.NotEqual(issuedFirst.Handle, issuedSecond.Handle);
+
+        Assert.True(first.RetireAbility(issuedFirst.Handle).Succeeded);
+        Assert.False(first.TryResolveAbility(issuedFirst.Handle, out _).Resolved);
+        Assert.True(second.TryResolveAbility(issuedSecond.Handle, out AbilityInstanceId live).Resolved);
+        Assert.Equal(instance, live);
+    }
+
+    [Fact]
     public void CanonicalEnumerationDoesNotDependOnRegistrationOrder()
     {
         using GasWorldContext left = GasTestHarness.ContextAt(113UL, GasFrameworkState.Registered);
