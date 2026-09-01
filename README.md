@@ -116,7 +116,7 @@ Runtime 只定义统一 Event Schema 和关联 API；具体 Sink 由 Host 提供
 ## Source / Compile-Time Dependencies
 
 - .NET SDK、C# 编译器和经过供应链审查的托管基础包。
-- `LumioCoreEngine` 生成的 Native Contract/Manifest，仅经稳定 Managed Adapter 使用。
+- `LumioEngineSDK` 生成的 Native Contract/BuildInfo，仅经稳定 Managed Adapter 使用。
 - Voxel 只通过 `IVoxelWorldPort`/Generated Contract；不依赖 Server、Client 或 Game 实现源码。
 - 第三方库通过 Adapter 隔离，不能进入公共 Runtime 类型。
 
