@@ -6,13 +6,16 @@ namespace Lumio.GameRuntime.Command;
 /// <summary>A temporary entity identity scoped to one tick and processor invocation.</summary>
 public readonly record struct DeferredEntityToken : IComparable<DeferredEntityToken>
 {
+    // 0 is the Append/map generation wildcard; reconstruction must use the issued default.
+    internal const ulong DefaultBufferGeneration = 1UL;
+
     public DeferredEntityToken(ulong tickId, string processorId, ulong localSequence)
-        : this(tickId, "default", processorId, 0UL, localSequence)
+        : this(tickId, "default", processorId, DefaultBufferGeneration, localSequence)
     {
     }
 
     public DeferredEntityToken(ulong tickId, string worldId, string processorId, ulong localSequence)
-        : this(tickId, worldId, processorId, 0UL, localSequence)
+        : this(tickId, worldId, processorId, DefaultBufferGeneration, localSequence)
     {
     }
 

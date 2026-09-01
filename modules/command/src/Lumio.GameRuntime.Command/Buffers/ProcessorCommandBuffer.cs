@@ -33,7 +33,7 @@ public sealed class ProcessorCommandBuffer
         ProcessorDescriptorPhase phase,
         bool mayEmitStructuralCommands = true,
         CommandBufferBudget? budget = null,
-        ulong bufferGeneration = 1UL)
+        ulong bufferGeneration = DeferredEntityToken.DefaultBufferGeneration)
     {
         if (string.IsNullOrWhiteSpace(processorId)) throw new ArgumentException("A processor ID is required.", nameof(processorId));
         if (budget is CommandBufferBudget selected && !selected.IsValid) throw new ArgumentOutOfRangeException(nameof(budget));
@@ -56,7 +56,7 @@ public sealed class ProcessorCommandBuffer
         ProcessorDescriptorPhase phase,
         bool mayEmitStructuralCommands = true,
         CommandBufferBudget? budget = null,
-        ulong bufferGeneration = 1UL)
+        ulong bufferGeneration = DeferredEntityToken.DefaultBufferGeneration)
         : this(tickId, processorId, phase, mayEmitStructuralCommands, budget, bufferGeneration)
     {
         if (string.IsNullOrWhiteSpace(worldId) || !CommandValidation.IsIdentifier(worldId))
@@ -71,7 +71,7 @@ public sealed class ProcessorCommandBuffer
         ProcessorDescriptorPhase phase,
         bool mayEmitStructuralCommands = true,
         CommandBufferBudget? budget = null,
-        ulong bufferGeneration = 1UL)
+        ulong bufferGeneration = DeferredEntityToken.DefaultBufferGeneration)
         : this(tickId, worldId, processorId, phase, mayEmitStructuralCommands, budget, bufferGeneration)
     {
     }
@@ -82,7 +82,7 @@ public sealed class ProcessorCommandBuffer
         string phase,
         bool mayEmitStructuralCommands = true,
         CommandBufferBudget? budget = null,
-        ulong bufferGeneration = 1UL)
+        ulong bufferGeneration = DeferredEntityToken.DefaultBufferGeneration)
         : this(tickId, processorId, new CommandSortKey(phase, processorId, 1UL).Phase, mayEmitStructuralCommands, budget, bufferGeneration)
     {
     }
