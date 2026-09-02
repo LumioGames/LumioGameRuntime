@@ -372,19 +372,14 @@ public sealed class ChatMappingTests
         string connection = "C1",
         string account = "acct-07",
         string room = "room-01",
-        string net = "101",
+        string? net = null,
         string type = "player",
-        ulong generation = 1) =>
-        sut.Bind(
-            connection,
-            new BindingRecordRequest
-            {
-                AccountId = account,
-                RoomId = room,
-                NetEntityId = net,
-                EntityType = type,
-                ConnectionGeneration = generation,
-            });
+        ulong generation = 1)
+    {
+        _ = net;
+        _ = generation;
+        return sut.Admit(connection, account, room, type);
+    }
 
     private static void AssertOk(BindingQueryResult result)
     {

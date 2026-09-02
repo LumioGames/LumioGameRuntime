@@ -133,6 +133,7 @@ public sealed class EntityBindingQuery : IDisposable
                 request.HostPointer,
                 request.HostHandle,
                 request.SessionId,
+                mintedBy: null,
                 hits);
             if (!string.IsNullOrEmpty(request.NetEntityId))
                 hits.Add("invalid_binding_shape");
@@ -287,6 +288,7 @@ public sealed class EntityBindingQuery : IDisposable
                 request.HostPointer,
                 request.HostHandle,
                 request.SessionId,
+                request.MintedBy,
                 hits);
             if (string.IsNullOrEmpty(connection) || !IsValidBindingShape(request))
             {
@@ -303,17 +305,15 @@ public sealed class EntityBindingQuery : IDisposable
             string entityType = request.EntityType!;
             ulong generation = request.ConnectionGeneration ?? 1UL;
 
-            if (NetEntityId.TryParse(netEntityId, out _))
+            if (IsRetired(netEntityId))
+                return BindingQueryResult.OutcomeFailure("tombstoned");
+            if (!_issued.Contains(netEntityId))
             {
-                if (IsRetired(netEntityId))
-                    return BindingQueryResult.OutcomeFailure("tombstoned");
-                if (!_issued.Contains(netEntityId))
-                {
-                    hits.Add("invalid_binding_shape");
-                    return RankedError(hits, "netEntityId is not registered in the identity table");
-                }
+                hits.Add("invalid_binding_shape");
+                return RankedError(hits, "netEntityId is not registered in the identity table");
             }
 
+            CollectOccupancyConflict(connectionId, accountId, netEntityId, hits);
             CollectAccountConflict(accountId, connectionId, roomId, netEntityId, hits);
             if (hits.Count > 0) return RankedError(hits, "account already has an active room binding");
 
@@ -409,6 +409,7 @@ public sealed class EntityBindingQuery : IDisposable
                 request.HostPointer,
                 request.HostHandle,
                 request.SessionId,
+                mintedBy: null,
                 hits);
             CollectScopeHits(request.CallerScope, request.Origin, hits);
             if (RequiresAuthoritativeStorage(request.CallerScope) && !IsOwnerThread(AuthoritativeWorld))
@@ -482,7 +483,7 @@ public sealed class EntityBindingQuery : IDisposable
                 return BindingQueryResult.RequestError("invalid_binding_shape", "spawn requires room, netEntityId, and entityType");
             if (IsRetired(netEntityId))
                 return BindingQueryResult.OutcomeFailure("tombstoned");
-            if (NetEntityId.TryParse(netEntityId, out _) && !_issued.Contains(netEntityId))
+            if (!_issued.Contains(netEntityId))
                 return BindingQueryResult.RequestError("invalid_binding_shape", "netEntityId is not registered in the identity table");
             Occupancy occupancy = EnsureLiveEntity(netEntityId, roomId, entityType, connectionGeneration: 0, replicateToReplica);
             occupancy.InReplica = replicateToReplica;
@@ -821,14 +822,39 @@ public sealed class EntityBindingQuery : IDisposable
         object? hostPointer,
         object? hostHandle,
         string? sessionId,
+        string? mintedBy,
         List<string> hits)
     {
         if (accountEntityRef is not null ||
             storageHandle is not null ||
             hostPointer is not null ||
             hostHandle is not null ||
-            !string.IsNullOrEmpty(sessionId))
+            !string.IsNullOrEmpty(sessionId) ||
+            !string.IsNullOrEmpty(mintedBy))
             hits.Add("invalid_binding_shape");
+    }
+
+    private void CollectOccupancyConflict(string connectionId, string accountId, string netEntityId, List<string> hits)
+    {
+        foreach (KeyValuePair<string, ConnectionBinding> pair in _byConnection)
+        {
+            if (string.Equals(pair.Value.NetEntityId, netEntityId, StringComparison.Ordinal) &&
+                !string.Equals(pair.Key, connectionId, StringComparison.Ordinal))
+            {
+                hits.Add("invalid_binding_shape");
+                return;
+            }
+        }
+
+        foreach (KeyValuePair<string, string> pair in _retainedByAccount)
+        {
+            if (string.Equals(pair.Value, netEntityId, StringComparison.Ordinal) &&
+                !string.Equals(pair.Key, accountId, StringComparison.Ordinal))
+            {
+                hits.Add("invalid_binding_shape");
+                return;
+            }
+        }
     }
 
     private static void CollectScopeHits(string? callerScope, string? origin, List<string> hits)

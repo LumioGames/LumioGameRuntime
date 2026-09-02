@@ -42,6 +42,7 @@ public sealed class BindingRecordRequest
     public object? StorageHandle { get; init; }
     public object? HostPointer { get; init; }
     public object? HostHandle { get; init; }
+    public string? MintedBy { get; init; }
 }
 
 public sealed class AttributeQueryRequest

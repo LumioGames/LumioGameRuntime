@@ -391,6 +391,116 @@ public sealed class EntityBindingQueryTests
         Assert.Contains("storage_access_forbidden", result.Detail, StringComparison.Ordinal);
     }
 
+    [Fact(DisplayName = "runtime_issues_net_entity_id_on_admission")]
+    public void RuntimeIssuesNetEntityIdOnAdmission()
+    {
+        using EntityBindingQuery sut = EntityBindingQuery.Create();
+        BindingQueryResult result = sut.Admit("C1", "acct-07", "room-01", "player");
+
+        AssertOk(result);
+        ConnectionBinding binding = AssertBinding(result, "acct-07", "room-01", result.Binding!.Value.NetEntityId, "player", 1);
+        Assert.True(NetEntityId.TryParse(binding.NetEntityId, out NetEntityId parsed));
+        Assert.True(sut.Identities.TryResolveLocal(parsed, out _));
+        Assert.NotEqual("host-minted-N1", binding.NetEntityId);
+        Assert.NotEqual("101", binding.NetEntityId);
+        Assert.NotEqual("N1", binding.NetEntityId);
+    }
+
+    [Fact(DisplayName = "host_minted_net_entity_id")]
+    public void HostMintedNetEntityId()
+    {
+        using EntityBindingQuery sut = EntityBindingQuery.Create();
+        BindingQueryResult result = sut.Bind(
+            "C1",
+            new BindingRecordRequest
+            {
+                AccountId = "acct-07",
+                RoomId = "room-01",
+                NetEntityId = "host-minted-N1",
+                EntityType = "player",
+                ConnectionGeneration = 1,
+                MintedBy = "host",
+            });
+
+        AssertRequestError(result, "invalid_binding_shape");
+        Assert.Null(result.Binding);
+
+        BindingQueryResult decimalMint = sut.Bind(
+            "C-decimal",
+            new BindingRecordRequest
+            {
+                AccountId = "acct-07",
+                RoomId = "room-01",
+                NetEntityId = "101",
+                EntityType = "player",
+                ConnectionGeneration = 1,
+            });
+        AssertRequestError(decimalMint, "invalid_binding_shape");
+        Assert.Null(decimalMint.Binding);
+        AssertRequestError(sut.SelfLookup("C1", "client-replica"), "binding_not_found");
+        AssertRequestError(sut.SelfLookup("C-decimal", "client-replica"), "binding_not_found");
+    }
+
+    [Fact(DisplayName = "binding_record_carries_session_id")]
+    public void BindingRecordCarriesSessionId()
+    {
+        using EntityBindingQuery sut = EntityBindingQuery.Create();
+        BindingQueryResult result = sut.Bind(
+            "C1",
+            new BindingRecordRequest
+            {
+                AccountId = "acct-07",
+                RoomId = "room-01",
+                NetEntityId = "N1",
+                EntityType = "player",
+                ConnectionGeneration = 1,
+                SessionId = "sess-9",
+            });
+        AssertRequestError(result, "invalid_binding_shape");
+        Assert.Null(result.Binding);
+    }
+
+    [Fact(DisplayName = "query_undeclared_account_id")]
+    public void QueryUndeclaredAccountId()
+    {
+        using EntityBindingQuery sut = EntityBindingQuery.Create();
+        BindingQueryResult result = sut.QueryAttribute(
+            new AttributeQueryRequest
+            {
+                CallerScope = "server-authoritative",
+                RoomId = "room-01",
+                NetEntityId = "N1",
+                AttributeId = "EntityIdentity.accountId",
+            });
+        AssertRequestError(result, "undeclared_attribute");
+        Assert.NotEqual("unauthorized", result.Code);
+        Assert.NotEqual("unauthorized", result.Outcome);
+        Assert.Null(result.Value);
+    }
+
+    [Fact]
+    public void BindRestoreRejectsWhenAnotherConnectionOrAccountOccupiesId()
+    {
+        using EntityBindingQuery sut = EntityBindingQuery.Create();
+        ConnectionBinding admitted = Admit(sut);
+
+        BindingQueryResult steal = sut.Bind(
+            "C-other",
+            new BindingRecordRequest
+            {
+                AccountId = "acct-other",
+                RoomId = "room-01",
+                NetEntityId = admitted.NetEntityId,
+                EntityType = "player",
+                ConnectionGeneration = 1,
+            });
+
+        AssertRequestError(steal, "invalid_binding_shape");
+        Assert.Null(steal.Binding);
+        AssertBinding(sut.SelfLookup("C1", "client-replica"), "acct-07", "room-01", admitted.NetEntityId, "player", 1);
+        AssertRequestError(sut.SelfLookup("C-other", "client-replica"), "binding_not_found");
+    }
+
     [Fact]
     public void AdmitIssuesRuntimeNetEntityIdAndRejectsHostSuppliedId()
     {

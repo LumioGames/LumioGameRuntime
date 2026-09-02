@@ -14,7 +14,7 @@
 | --- | --- |
 | `Admit(connection, accountId, roomId, entityType)` | 准入。Runtime 身份表分配永不复用的 128-bit `NetEntityId`（小写 32 位 hex），登记墓碑空间。宿主不得传入 `NetEntityId`。 |
 | `Admit(AdmitRequest)` | 同上；`NetEntityId` 或违禁字段非空则 `invalid_binding_shape`。 |
-| `Bind(connection, BindingRecordRequest)` | **仅恢复**已登记号。未登记的 128-bit id → `invalid_binding_shape`；墓碑/退役号 → `tombstoned`。 |
+| `Bind(connection, BindingRecordRequest)` | **仅恢复** Runtime 已发号。任何未登记号（含 `"101"`、`"host-minted-N1"`、自铸 hex）→ `invalid_binding_shape`；墓碑/退役号 → `tombstoned`。已有其他连接或另一账号占用同一号时拒绝。宿主不得用 Bind 准入。 |
 | `CaptureIdentityTable()` / `Create(IdentityTableSnapshot)` | 把已发号与墓碑读回下一进程，保证跨进程不复用。 |
 
 `EntityIdentity.accountId` 不在声明表；查询返回 `undeclared_attribute`。
@@ -39,4 +39,6 @@
 | `ResolveByNetEntityId(roomId, netEntityId, connectionGeneration, callerScope)` | 服务端或客户端；带世代则过期为 `stale_generation`。 |
 | `QueryAttribute(AttributeQueryRequest, callerConnection?)` | 单实体单已声明 `AttributeId`。分类顺序：存储寻址 → 文法 → 已声明。 |
 
-N-10 删除宿主自有绑定表后只调本面，不在 Server/Client 再写一份查询。
+`Spawn(roomId, entityType)` 由 Runtime 发号。`Spawn(roomId, netEntityId, entityType)` 只接受已发号；宿主传入自铸 id 与 Bind 一样拒绝。
+
+N-10 删除宿主自有绑定表后只调本面，不在 Server/Client 再写一份查询。不得用 `Bind`/`Spawn` 自铸 `NetEntityId`。
