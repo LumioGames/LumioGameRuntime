@@ -5,7 +5,7 @@ using System.Diagnostics.CodeAnalysis;
 namespace Lumio.GameRuntime.Ecs;
 
 [SuppressMessage("Design", "CA1512", Justification = "The production target also compiles for netstandard2.1, where the ThrowIf helper is unavailable.")]
-internal sealed class EntitySlotTable
+internal sealed partial class EntitySlotTable
 {
     private sealed class Slot
     {

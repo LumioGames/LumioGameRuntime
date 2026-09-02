@@ -37,7 +37,7 @@ public readonly record struct EcsWorldCreateResult(
 }
 
 /// <summary>World-local ECS owner and lifecycle boundary.</summary>
-public sealed class EcsWorld
+public sealed partial class EcsWorld
 {
     /// <summary>Opaque capability that binds internal operations to one World incarnation.</summary>
     internal abstract class EcsWorldContext
