@@ -131,7 +131,7 @@ public static class EcsPersistSnapshotPipeline
             return decoded;
         if (material.SchemaEpoch != schemaEpoch)
             return StorageOperationResult.Rejected(EcsErrorCodes.InvalidType);
-        return Restore(world.PersistStorage, material, schemaEpoch, world.Budget.MaxEntities);
+        return world.RestorePersistMaterial(material, schemaEpoch);
     }
 
     /// <summary>
@@ -450,7 +450,7 @@ public static class EcsPersistSnapshotPipeline
         return persist.ToArray();
     }
 
-    private static StorageOperationResult ValidateMaterial(IReadOnlyList<EcsPersistEntityRecord> entities)
+    internal static StorageOperationResult ValidateMaterial(IReadOnlyList<EcsPersistEntityRecord> entities)
     {
         var seen = new HashSet<LocalEntityId>();
         for (int entityIndex = 0; entityIndex < entities.Count; entityIndex++)
@@ -479,7 +479,7 @@ public static class EcsPersistSnapshotPipeline
         return StorageOperationResult.Accepted();
     }
 
-    private static StorageOperationResult WritePersistFields(
+    internal static StorageOperationResult WritePersistFields(
         IWorldStorageAdapter destination,
         in EcsPersistEntityRecord record)
     {
@@ -498,7 +498,7 @@ public static class EcsPersistSnapshotPipeline
         return StorageOperationResult.Accepted();
     }
 
-    private static StorageOperationResult CreatePersistEntity(
+    internal static StorageOperationResult CreatePersistEntity(
         IWorldStorageAdapter destination,
         in EcsPersistEntityRecord record)
     {

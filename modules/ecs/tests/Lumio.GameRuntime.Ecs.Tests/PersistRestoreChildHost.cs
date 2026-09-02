@@ -54,6 +54,7 @@ internal static class PersistRestoreChildHost
         using DestWorld destination = PersistSnapshotTestSchema.CreateEmptyRunningWorld(961);
         StorageOperationResult restored = EcsPersistSnapshotPipeline.RestorePersist(destination.World, path);
         Console.WriteLine("RESTORE_STATUS=" + restored.Status);
+        Console.WriteLine("ACTIVE_ENTITY_COUNT=" + destination.World.ActiveEntityCount.ToString(CultureInfo.InvariantCulture));
         if (!restored.IsSuccess)
         {
             Console.WriteLine("RESTORE_ERROR=" + restored.Error?.Code);

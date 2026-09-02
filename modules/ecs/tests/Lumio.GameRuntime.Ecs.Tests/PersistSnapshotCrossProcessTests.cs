@@ -49,6 +49,7 @@ public sealed class PersistSnapshotCrossProcessTests
             Assert.NotEqual(parentPid, childPid);
             Assert.NotEqual(0, childPid);
             Assert.Contains("RESTORE_STATUS=Accepted", stdout, StringComparison.Ordinal);
+            Assert.Equal(source.Entities.Length, ReadRequiredInt(stdout, "ACTIVE_ENTITY_COUNT="));
             foreach (SourceEntity entity in source.Entities)
             {
                 string textKey = "LAST_MESSAGE_TEXT_" + entity.Entity.Index + "_" + entity.Entity.Generation + "=";

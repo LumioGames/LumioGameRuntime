@@ -82,6 +82,44 @@ public sealed class PersistSnapshotPublicApiTests
         int observedHistoryCount = PersistSnapshotTestSchema.ObserveHistoryCount(destination.Storage, source.Entities[0].Entity);
         Assert.Equal(0, observedHistoryCount);
         PersistSnapshotTestSchema.AssertPayloadOmitsHistory(bytes);
+        Assert.Equal(source.World.ActiveEntityCount, destination.World.ActiveEntityCount);
+        Assert.Equal(2, destination.World.ActiveEntityCount);
+        foreach (SourceEntity entity in source.Entities)
+            Assert.True(destination.World.EntityIsAlive(entity.Entity));
+    }
+
+    [Fact]
+    public void RestorePersistLeavesAliveEntitiesAndDoesNotCollideWithLaterCreate()
+    {
+        using SourceWorld source = PersistSnapshotTestSchema.CreatePopulatedWorld(952);
+        Assert.Equal(StorageOperationStatus.Accepted,
+            EcsPersistSnapshotPipeline.CapturePersist(source.World, out byte[]? bytes).Status);
+        using DestWorld destination = PersistSnapshotTestSchema.CreateEmptyRunningWorld(953);
+
+        Assert.Equal(StorageOperationStatus.Accepted,
+            EcsPersistSnapshotPipeline.RestorePersist(destination.World, bytes!).Status);
+
+        Assert.Equal(2, destination.World.ActiveEntityCount);
+        foreach (SourceEntity entity in source.Entities)
+        {
+            Assert.True(destination.World.EntityIsAlive(entity.Entity));
+            Assert.True(destination.World.TryResolve(destination.World, entity.Entity, out EntityLifecycleState state));
+            Assert.Equal(EntityLifecycleState.Alive, state);
+        }
+
+        Assert.True(destination.World.TryGetRegisteredEntityType("Chatter", out EntityTypeHandle type, out _));
+        EntityCreateResult created = destination.World.CreateEntityForCommit(
+            destination.World.Context,
+            new EntityCreateRequest(type));
+
+        Assert.True(created.Created, created.Error?.Code ?? created.Result.Status.ToString());
+        Assert.Equal(StorageOperationStatus.Accepted, created.Result.Status);
+        Assert.True(created.Entity.Index > source.Entities[source.Entities.Length - 1].Entity.Index);
+        Assert.True(destination.World.EntityIsAlive(created.Entity));
+        Assert.Equal(3, destination.World.ActiveEntityCount);
+        foreach (SourceEntity entity in source.Entities)
+            Assert.True(destination.World.EntityIsAlive(entity.Entity));
+        PersistSnapshotTestSchema.AssertLastMessages(destination.Storage, source.Entities);
     }
 
     [Fact]
