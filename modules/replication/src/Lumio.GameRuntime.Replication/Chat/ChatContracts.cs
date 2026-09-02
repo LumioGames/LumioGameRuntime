@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace Lumio.GameRuntime.Replication.Chat;
 
@@ -12,6 +13,7 @@ public static class ChatMapping
     public const int MaxChatInputPerSenderPerTick = 1;
     public const int MaxCommandsPerEnvelope = 16;
     public const int MaxBlocksPerEnvelope = 4096;
+    public const int IngressQueueCapacity = 64;
     public const string BoundedInputPolicy = "reject";
 
     public static readonly string[] InputFieldOrder = { "text" };
@@ -20,6 +22,8 @@ public static class ChatMapping
     {
         "messageId", "roomSequence", "senderNetEntityId", "text", "appliedTick"
     };
+
+    public static readonly string[] ComponentFieldOrder = { "lastMessageText", "lastMessageTick" };
 }
 
 public readonly record struct ChatInput(string Text);
@@ -44,3 +48,10 @@ public readonly record struct ChatMappingResult(
     public static ChatMappingResult Reject(string code, string detail, string? mappingId = null) =>
         new(false, code, detail, mappingId);
 }
+
+/// <summary>One IngressCapture → CommandBuffer → EcsCommandBufferCommit tick.</summary>
+public readonly record struct ChatTickResult(
+    ulong AppliedTick,
+    ulong Revision,
+    IReadOnlyList<ChatMappingResult> Results,
+    IReadOnlyList<ChatMessageEvent> Events);

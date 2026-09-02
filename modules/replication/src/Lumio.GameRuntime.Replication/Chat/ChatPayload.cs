@@ -68,8 +68,14 @@ internal static class ChatPayload
         return true;
     }
 
-    internal static bool TryParseSender(string? netEntityId, out ulong sender) =>
-        ulong.TryParse(netEntityId, NumberStyles.None, CultureInfo.InvariantCulture, out sender);
+    internal static bool TryParseSender(string? netEntityId, out ulong sender)
+    {
+        sender = 0;
+        if (string.IsNullOrEmpty(netEntityId)) return false;
+        if (netEntityId.Length == 32)
+            return ulong.TryParse(netEntityId, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out sender);
+        return ulong.TryParse(netEntityId, NumberStyles.None, CultureInfo.InvariantCulture, out sender);
+    }
 
     internal static byte[] EncodeEvent(ChatMessageEvent mapped)
     {

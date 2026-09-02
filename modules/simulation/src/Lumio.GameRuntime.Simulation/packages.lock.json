@@ -61,6 +61,7 @@
       "lumio.gameruntime.replication": {
         "type": "Project",
         "dependencies": {
+          "Lumio.GameRuntime.Command": "[1.0.0, )",
           "Lumio.GameRuntime.Config": "[1.0.0, )",
           "Lumio.GameRuntime.Coordination": "[1.0.0, )",
           "Lumio.GameRuntime.Ecs": "[1.0.0, )",
@@ -123,6 +124,7 @@
       "lumio.gameruntime.replication": {
         "type": "Project",
         "dependencies": {
+          "Lumio.GameRuntime.Command": "[1.0.0, )",
           "Lumio.GameRuntime.Config": "[1.0.0, )",
           "Lumio.GameRuntime.Coordination": "[1.0.0, )",
           "Lumio.GameRuntime.Ecs": "[1.0.0, )",
