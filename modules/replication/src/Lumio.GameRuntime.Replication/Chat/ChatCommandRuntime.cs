@@ -29,9 +29,9 @@ public sealed class ChatCommandRuntime : IDisposable
         new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _roomByNet = new(StringComparer.Ordinal);
     private readonly Dictionary<string, ulong> _committedTick = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, ulong> _nextMessageId = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, ulong> _nextRoomSequence = new(StringComparer.Ordinal);
     private readonly int _ownerThreadId;
-    private ulong _nextMessageId = 1;
-    private ulong _nextRoomSequence = 1;
     private ulong _currentTick;
     private ulong _revision;
     private bool _faulted;
@@ -226,23 +226,15 @@ public sealed class ChatCommandRuntime : IDisposable
     }
 
     /// <summary>
-    /// C-1 FullSnapshot JSON. Live entities fill stateBlocks from replicated EntityIdentity
-    /// fields (one unique mappingId per field; payload lists every live NetEntityId).
+    /// C-1 FullSnapshot JSON. Live entities are enumerated; stateBlocks stay empty until C-1
+    /// registers a kind=state mapping for reconstructable replica state.
     /// </summary>
     public string BuildFullSnapshot(string roomId, ulong tickId, ulong revision)
     {
         lock (_gate)
         {
-            IReadOnlyList<string> live = LiveNetEntityIdsFor(roomId);
-            if (live.Count == 0 || _bindings is null)
-                return ChatEnvelope.FullSnapshot(tickId, revision);
-
-            var blocks = new ChatEnvelope.ChatStateBlock[]
-            {
-                BuildLiveAttributeBlock(roomId, live, ChatEnvelope.ClaimedMarkStateMappingId, "EntityIdentity.claimedMark"),
-                BuildLiveAttributeBlock(roomId, live, ChatEnvelope.EntityTypeStateMappingId, "EntityIdentity.entityType")
-            };
-            return ChatEnvelope.FullSnapshot(tickId, revision, blocks);
+            _ = LiveNetEntityIdsFor(roomId);
+            return ChatEnvelope.FullSnapshot(tickId, revision);
         }
     }
 
@@ -431,8 +423,8 @@ public sealed class ChatCommandRuntime : IDisposable
             _committedTick[write.SenderKey] = tick;
             if (events != null)
             {
-                ulong messageId = _nextMessageId++;
-                ulong roomSequence = _nextRoomSequence++;
+                ulong messageId = Next(write.RoomId, _nextMessageId);
+                ulong roomSequence = Next(write.RoomId, _nextRoomSequence);
                 events.Add(new ChatMessageEvent(messageId, roomSequence, write.NetEntityId, write.Text, tick));
             }
         }
@@ -472,31 +464,13 @@ public sealed class ChatCommandRuntime : IDisposable
         }
     }
 
-    private ChatEnvelope.ChatStateBlock BuildLiveAttributeBlock(
-        string roomId,
-        IReadOnlyList<string> live,
-        string mappingId,
-        string attributeId)
+    private static ulong Next(string roomId, Dictionary<string, ulong> counters)
     {
-        var rows = new List<(ulong NetEntityId, string Value)>(live.Count);
-        for (int i = 0; i < live.Count; i++)
-        {
-            string net = live[i];
-            if (!ChatPayload.TryParseSender(net, out ulong sender))
-                continue;
-            BindingQueryResult query = _bindings!.QueryAttribute(
-                new AttributeQueryRequest
-                {
-                    CallerScope = "server-authoritative",
-                    RoomId = roomId,
-                    NetEntityId = net,
-                    AttributeId = attributeId,
-                });
-            string value = query.Outcome == "ok" && query.Value is string text ? text : string.Empty;
-            rows.Add((sender, value));
-        }
-
-        return new ChatEnvelope.ChatStateBlock(mappingId, ChatPayload.EncodeLiveAttribute(rows));
+        string key = roomId ?? string.Empty;
+        if (!counters.TryGetValue(key, out ulong current)) current = 0;
+        ulong next = current + 1UL;
+        counters[key] = next;
+        return next;
     }
 
     private IReadOnlyList<string> LiveNetEntityIdsFor(string roomId)

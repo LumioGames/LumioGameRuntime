@@ -102,45 +102,10 @@ public static class ChatEnvelope
         return TryParseInputCommand(root, out text, out failure);
     }
 
-    /// <summary>Replicated EntityIdentity.entityType mapping used as kind=state on FullSnapshot.</summary>
-    public const string EntityTypeStateMappingId = "mapping-entity-identity-entity-type";
-
-    /// <summary>Replicated EntityIdentity.claimedMark mapping used as kind=state on FullSnapshot.</summary>
-    public const string ClaimedMarkStateMappingId = "mapping-entity-identity-claimed-mark";
-
-    /// <summary>One C-1 StateBlock (mappingId + LumioBinV1 payload).</summary>
-    public readonly record struct ChatStateBlock(string MappingId, byte[] Payload);
-
-    /// <summary>Builds a C-1 FullSnapshot. Empty stateBlocks remain the encoding of no live replicable state.</summary>
+    /// <summary>Builds a C-1 FullSnapshot. stateBlocks stay empty until C-1 registers kind=state live mappings.</summary>
     public static string FullSnapshot(ulong tickId, ulong revision) =>
-        FullSnapshot(tickId, revision, Array.Empty<ChatStateBlock>());
-
-    /// <summary>Builds a C-1 FullSnapshot with live-entity stateBlocks sorted by mappingId.</summary>
-    public static string FullSnapshot(ulong tickId, ulong revision, IReadOnlyList<ChatStateBlock> blocks)
-    {
-        string encoded = "[]";
-        if (blocks is not null && blocks.Count > 0)
-        {
-            var ordered = new List<ChatStateBlock>(blocks);
-            ordered.Sort(static (left, right) => string.CompareOrdinal(left.MappingId, right.MappingId));
-            var builder = new System.Text.StringBuilder();
-            builder.Append('[');
-            for (int i = 0; i < ordered.Count; i++)
-            {
-                if (i > 0) builder.Append(',');
-                byte[] payload = ordered[i].Payload ?? Array.Empty<byte>();
-                string hex = ChatPayload.ToHex(payload);
-                string digest = ReplicationValidation.Sha256Hex(payload);
-                builder.Append(BlockJson(ordered[i].MappingId, hex, digest));
-            }
-
-            builder.Append(']');
-            encoded = builder.ToString();
-        }
-
-        return "{\"messageType\":\"FullSnapshot\",\"tickId\":" + Number(tickId) +
-               ",\"revision\":" + Number(revision) + ",\"stateBlocks\":" + encoded + "}";
-    }
+        "{\"messageType\":\"FullSnapshot\",\"tickId\":" + Number(tickId) +
+        ",\"revision\":" + Number(revision) + ",\"stateBlocks\":[]}";
 
     /// <summary>Builds one C-1 Delta. Duplicate mappingId is illegal, so each chat.event is its own envelope.</summary>
     public static string Delta(ulong tickId, ulong revision, ChatMessageEvent? mapped)
@@ -461,13 +426,6 @@ public static class ChatEnvelope
         if (string.Equals(mappingId, ChatMapping.ComponentMappingId, StringComparison.Ordinal))
         {
             kind = "componentState";
-            return true;
-        }
-
-        if (string.Equals(mappingId, EntityTypeStateMappingId, StringComparison.Ordinal) ||
-            string.Equals(mappingId, ClaimedMarkStateMappingId, StringComparison.Ordinal))
-        {
-            kind = "state";
             return true;
         }
 

@@ -25,7 +25,6 @@ public sealed class ChatCommandRuntimeTests
     private const string GgEventPayload = "0100000000000000010000000000000065000000000000000200000067670700000000000000";
     private const string GgEventSha256 = "9fafc556e56dc024a90caf7c102dfccfed4189c708e0a51b0139aab28277670c";
     private const string EntityTypeMapping = "mapping-entity-identity-entity-type";
-    private const string ClaimedMarkMapping = "mapping-entity-identity-claimed-mark";
 
     [Fact]
     public void VendoredContractBlobMatchesFrozenC1()
@@ -400,29 +399,85 @@ public sealed class ChatCommandRuntimeTests
     }
 
     [Fact]
-    public void BuildFullSnapshotIncludesStateBlocksForAllLiveEntities()
+    public void OrderedRoomDeliveryIsolatesSequencePerRoom()
+    {
+        EntityBindingQuery bindings = EntityBindingQuery.Create();
+        Admit(bindings, "C1", "acct-07", "room-01");
+        Admit(bindings, "C2", "acct-08", "room-01");
+        Admit(bindings, "C3", "acct-09", "room-02");
+        using var runtime = ChatCommandRuntime.Create(bindings, ownsBindings: true);
+        AssertOk(runtime.AttachMember("room-01", "C1"));
+        AssertOk(runtime.AttachMember("room-01", "C2"));
+        AssertOk(runtime.AttachMember("room-02", "C3"));
+
+        AssertOk(runtime.AdmitInput("room-01", "C1", 1, new ChatInput("one")));
+        AssertOk(runtime.AdmitInput("room-02", "C3", 1, new ChatInput("iso")));
+        ChatTickResult shared = runtime.RunTick(7);
+        Assert.Equal(2, shared.Events.Count);
+        ChatMessageEvent room01First = Assert.Single(shared.Events, static item => item.Text == "one");
+        ChatMessageEvent room02First = Assert.Single(shared.Events, static item => item.Text == "iso");
+        Assert.Equal(1UL, room01First.RoomSequence);
+        Assert.Equal(1UL, room01First.MessageId);
+        Assert.Equal(1UL, room02First.RoomSequence);
+        Assert.Equal(1UL, room02First.MessageId);
+
+        string delta01 = Assert.Single(runtime.BuildDelta("room-01", 7, shared.Revision));
+        string delta02 = Assert.Single(runtime.BuildDelta("room-02", 7, shared.Revision));
+        (string Payload, string Sha256) wire01 = EncodeChatEvent(1, 1, SenderU64(room01First.SenderNetEntityId), "one", 7);
+        (string Payload, string Sha256) wire02 = EncodeChatEvent(1, 1, SenderU64(room02First.SenderNetEntityId), "iso", 7);
+        Assert.Contains(wire01.Payload, delta01, StringComparison.Ordinal);
+        Assert.DoesNotContain(wire02.Payload, delta01, StringComparison.Ordinal);
+        Assert.Contains(wire02.Payload, delta02, StringComparison.Ordinal);
+        Assert.DoesNotContain(wire01.Payload, delta02, StringComparison.Ordinal);
+
+        AssertOk(runtime.ApplyDownstream("obs-02", delta02));
+        ChatMessageEvent shown02 = Assert.Single(runtime.DisplayedEvents("obs-02"));
+        Assert.Equal(1UL, shown02.RoomSequence);
+        Assert.Equal("iso", shown02.Text);
+
+        AssertOk(runtime.AdmitInput("room-01", "C2", 1, new ChatInput("two")));
+        ChatTickResult later = runtime.RunTick(8);
+        ChatMessageEvent room01Second = Assert.Single(later.Events);
+        Assert.Equal(2UL, room01Second.RoomSequence);
+        Assert.Equal(2UL, room01Second.MessageId);
+        Assert.Equal("two", room01Second.Text);
+        string later02 = Assert.Single(runtime.BuildDelta("room-02", 8, later.Revision));
+        Assert.Contains("\"changedBlocks\":[]", later02, StringComparison.Ordinal);
+        (string Payload, string Sha256) wireLater = EncodeChatEvent(2, 2, SenderU64(room01Second.SenderNetEntityId), "two", 8);
+        Assert.DoesNotContain(wireLater.Payload, later02, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void C1MappingsHaveNoKindStateEntry()
+    {
+        using JsonDocument document = JsonDocument.Parse(File.ReadAllText(ContractPath()));
+        foreach (JsonProperty mapping in document.RootElement.GetProperty("mappings").EnumerateObject())
+            Assert.NotEqual("state", mapping.Value.GetProperty("kind").GetString());
+    }
+
+    [Fact]
+    public void UnregisteredIdentityMappingInSnapshotIsRejected()
+    {
+        string snapshot = "{\"messageType\":\"FullSnapshot\",\"tickId\":7,\"revision\":1,\"stateBlocks\":[" +
+                          Block(EntityTypeMapping, GgPayload, GgSha256) + "]}";
+        ChatMappingResult result = ChatEnvelope.Validate(snapshot);
+        AssertRejected(result, "state_block_kind_mismatch");
+    }
+
+    [Fact]
+    public void BuildFullSnapshotOmitsChatEventAndUnregisteredIdentityMappings()
     {
         using ChatCommandRuntime runtime = RoomWith(2);
-        string first = Net(runtime, 0);
-        string second = Net(runtime, 1);
         AssertOk(runtime.AdmitInput("room-01", "C1", 1, new ChatInput("gg")));
         ChatTickResult tick = runtime.RunTick(7);
 
-        Assert.Equal(new[] { first, second }, runtime.LiveNetEntityIds.ToArray());
         string snapshot = runtime.BuildFullSnapshot("room-01", 7, tick.Revision);
         Assert.Contains("\"messageType\":\"FullSnapshot\"", snapshot, StringComparison.Ordinal);
-        Assert.DoesNotContain("\"stateBlocks\":[]", snapshot, StringComparison.Ordinal);
-        Assert.Contains("\"mappingId\":\"" + ClaimedMarkMapping + "\"", snapshot, StringComparison.Ordinal);
-        Assert.Contains("\"mappingId\":\"" + EntityTypeMapping + "\"", snapshot, StringComparison.Ordinal);
         Assert.DoesNotContain("chat.event", snapshot, StringComparison.Ordinal);
         Assert.DoesNotContain("chat.component", snapshot, StringComparison.Ordinal);
-        Assert.Contains(ToHex(U64Bytes(SenderU64(first))), snapshot, StringComparison.Ordinal);
-        Assert.Contains(ToHex(U64Bytes(SenderU64(second))), snapshot, StringComparison.Ordinal);
+        Assert.DoesNotContain(EntityTypeMapping, snapshot, StringComparison.Ordinal);
+        Assert.DoesNotContain("mapping-entity-identity-claimed-mark", snapshot, StringComparison.Ordinal);
         AssertOk(ChatEnvelope.Validate(snapshot));
-
-        int claimedIndex = snapshot.IndexOf(ClaimedMarkMapping, StringComparison.Ordinal);
-        int typeIndex = snapshot.IndexOf(EntityTypeMapping, StringComparison.Ordinal);
-        Assert.InRange(claimedIndex, 0, typeIndex - 1);
 
         ChatMappingResult replay = runtime.ApplyDownstream(
             "observer",
@@ -614,13 +669,6 @@ public sealed class ChatCommandRuntimeTests
     {
         BinaryPrimitives.WriteUInt64LittleEndian(dest.AsSpan(offset, 8), value);
         offset += 8;
-    }
-
-    private static byte[] U64Bytes(ulong value)
-    {
-        var bytes = new byte[8];
-        BinaryPrimitives.WriteUInt64LittleEndian(bytes, value);
-        return bytes;
     }
 
     private static string ToHex(byte[] value)

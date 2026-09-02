@@ -1,6 +1,5 @@
 using System;
 using System.Buffers.Binary;
-using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
 
@@ -76,30 +75,6 @@ internal static class ChatPayload
         if (netEntityId.Length == 32)
             return ulong.TryParse(netEntityId, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out sender);
         return ulong.TryParse(netEntityId, NumberStyles.None, CultureInfo.InvariantCulture, out sender);
-    }
-
-    internal static byte[] EncodeLiveAttribute(IReadOnlyList<(ulong NetEntityId, string Value)> rows)
-    {
-        int size = 0;
-        var utf8Rows = new byte[rows.Count][];
-        for (int i = 0; i < rows.Count; i++)
-        {
-            utf8Rows[i] = Encoding.UTF8.GetBytes(rows[i].Value ?? string.Empty);
-            size = checked(size + 8 + 4 + utf8Rows[i].Length);
-        }
-
-        byte[] bytes = new byte[size];
-        int offset = 0;
-        for (int i = 0; i < rows.Count; i++)
-        {
-            WriteUInt64(bytes, ref offset, rows[i].NetEntityId);
-            BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(offset, 4), (uint)utf8Rows[i].Length);
-            offset += 4;
-            utf8Rows[i].CopyTo(bytes, offset);
-            offset += utf8Rows[i].Length;
-        }
-
-        return bytes;
     }
 
     internal static byte[] EncodeEvent(ChatMessageEvent mapped)
