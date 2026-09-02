@@ -225,13 +225,24 @@ public sealed class ChatCommandRuntime : IDisposable
         }
     }
 
-    /// <summary>C-1 FullSnapshot JSON. stateBlocks is empty because C-1 has no kind=state mapping.</summary>
+    /// <summary>
+    /// C-1 FullSnapshot JSON. Live entities fill stateBlocks from replicated EntityIdentity
+    /// fields (one unique mappingId per field; payload lists every live NetEntityId).
+    /// </summary>
     public string BuildFullSnapshot(string roomId, ulong tickId, ulong revision)
     {
         lock (_gate)
         {
-            _ = LiveNetEntityIdsFor(roomId);
-            return ChatEnvelope.FullSnapshot(tickId, revision);
+            IReadOnlyList<string> live = LiveNetEntityIdsFor(roomId);
+            if (live.Count == 0 || _bindings is null)
+                return ChatEnvelope.FullSnapshot(tickId, revision);
+
+            var blocks = new ChatEnvelope.ChatStateBlock[]
+            {
+                BuildLiveAttributeBlock(roomId, live, ChatEnvelope.ClaimedMarkStateMappingId, "EntityIdentity.claimedMark"),
+                BuildLiveAttributeBlock(roomId, live, ChatEnvelope.EntityTypeStateMappingId, "EntityIdentity.entityType")
+            };
+            return ChatEnvelope.FullSnapshot(tickId, revision, blocks);
         }
     }
 
@@ -459,6 +470,33 @@ public sealed class ChatCommandRuntime : IDisposable
 
             byTick[tick] = pair.Value.ToArray();
         }
+    }
+
+    private ChatEnvelope.ChatStateBlock BuildLiveAttributeBlock(
+        string roomId,
+        IReadOnlyList<string> live,
+        string mappingId,
+        string attributeId)
+    {
+        var rows = new List<(ulong NetEntityId, string Value)>(live.Count);
+        for (int i = 0; i < live.Count; i++)
+        {
+            string net = live[i];
+            if (!ChatPayload.TryParseSender(net, out ulong sender))
+                continue;
+            BindingQueryResult query = _bindings!.QueryAttribute(
+                new AttributeQueryRequest
+                {
+                    CallerScope = "server-authoritative",
+                    RoomId = roomId,
+                    NetEntityId = net,
+                    AttributeId = attributeId,
+                });
+            string value = query.Outcome == "ok" && query.Value is string text ? text : string.Empty;
+            rows.Add((sender, value));
+        }
+
+        return new ChatEnvelope.ChatStateBlock(mappingId, ChatPayload.EncodeLiveAttribute(rows));
     }
 
     private IReadOnlyList<string> LiveNetEntityIdsFor(string roomId)

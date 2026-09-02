@@ -7,10 +7,11 @@ using System.Linq;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
-using System.Threading;
 using System.Text.Json;
+using System.Threading;
 using Lumio.GameRuntime.Replication.Binding;
 using Lumio.GameRuntime.Replication.Chat;
+using Lumio.GameRuntime.Replication.Mapping;
 using Xunit;
 
 namespace Lumio.GameRuntime.Replication.Tests;
@@ -23,6 +24,8 @@ public sealed class ChatCommandRuntimeTests
     private const string GgSha256 = "5dbd584f1718b8bcd0dab4abeea83169f4a990defab81a8316ed845798d92dab";
     private const string GgEventPayload = "0100000000000000010000000000000065000000000000000200000067670700000000000000";
     private const string GgEventSha256 = "9fafc556e56dc024a90caf7c102dfccfed4189c708e0a51b0139aab28277670c";
+    private const string EntityTypeMapping = "mapping-entity-identity-entity-type";
+    private const string ClaimedMarkMapping = "mapping-entity-identity-claimed-mark";
 
     [Fact]
     public void VendoredContractBlobMatchesFrozenC1()
@@ -97,40 +100,69 @@ public sealed class ChatCommandRuntimeTests
     }
 
     [Fact]
+    public void AdmitIssuesRuntimeHexNetEntityIdAndRejectsHostMinting()
+    {
+        using EntityBindingQuery bindings = EntityBindingQuery.Create();
+        ConnectionBinding first = Admit(bindings);
+        Assert.True(NetEntityId.TryParse(first.NetEntityId, out _));
+        Assert.Equal(32, first.NetEntityId.Length);
+
+        BindingQueryResult hostSupplied = bindings.Admit(
+            new AdmitRequest
+            {
+                Connection = "C-host",
+                AccountId = "acct-host",
+                RoomId = "room-01",
+                EntityType = "player",
+                NetEntityId = first.NetEntityId,
+            });
+        Assert.Equal("request_error", hostSupplied.Outcome);
+        Assert.Equal("invalid_binding_shape", hostSupplied.Code);
+        Assert.Null(hostSupplied.Binding);
+    }
+
+    [Fact]
     public void ValidChatInputUpdatesComponentAndEmitsDeltaEventOnTheSameTick()
     {
-        using ChatCommandRuntime runtime = RoomWith("101", "102");
+        using ChatCommandRuntime runtime = RoomWith(2);
+        string sender = Net(runtime, 0);
+        string peer = Net(runtime, 1);
         AssertOk(runtime.AdmitInput("room-01", "C1", 1, new ChatInput("gg")));
         Assert.Equal(0UL, runtime.CurrentTick);
-        AssertLastMessage(runtime, "101", string.Empty, 0UL);
-        AssertLastMessage(runtime, "102", string.Empty, 0UL);
+        AssertLastMessage(runtime, sender, string.Empty, 0UL);
+        AssertLastMessage(runtime, peer, string.Empty, 0UL);
 
         ChatTickResult tick = runtime.RunTick(7);
         Assert.Equal(7UL, runtime.CurrentTick);
         Assert.Equal(7UL, tick.AppliedTick);
-        AssertLastMessage(runtime, "101", "gg", 7UL);
-        AssertLastMessage(runtime, "102", string.Empty, 0UL);
+        AssertLastMessage(runtime, sender, "gg", 7UL);
+        AssertLastMessage(runtime, peer, string.Empty, 0UL);
         ChatMessageEvent emitted = Assert.Single(tick.Events);
         Assert.Equal(1UL, emitted.MessageId);
         Assert.Equal(1UL, emitted.RoomSequence);
-        Assert.Equal("101", emitted.SenderNetEntityId);
+        Assert.Equal(sender, emitted.SenderNetEntityId);
         Assert.Equal("gg", emitted.Text);
         Assert.Equal(7UL, emitted.AppliedTick);
 
+        (string Payload, string Sha256) wire = EncodeChatEvent(1, 1, SenderU64(sender), "gg", 7);
         string delta = Assert.Single(runtime.BuildDelta("room-01", 7, tick.Revision));
         Assert.Contains("\"messageType\":\"Delta\"", delta, StringComparison.Ordinal);
         Assert.Contains("\"mappingId\":\"chat.event\"", delta, StringComparison.Ordinal);
-        Assert.Contains(GgEventPayload, delta, StringComparison.Ordinal);
-        Assert.Contains(GgEventSha256, delta, StringComparison.Ordinal);
+        Assert.Contains(wire.Payload, delta, StringComparison.Ordinal);
+        Assert.Contains(wire.Sha256, delta, StringComparison.Ordinal);
         AssertOk(runtime.ApplyDownstream("observer", delta));
         ChatMessageEvent shown = Assert.Single(runtime.DisplayedEvents("observer"));
-        Assert.Equal(emitted, shown);
+        Assert.Equal(emitted.MessageId, shown.MessageId);
+        Assert.Equal(emitted.RoomSequence, shown.RoomSequence);
+        Assert.Equal(emitted.Text, shown.Text);
+        Assert.Equal(emitted.AppliedTick, shown.AppliedTick);
     }
 
     [Fact]
     public void FrozenChatInputEnvelopeCommitsThroughCommandBuffer()
     {
-        using ChatCommandRuntime runtime = RoomWith("101");
+        using ChatCommandRuntime runtime = RoomWith();
+        string sender = Net(runtime, 0);
         ChatMappingResult admitted = runtime.AdmitInputCommand(
             "room-01",
             "C1",
@@ -139,15 +171,18 @@ public sealed class ChatCommandRuntimeTests
         AssertOk(admitted);
         ChatTickResult tick = runtime.RunTick(7);
         Assert.True(Assert.Single(tick.Results).Succeeded);
-        AssertLastMessage(runtime, "101", "gg", 7UL);
+        AssertLastMessage(runtime, sender, "gg", 7UL);
+        (string Payload, string Sha256) wire = EncodeChatEvent(1, 1, SenderU64(sender), "gg", 7);
         string delta = Assert.Single(runtime.BuildDelta("room-01", 7, tick.Revision));
-        Assert.Contains(GgEventPayload, delta, StringComparison.Ordinal);
+        Assert.Contains(wire.Payload, delta, StringComparison.Ordinal);
+        Assert.Contains(wire.Sha256, delta, StringComparison.Ordinal);
     }
 
     [Fact]
     public void LengthCapRejectsWithChatTextTooLongAndNoWrite()
     {
-        using ChatCommandRuntime runtime = RoomWith("101");
+        using ChatCommandRuntime runtime = RoomWith();
+        string sender = Net(runtime, 0);
         string over = new string('a', 513);
         ChatMappingResult typed = runtime.AdmitInput("room-01", "C1", 1, new ChatInput(over));
         AssertRejected(typed, "chat_text_too_long", "chat.input");
@@ -162,7 +197,7 @@ public sealed class ChatCommandRuntimeTests
 
         ChatTickResult tick = runtime.RunTick(7);
         Assert.Empty(tick.Events);
-        AssertLastMessage(runtime, "101", string.Empty, 0UL);
+        AssertLastMessage(runtime, sender, string.Empty, 0UL);
         string delta = Assert.Single(runtime.BuildDelta("room-01", 7, tick.Revision));
         Assert.Contains("\"changedBlocks\":[]", delta, StringComparison.Ordinal);
         Assert.DoesNotContain("chat.event", delta, StringComparison.Ordinal);
@@ -171,7 +206,9 @@ public sealed class ChatCommandRuntimeTests
     [Fact]
     public void SecondChatInputFromSameSenderInOneTickIsRateRejected()
     {
-        using ChatCommandRuntime runtime = RoomWith("101", "102");
+        using ChatCommandRuntime runtime = RoomWith(2);
+        string first = Net(runtime, 0);
+        string second = Net(runtime, 1);
         AssertOk(runtime.AdmitInput("room-01", "C1", 1, new ChatInput("gg")));
         AssertOk(runtime.AdmitInput("room-01", "C1", 1, new ChatInput("no")));
         AssertOk(runtime.AdmitInput("room-01", "C2", 1, new ChatInput("ok")));
@@ -180,8 +217,8 @@ public sealed class ChatCommandRuntimeTests
         Assert.Equal(2, tick.Results.Count(static result => result.Succeeded));
         ChatMappingResult rate = Assert.Single(tick.Results, static result => result.Code == "chat_rate_exceeded");
         Assert.Equal("chat.input", rate.MappingId);
-        AssertLastMessage(runtime, "101", "gg", 7UL);
-        AssertLastMessage(runtime, "102", "ok", 7UL);
+        AssertLastMessage(runtime, first, "gg", 7UL);
+        AssertLastMessage(runtime, second, "ok", 7UL);
         Assert.Equal(2, tick.Events.Count);
         Assert.DoesNotContain(tick.Events, static item => item.Text == "no");
         Assert.Equal(2, runtime.BuildDelta("room-01", 7, tick.Revision).Count);
@@ -190,26 +227,28 @@ public sealed class ChatCommandRuntimeTests
     [Fact]
     public void IngressQueueFullRejectsWithoutComponentWrite()
     {
-        using ChatCommandRuntime runtime = RoomWith("101");
+        using ChatCommandRuntime runtime = RoomWith();
+        string sender = Net(runtime, 0);
         for (int i = 0; i < ChatMapping.IngressQueueCapacity; i++)
             AssertOk(runtime.AdmitInput("room-01", "C1", 1, new ChatInput("n" + i)));
 
         ChatMappingResult overflow = runtime.AdmitInput("room-01", "C1", 1, new ChatInput("overflow"));
         AssertRejected(overflow, "queue_full", "chat.input");
-        AssertLastMessage(runtime, "101", string.Empty, 0UL);
+        AssertLastMessage(runtime, sender, string.Empty, 0UL);
 
         ChatTickResult tick = runtime.RunTick(7);
         Assert.DoesNotContain(tick.Events, static item => item.Text == "overflow");
-        AssertLastMessage(runtime, "101", "n0", 7UL);
+        AssertLastMessage(runtime, sender, "n0", 7UL);
     }
 
     [Fact]
     public void NetworkThreadSetMessageFailStopsWithZeroComponentWrite()
     {
-        using ChatCommandRuntime runtime = RoomWith("101");
+        using ChatCommandRuntime runtime = RoomWith();
+        string sender = Net(runtime, 0);
         AssertOk(runtime.AdmitInput("room-01", "C1", 1, new ChatInput("keep")));
         ChatTickResult committed = runtime.RunTick(7);
-        AssertLastMessage(runtime, "101", "keep", 7UL);
+        AssertLastMessage(runtime, sender, "keep", 7UL);
         Assert.Single(committed.Events);
 
         ChatMappingResult? offThread = null;
@@ -217,7 +256,7 @@ public sealed class ChatCommandRuntimeTests
         var worker = new Thread(() =>
         {
             workerThreadId = Environment.CurrentManagedThreadId;
-            offThread = runtime.SetMessage("room-01", "101", "hack");
+            offThread = runtime.SetMessage("room-01", sender, "hack");
         });
         worker.IsBackground = true;
         worker.Start();
@@ -228,18 +267,19 @@ public sealed class ChatCommandRuntimeTests
         Assert.False(offThread!.Value.Succeeded);
         Assert.Equal("runtime_failure", offThread.Value.Code);
         Assert.True(runtime.IsFaulted);
-        AssertLastMessage(runtime, "101", "keep", 7UL);
+        AssertLastMessage(runtime, sender, "keep", 7UL);
 
         ChatTickResult afterFault = runtime.RunTick(8);
         Assert.True(runtime.IsFaulted);
         Assert.Empty(afterFault.Events);
-        AssertLastMessage(runtime, "101", "keep", 7UL);
+        AssertLastMessage(runtime, sender, "keep", 7UL);
     }
 
     [Fact]
     public void NetworkThreadAdmitQueuesWithoutWritingUntilOwnerTick()
     {
-        using ChatCommandRuntime runtime = RoomWith("101");
+        using ChatCommandRuntime runtime = RoomWith();
+        string sender = Net(runtime, 0);
         ChatMappingResult? admitted = null;
         var worker = new Thread(() =>
             admitted = runtime.AdmitInput("room-01", "C1", 1, new ChatInput("gg")));
@@ -249,11 +289,11 @@ public sealed class ChatCommandRuntimeTests
 
         AssertOk(admitted!.Value);
         Assert.False(runtime.IsFaulted);
-        AssertLastMessage(runtime, "101", string.Empty, 0UL);
+        AssertLastMessage(runtime, sender, string.Empty, 0UL);
         Assert.Equal(0UL, runtime.CurrentTick);
 
         ChatTickResult tick = runtime.RunTick(7);
-        AssertLastMessage(runtime, "101", "gg", 7UL);
+        AssertLastMessage(runtime, sender, "gg", 7UL);
         Assert.Equal("gg", Assert.Single(tick.Events).Text);
     }
 
@@ -261,7 +301,7 @@ public sealed class ChatCommandRuntimeTests
     public void UnauthorizedAndStaleGenerationProduceNoWrite()
     {
         using EntityBindingQuery bindings = EntityBindingQuery.Create();
-        AssertOk(Admit(bindings, net: "101"));
+        ConnectionBinding bound = Admit(bindings);
         using var runtime = ChatCommandRuntime.Create(bindings);
         AssertOk(runtime.AttachMember("room-01", "C1"));
 
@@ -269,7 +309,7 @@ public sealed class ChatCommandRuntimeTests
         Assert.False(missing.Succeeded);
         ChatTickResult empty = runtime.RunTick(7);
         Assert.Empty(empty.Events);
-        AssertLastMessage(runtime, "101", string.Empty, 0UL);
+        AssertLastMessage(runtime, bound.NetEntityId, string.Empty, 0UL);
 
         AssertOk(bindings.Rebind("C1", "C1-next"));
         ChatMappingResult stale = runtime.AdmitInput("room-01", "C1-next", 1, new ChatInput("gg"));
@@ -280,36 +320,38 @@ public sealed class ChatCommandRuntimeTests
         ChatMappingResult rebound = runtime.AdmitInput("room-01", "C1-next", 2, new ChatInput("gg"));
         AssertOk(rebound);
         ChatTickResult committed = runtime.RunTick(9);
-        Assert.Equal("101", Assert.Single(committed.Events).SenderNetEntityId);
+        Assert.Equal(bound.NetEntityId, Assert.Single(committed.Events).SenderNetEntityId);
     }
 
     [Fact]
     public void SetMessageAfterEntityDestructionRejectsWithZeroComponentWrite()
     {
-        using ChatCommandRuntime runtime = RoomWith("101", "102");
+        using ChatCommandRuntime runtime = RoomWith(2);
+        string first = Net(runtime, 0);
+        string second = Net(runtime, 1);
         AssertOk(runtime.AdmitInput("room-01", "C1", 1, new ChatInput("first")));
         AssertOk(runtime.AdmitInput("room-01", "C2", 1, new ChatInput("peer")));
         ChatTickResult firstTick = runtime.RunTick(7);
         Assert.Equal(2, firstTick.Events.Count);
-        AssertLastMessage(runtime, "101", "first", 7UL);
+        AssertLastMessage(runtime, first, "first", 7UL);
 
-        Assert.True(runtime.DestroyEntity("101"));
-        Assert.False(runtime.TryGetLastMessage("101", out _, out _));
-        AssertLastMessage(runtime, "102", "peer", 7UL);
+        Assert.True(runtime.DestroyEntity(first));
+        Assert.False(runtime.TryGetLastMessage(first, out _, out _));
+        AssertLastMessage(runtime, second, "peer", 7UL);
 
-        ChatMappingResult destroyedWrite = runtime.SetMessage("room-01", "101", "after-destroy");
+        ChatMappingResult destroyedWrite = runtime.SetMessage("room-01", first, "after-destroy");
         Assert.False(destroyedWrite.Succeeded);
         Assert.Equal("runtime_failure", destroyedWrite.Code);
         Assert.False(runtime.IsFaulted);
-        Assert.False(runtime.TryGetLastMessage("101", out string? resurrected, out _));
+        Assert.False(runtime.TryGetLastMessage(first, out string? resurrected, out _));
         Assert.Null(resurrected);
-        AssertLastMessage(runtime, "102", "peer", 7UL);
+        AssertLastMessage(runtime, second, "peer", 7UL);
 
         AssertOk(runtime.AdmitInput("room-01", "C1", 1, new ChatInput("queued-after-destroy")));
         ChatTickResult secondTick = runtime.RunTick(8);
-        Assert.DoesNotContain(secondTick.Events, static item => item.SenderNetEntityId == "101");
-        Assert.False(runtime.TryGetLastMessage("101", out _, out _));
-        AssertLastMessage(runtime, "102", "peer", 7UL);
+        Assert.DoesNotContain(secondTick.Events, item => item.SenderNetEntityId == first);
+        Assert.False(runtime.TryGetLastMessage(first, out _, out _));
+        AssertLastMessage(runtime, second, "peer", 7UL);
     }
 
     [Fact]
@@ -348,8 +390,9 @@ public sealed class ChatCommandRuntimeTests
         Assert.Equal(
             first.Select(static item => (item.MessageId, item.RoomSequence, item.AppliedTick)).ToArray(),
             second.Select(static item => (item.MessageId, item.RoomSequence, item.AppliedTick)).ToArray());
-        Assert.Equal("101", first[0].SenderNetEntityId);
-        Assert.Equal("102", first[1].SenderNetEntityId);
+        Assert.True(NetEntityId.TryParse(first[0].SenderNetEntityId, out _));
+        Assert.True(NetEntityId.TryParse(first[1].SenderNetEntityId, out _));
+        Assert.NotEqual(first[0].SenderNetEntityId, first[1].SenderNetEntityId);
         Assert.Equal(1UL, first[0].RoomSequence);
         Assert.Equal(2UL, first[1].RoomSequence);
         Assert.Equal(7UL, first[0].AppliedTick);
@@ -357,19 +400,29 @@ public sealed class ChatCommandRuntimeTests
     }
 
     [Fact]
-    public void BuildFullSnapshotEnumeratesLiveEntitiesAndOmitsChatEvents()
+    public void BuildFullSnapshotIncludesStateBlocksForAllLiveEntities()
     {
-        using ChatCommandRuntime runtime = RoomWith("101", "102");
+        using ChatCommandRuntime runtime = RoomWith(2);
+        string first = Net(runtime, 0);
+        string second = Net(runtime, 1);
         AssertOk(runtime.AdmitInput("room-01", "C1", 1, new ChatInput("gg")));
         ChatTickResult tick = runtime.RunTick(7);
 
-        Assert.Equal(new[] { "101", "102" }, runtime.LiveNetEntityIds.ToArray());
+        Assert.Equal(new[] { first, second }, runtime.LiveNetEntityIds.ToArray());
         string snapshot = runtime.BuildFullSnapshot("room-01", 7, tick.Revision);
         Assert.Contains("\"messageType\":\"FullSnapshot\"", snapshot, StringComparison.Ordinal);
-        Assert.Contains("\"stateBlocks\":[]", snapshot, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"stateBlocks\":[]", snapshot, StringComparison.Ordinal);
+        Assert.Contains("\"mappingId\":\"" + ClaimedMarkMapping + "\"", snapshot, StringComparison.Ordinal);
+        Assert.Contains("\"mappingId\":\"" + EntityTypeMapping + "\"", snapshot, StringComparison.Ordinal);
         Assert.DoesNotContain("chat.event", snapshot, StringComparison.Ordinal);
         Assert.DoesNotContain("chat.component", snapshot, StringComparison.Ordinal);
+        Assert.Contains(ToHex(U64Bytes(SenderU64(first))), snapshot, StringComparison.Ordinal);
+        Assert.Contains(ToHex(U64Bytes(SenderU64(second))), snapshot, StringComparison.Ordinal);
         AssertOk(ChatEnvelope.Validate(snapshot));
+
+        int claimedIndex = snapshot.IndexOf(ClaimedMarkMapping, StringComparison.Ordinal);
+        int typeIndex = snapshot.IndexOf(EntityTypeMapping, StringComparison.Ordinal);
+        Assert.InRange(claimedIndex, 0, typeIndex - 1);
 
         ChatMappingResult replay = runtime.ApplyDownstream(
             "observer",
@@ -378,16 +431,15 @@ public sealed class ChatCommandRuntimeTests
         AssertRejected(replay, "state_block_kind_mismatch");
         Assert.Empty(runtime.DisplayedEvents("observer"));
 
-        AssertOk(runtime.ApplyDownstream(
-            "observer",
-            "{\"messageType\":\"FullSnapshot\",\"tickId\":0,\"revision\":0,\"stateBlocks\":[]}"));
+        AssertOk(runtime.ApplyDownstream("observer", snapshot));
         Assert.Empty(runtime.DisplayedEvents("observer"));
     }
 
     [Fact]
-    public void LiveSeq2AfterEmptySnapshotIsSessionBaselineNotBadEnvelope()
+    public void LiveSeq2AfterSnapshotIsSessionBaselineNotBadEnvelope()
     {
-        using ChatCommandRuntime runtime = RoomWith("101");
+        using ChatCommandRuntime runtime = RoomWith();
+        string sender = Net(runtime, 0);
         AssertOk(runtime.AdmitInput("room-01", "C1", 1, new ChatInput("one")));
         runtime.RunTick(7);
         AssertOk(runtime.AdmitInput("room-01", "C1", 1, new ChatInput("two")));
@@ -404,56 +456,43 @@ public sealed class ChatCommandRuntimeTests
         Assert.Equal(2UL, shown.RoomSequence);
         Assert.Equal(2UL, shown.MessageId);
         Assert.Equal("two", shown.Text);
-        Assert.Equal("101", shown.SenderNetEntityId);
 
         ChatMappingResult duplicate = runtime.ApplyDownstream("observer", live);
         AssertRejected(duplicate, "bad_envelope");
         Assert.Single(runtime.DisplayedEvents("observer"));
-    }
-
-    [Fact]
-    public void NonDecimalBoundNetEntityIdIsRejectedAndDoesNotForgeSenderZero()
-    {
-        using EntityBindingQuery bindings = EntityBindingQuery.Create();
-        AssertOk(Admit(bindings, net: "N1"));
-        using var runtime = ChatCommandRuntime.Create(bindings);
-        AssertOk(runtime.AttachMember("room-01", "C1"));
-
-        ChatMappingResult submitted = runtime.AdmitInput("room-01", "C1", 1, new ChatInput("gg"));
-        AssertRejected(submitted, "bad_envelope", ChatMapping.InputMappingId);
-        Assert.Empty(runtime.RunTick(7).Events);
-        string delta = Assert.Single(runtime.BuildDelta("room-01", 7, 1));
-        Assert.DoesNotContain("chat.event", delta, StringComparison.Ordinal);
-        Assert.Contains("\"changedBlocks\":[]", delta, StringComparison.Ordinal);
+        Assert.Equal(sender, runtime.LiveNetEntityIds[0]);
     }
 
     [Fact]
     public void ExtraClientSequenceOrSenderOnEnvelopeIsRejectedWithNoWrite()
     {
-        using ChatCommandRuntime runtime = RoomWith("101");
+        using ChatCommandRuntime runtime = RoomWith();
+        string sender = Net(runtime, 0);
         string extra = "{\"messageType\":\"InputCommand\",\"commandSequence\":9,\"commands\":[" +
                        Block("chat.input", GgPayload, GgSha256) + "]}";
         ChatMappingResult result = runtime.AdmitInputCommand("room-01", "C1", 1, extra);
         AssertRejected(result, "bad_envelope");
         Assert.Empty(runtime.RunTick(7).Events);
-        AssertLastMessage(runtime, "101", string.Empty, 0UL);
+        AssertLastMessage(runtime, sender, string.Empty, 0UL);
     }
 
     [Fact]
     public void BuildDeltaIsIdempotentAndDoesNotDequeue()
     {
-        using ChatCommandRuntime runtime = RoomWith("101");
+        using ChatCommandRuntime runtime = RoomWith();
+        string sender = Net(runtime, 0);
         AssertOk(runtime.AdmitInput("room-01", "C1", 1, new ChatInput("gg")));
         ChatTickResult tick = runtime.RunTick(7);
         string first = Assert.Single(runtime.BuildDelta("room-01", 7, tick.Revision));
         string second = Assert.Single(runtime.BuildDelta("room-01", 7, tick.Revision));
         Assert.Equal(first, second);
-        Assert.Contains(GgEventPayload, first, StringComparison.Ordinal);
+        (string Payload, string Sha256) wire = EncodeChatEvent(1, 1, SenderU64(sender), "gg", 7);
+        Assert.Contains(wire.Payload, first, StringComparison.Ordinal);
     }
 
     private static ChatMessageEvent[] RunOnce()
     {
-        using ChatCommandRuntime runtime = RoomWith("101", "102");
+        using ChatCommandRuntime runtime = RoomWith(2);
         AssertOk(runtime.AdmitInput("room-01", "C1", 1, new ChatInput("gg")));
         ChatTickResult first = runtime.RunTick(7);
         AssertOk(runtime.AdmitInput("room-01", "C2", 1, new ChatInput("ok")));
@@ -461,19 +500,19 @@ public sealed class ChatCommandRuntimeTests
         return first.Events.Concat(second.Events).ToArray();
     }
 
-    private static ChatCommandRuntime RoomWith(params string[] netEntityIds)
+    private static ChatCommandRuntime RoomWith(int members = 1)
     {
         EntityBindingQuery bindings = EntityBindingQuery.Create();
-        for (int i = 0; i < netEntityIds.Length; i++)
+        for (int i = 0; i < members; i++)
         {
-            string net = netEntityIds[i];
             string connection = i == 0 ? "C1" : "C" + (i + 1).ToString(CultureInfo.InvariantCulture);
             string account = "acct-" + (7 + i).ToString(CultureInfo.InvariantCulture);
-            AssertOk(Admit(bindings, connection, account, "room-01", net));
+            ConnectionBinding bound = Admit(bindings, connection, account);
+            Assert.True(NetEntityId.TryParse(bound.NetEntityId, out _), bound.NetEntityId);
         }
 
         var runtime = ChatCommandRuntime.Create(bindings, ownsBindings: true);
-        for (int i = 0; i < netEntityIds.Length; i++)
+        for (int i = 0; i < members; i++)
         {
             string connection = i == 0 ? "C1" : "C" + (i + 1).ToString(CultureInfo.InvariantCulture);
             AssertOk(runtime.AttachMember("room-01", connection));
@@ -482,24 +521,26 @@ public sealed class ChatCommandRuntimeTests
         return runtime;
     }
 
-    private static BindingQueryResult Admit(
+    private static string Net(ChatCommandRuntime runtime, int index) => runtime.LiveNetEntityIds[index];
+
+    private static ulong SenderU64(string netEntityId)
+    {
+        Assert.True(ulong.TryParse(netEntityId, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out ulong value));
+        return value;
+    }
+
+    private static ConnectionBinding Admit(
         EntityBindingQuery sut,
         string connection = "C1",
         string account = "acct-07",
         string room = "room-01",
-        string net = "101",
-        string type = "player",
-        ulong generation = 1) =>
-        sut.Bind(
-            connection,
-            new BindingRecordRequest
-            {
-                AccountId = account,
-                RoomId = room,
-                NetEntityId = net,
-                EntityType = type,
-                ConnectionGeneration = generation,
-            });
+        string type = "player")
+    {
+        BindingQueryResult result = sut.Admit(connection, account, room, type);
+        AssertOk(result);
+        Assert.True(result.Binding.HasValue);
+        return result.Binding.Value;
+    }
 
     private static void AssertOk(BindingQueryResult result)
     {
@@ -573,6 +614,13 @@ public sealed class ChatCommandRuntimeTests
     {
         BinaryPrimitives.WriteUInt64LittleEndian(dest.AsSpan(offset, 8), value);
         offset += 8;
+    }
+
+    private static byte[] U64Bytes(ulong value)
+    {
+        var bytes = new byte[8];
+        BinaryPrimitives.WriteUInt64LittleEndian(bytes, value);
+        return bytes;
     }
 
     private static string ToHex(byte[] value)
