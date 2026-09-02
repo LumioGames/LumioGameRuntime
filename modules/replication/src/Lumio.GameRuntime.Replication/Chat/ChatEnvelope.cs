@@ -5,7 +5,7 @@ using Lumio.GameRuntime.Replication.Validation;
 
 namespace Lumio.GameRuntime.Replication.Chat;
 
-/// <summary>C-1 envelope codec: validate InputCommand / FullSnapshot / Delta / Error and emit host-ready JSON.</summary>
+/// <summary>C-1 envelope codec: validate InputCommand / FullSnapshot / Delta / Error / ConnectionSuperseded and emit host-ready JSON.</summary>
 public static class ChatEnvelope
 {
     private static readonly HashSet<string> InputEnvelopeMembers = new(StringComparer.Ordinal)
@@ -31,6 +31,11 @@ public static class ChatEnvelope
     private static readonly HashSet<string> ErrorMembers = new(StringComparer.Ordinal)
     {
         "messageType", "code", "detail", "mappingId"
+    };
+
+    private static readonly HashSet<string> ConnectionSupersededMembers = new(StringComparer.Ordinal)
+    {
+        "messageType", "reasonCode", "netEntityId", "newConnectionGeneration"
     };
 
     private static readonly HashSet<string> ErrorCodes = new(StringComparer.Ordinal)
@@ -83,6 +88,9 @@ public static class ChatEnvelope
         if (string.Equals(messageType, "Error", StringComparison.Ordinal))
             return ValidateError(root);
 
+        if (string.Equals(messageType, "ConnectionSuperseded", StringComparison.Ordinal))
+            return ValidateConnectionSuperseded(root);
+
         return ChatMappingResult.Reject("bad_envelope", "unknown messageType");
     }
 
@@ -102,10 +110,25 @@ public static class ChatEnvelope
         return TryParseInputCommand(root, out text, out failure);
     }
 
-    /// <summary>Builds a C-1 FullSnapshot. stateBlocks stay empty until C-1 registers kind=state live mappings.</summary>
+    /// <summary>Builds a C-1 FullSnapshot. Zero live entities emit empty stateBlocks.</summary>
     public static string FullSnapshot(ulong tickId, ulong revision) =>
-        "{\"messageType\":\"FullSnapshot\",\"tickId\":" + Number(tickId) +
-        ",\"revision\":" + Number(revision) + ",\"stateBlocks\":[]}";
+        FullSnapshot(tickId, revision, Array.Empty<EntityIdentityRecord>());
+
+    /// <summary>Builds a C-1 FullSnapshot. Live rooms emit one entity.identity block; zero live emit [].</summary>
+    internal static string FullSnapshot(ulong tickId, ulong revision, IReadOnlyList<EntityIdentityRecord> records)
+    {
+        string blocks = "[]";
+        if (records is not null && records.Count > 0)
+        {
+            byte[] payload = ChatPayload.EncodeIdentity(records);
+            string hex = ChatPayload.ToHex(payload);
+            string digest = ReplicationValidation.Sha256Hex(payload);
+            blocks = "[" + BlockJson(ChatMapping.IdentityMappingId, hex, digest) + "]";
+        }
+
+        return "{\"messageType\":\"FullSnapshot\",\"tickId\":" + Number(tickId) +
+               ",\"revision\":" + Number(revision) + ",\"stateBlocks\":" + blocks + "}";
+    }
 
     /// <summary>Builds one C-1 Delta. Duplicate mappingId is illegal, so each chat.event is its own envelope.</summary>
     public static string Delta(ulong tickId, ulong revision, ChatMessageEvent? mapped)
@@ -275,6 +298,21 @@ public static class ChatEnvelope
         return true;
     }
 
+    private static ChatMappingResult ValidateConnectionSuperseded(StructuredJsonValue root)
+    {
+        if (!Shape(root, ConnectionSupersededMembers, out ChatMappingResult shape)) return shape;
+        if (!TryRequiredString(root, "messageType", out string messageType) ||
+            !string.Equals(messageType, "ConnectionSuperseded", StringComparison.Ordinal))
+            return ChatMappingResult.Reject("bad_envelope", "messageType must be ConnectionSuperseded");
+        if (!TryRequiredString(root, "reasonCode", out string reason) ||
+            !string.Equals(reason, "connection_superseded", StringComparison.Ordinal))
+            return ChatMappingResult.Reject("bad_envelope", "reasonCode must be connection_superseded");
+        if (!TryRequiredUInt64(root, "netEntityId", out _) ||
+            !TryRequiredUInt64(root, "newConnectionGeneration", out _))
+            return ChatMappingResult.Reject("bad_envelope", "ConnectionSuperseded netEntityId/newConnectionGeneration are required");
+        return ChatMappingResult.Ok();
+    }
+
     private static ChatMappingResult ValidateError(StructuredJsonValue root)
     {
         if (!Shape(root, ErrorMembers, out ChatMappingResult shape)) return shape;
@@ -392,6 +430,17 @@ public static class ChatEnvelope
                 return false;
             }
 
+            if (string.Equals(mappingId, ChatMapping.IdentityMappingId, StringComparison.Ordinal))
+            {
+                if (!ChatPayload.TryDecodeIdentity(payload, out _, out string decodeCode))
+                {
+                    failure = ChatMappingResult.Reject(decodeCode, "entity.identity payload rejected", mappingId);
+                    return false;
+                }
+
+                continue;
+            }
+
             if (string.Equals(mappingId, ChatMapping.EventMappingId, StringComparison.Ordinal))
             {
                 if (!ChatPayload.TryDecodeEvent(payload, out ChatMessageEvent mapped, out string decodeCode))
@@ -426,6 +475,12 @@ public static class ChatEnvelope
         if (string.Equals(mappingId, ChatMapping.ComponentMappingId, StringComparison.Ordinal))
         {
             kind = "componentState";
+            return true;
+        }
+
+        if (string.Equals(mappingId, ChatMapping.IdentityMappingId, StringComparison.Ordinal))
+        {
+            kind = "state";
             return true;
         }
 

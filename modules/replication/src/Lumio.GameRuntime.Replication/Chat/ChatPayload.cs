@@ -1,5 +1,6 @@
 using System;
 using System.Buffers.Binary;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
 
@@ -87,12 +88,75 @@ internal static class ChatPayload
         WriteUInt64(bytes, ref offset, mapped.MessageId);
         WriteUInt64(bytes, ref offset, mapped.RoomSequence);
         WriteUInt64(bytes, ref offset, sender);
-        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(offset, 4), (uint)utf8.Length);
-        offset += 4;
-        utf8.CopyTo(bytes, offset);
-        offset += utf8.Length;
+        WriteUtf8(bytes, ref offset, utf8);
         WriteUInt64(bytes, ref offset, mapped.AppliedTick);
         return bytes;
+    }
+
+    internal static byte[] EncodeIdentity(IReadOnlyList<EntityIdentityRecord> records)
+    {
+        int count = records is null ? 0 : records.Count;
+        var ordered = new EntityIdentityRecord[count];
+        for (int i = 0; i < count; i++) ordered[i] = records![i];
+        Array.Sort(ordered, static (left, right) => left.NetEntityId.CompareTo(right.NetEntityId));
+
+        var typeUtf8 = new byte[count][];
+        var markUtf8 = new byte[count][];
+        int size = 4;
+        for (int i = 0; i < count; i++)
+        {
+            typeUtf8[i] = Encoding.UTF8.GetBytes(ordered[i].EntityType ?? string.Empty);
+            markUtf8[i] = Encoding.UTF8.GetBytes(ordered[i].UnmappedMark ?? string.Empty);
+            size += 8 + 4 + typeUtf8[i].Length + 4 + markUtf8[i].Length;
+        }
+
+        byte[] bytes = new byte[size];
+        int offset = 0;
+        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(offset, 4), (uint)count);
+        offset += 4;
+        for (int i = 0; i < count; i++)
+        {
+            WriteUInt64(bytes, ref offset, ordered[i].NetEntityId);
+            WriteUtf8(bytes, ref offset, typeUtf8[i]);
+            WriteUtf8(bytes, ref offset, markUtf8[i]);
+        }
+
+        return bytes;
+    }
+
+    internal static bool TryDecodeIdentity(byte[] payload, out EntityIdentityRecord[] records, out string code)
+    {
+        records = Array.Empty<EntityIdentityRecord>();
+        code = "undecodable_payload";
+        int offset = 0;
+        if (payload is null || offset + 4 > payload.Length) return false;
+        uint count = BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(offset, 4));
+        offset += 4;
+        int remaining = payload.Length - offset;
+        if (count > (uint)remaining) return false;
+
+        var decoded = new List<EntityIdentityRecord>((int)count);
+        ulong previous = 0;
+        for (uint i = 0; i < count; i++)
+        {
+            if (!TryReadUInt64(payload, ref offset, out ulong netEntityId)) return false;
+            if (!TryReadString(payload, ref offset, out string entityType, out _, uint.MaxValue)) return false;
+            if (!TryReadString(payload, ref offset, out string unmappedMark, out _, uint.MaxValue)) return false;
+            if (entityType is not ("player" or "bot")) return false;
+            if (i > 0 && netEntityId <= previous)
+            {
+                code = "block_order_violation";
+                return false;
+            }
+
+            previous = netEntityId;
+            decoded.Add(new EntityIdentityRecord(netEntityId, entityType, unmappedMark));
+        }
+
+        if (offset != payload.Length) return false;
+        records = decoded.ToArray();
+        code = string.Empty;
+        return true;
     }
 
     internal static string ToHex(byte[] value)
@@ -111,7 +175,15 @@ internal static class ChatPayload
         return true;
     }
 
-    private static bool TryReadString(byte[] data, ref int offset, out string value, out bool tooLong)
+    private static bool TryReadString(byte[] data, ref int offset, out string value, out bool tooLong) =>
+        TryReadString(data, ref offset, out value, out tooLong, ChatMapping.MaxTextUtf8Bytes);
+
+    private static bool TryReadString(
+        byte[] data,
+        ref int offset,
+        out string value,
+        out bool tooLong,
+        uint maxUtf8Bytes)
     {
         value = string.Empty;
         tooLong = false;
@@ -119,7 +191,7 @@ internal static class ChatPayload
         uint length = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(offset, 4));
         offset += 4;
         if (length > (uint)(data.Length - offset)) return false;
-        if (length > ChatMapping.MaxTextUtf8Bytes)
+        if (length > maxUtf8Bytes)
         {
             tooLong = true;
             offset += (int)length;
@@ -135,6 +207,14 @@ internal static class ChatPayload
     {
         BinaryPrimitives.WriteUInt64LittleEndian(dest.AsSpan(offset, 8), value);
         offset += 8;
+    }
+
+    private static void WriteUtf8(byte[] dest, ref int offset, byte[] utf8)
+    {
+        BinaryPrimitives.WriteUInt32LittleEndian(dest.AsSpan(offset, 4), (uint)utf8.Length);
+        offset += 4;
+        utf8.CopyTo(dest, offset);
+        offset += utf8.Length;
     }
 
     private static int Nibble(char value)
