@@ -35,24 +35,16 @@ public sealed class DeclareDefaultsCatalogTests
     public void AccountIdQueryIsUndeclaredAttribute()
     {
         using EntityBindingQuery sut = EntityBindingQuery.Create();
-        BindingQueryResult admit = sut.Bind(
-            "C1",
-            new BindingRecordRequest
-            {
-                AccountId = "acct-07",
-                RoomId = "room-01",
-                NetEntityId = "N1",
-                EntityType = "player",
-                ConnectionGeneration = 1,
-            });
+        BindingQueryResult admit = sut.Admit("C1", "acct-07", "room-01", "player");
         Assert.Equal("ok", admit.Outcome);
+        Assert.True(admit.Binding.HasValue);
 
         BindingQueryResult result = sut.QueryAttribute(
             new AttributeQueryRequest
             {
                 CallerScope = "server-authoritative",
                 RoomId = "room-01",
-                NetEntityId = "N1",
+                NetEntityId = admit.Binding.Value.NetEntityId,
                 AttributeId = "EntityIdentity.accountId",
             });
         Assert.Equal("request_error", result.Outcome);

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Text;
 using Lumio.GameRuntime.Ecs;
 using Lumio.GameRuntime.Ecs.Annotations;
@@ -30,7 +31,10 @@ public sealed class EntityBindingQuery : IDisposable
     private readonly Dictionary<string, AttributeDeclaration> _declarations = new(StringComparer.Ordinal);
     private readonly Dictionary<AttributeKey, object> _values = new();
     private readonly Dictionary<string, HashSet<string>> _claims = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _issued = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _retainedByAccount = new(StringComparer.Ordinal);
     private uint _nextLocalIndex = 1;
+    private ulong _nextIdentitySequence = 1;
     private bool _disposed;
 
     private EntityBindingQuery(
@@ -62,7 +66,9 @@ public sealed class EntityBindingQuery : IDisposable
 
     public TombstoneRegistry Tombstones { get; }
 
-    public static EntityBindingQuery Create()
+    public static EntityBindingQuery Create() => Create(identityTable: null);
+
+    public static EntityBindingQuery Create(IdentityTableSnapshot? identityTable)
     {
         var authoritativeModule = new EcsModule();
         var replicaModule = new EcsModule();
@@ -86,7 +92,7 @@ public sealed class EntityBindingQuery : IDisposable
                 throw new InvalidOperationException("Failed to register replicated attribute mappings.");
 
             var identityScope = new ReplicationStoreScope(1);
-            return new EntityBindingQuery(
+            var query = new EntityBindingQuery(
                 authoritativeModule,
                 replicaModule,
                 authoritative.World,
@@ -94,12 +100,177 @@ public sealed class EntityBindingQuery : IDisposable
                 mappings,
                 new NetEntityMappingTable(identityScope, authoritative.World.WorldId),
                 new TombstoneRegistry(identityScope));
+            query.RestoreIdentityTable(identityTable);
+            return query;
         }
         catch
         {
             authoritativeModule.Dispose();
             replicaModule.Dispose();
             throw;
+        }
+    }
+
+    public BindingQueryResult Admit(string connection, string accountId, string roomId, string entityType) =>
+        Admit(new AdmitRequest
+        {
+            Connection = connection,
+            AccountId = accountId,
+            RoomId = roomId,
+            EntityType = entityType,
+        });
+
+    public BindingQueryResult Admit(AdmitRequest request)
+    {
+        if (request is null) throw new ArgumentNullException(nameof(request));
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            var hits = new List<string>();
+            CollectForbidden(
+                request.AccountEntityRef,
+                request.StorageHandle,
+                request.HostPointer,
+                request.HostHandle,
+                request.SessionId,
+                hits);
+            if (!string.IsNullOrEmpty(request.NetEntityId))
+                hits.Add("invalid_binding_shape");
+            if (string.IsNullOrEmpty(request.Connection) ||
+                string.IsNullOrEmpty(request.AccountId) ||
+                string.IsNullOrEmpty(request.RoomId) ||
+                !IsEntityType(request.EntityType))
+                hits.Add("invalid_binding_shape");
+            CollectAccountConflict(request.AccountId, request.Connection, request.RoomId, restoringNetEntityId: null, hits);
+            if (hits.Count > 0) return RankedError(hits);
+
+            string roomId = request.RoomId!;
+            if (CountLiveBindings(roomId) >= MaxBindingsPerRoom &&
+                !_byConnection.ContainsKey(request.Connection!))
+            {
+                hits.Add("invalid_binding_shape");
+                return RankedError(hits, "room binding capacity exceeded");
+            }
+
+            string netEntityId = AllocateNetEntityIdLocked();
+            var binding = new ConnectionBinding(request.AccountId!, roomId, netEntityId, request.EntityType!, 1UL);
+            AttachBinding(request.Connection!, binding);
+            Occupancy occupancy = EnsureLiveEntity(netEntityId, roomId, request.EntityType!, 1UL, replicateToReplica: true);
+            return BindingQueryResult.OkBinding(binding, occupancy.Revision);
+        }
+    }
+
+    public BindingQueryResult Disconnect(string connection)
+    {
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            if (string.IsNullOrEmpty(connection) || !_byConnection.TryGetValue(connection, out ConnectionBinding binding))
+                return BindingQueryResult.RequestError("binding_not_found", "no active binding");
+
+            _byConnection.Remove(connection);
+            if (_liveConnectionByAccount.TryGetValue(binding.AccountId, out string? live) &&
+                string.Equals(live, connection, StringComparison.Ordinal))
+                _liveConnectionByAccount.Remove(binding.AccountId);
+            _retainedByAccount[binding.AccountId] = binding.NetEntityId;
+            _claims.Remove(connection);
+            return BindingQueryResult.OkBinding(binding, _entities[binding.NetEntityId].Revision);
+        }
+    }
+
+    public BindingQueryResult Rebind(string connection, string accountId, string roomId, RebindMode mode)
+    {
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            if (string.IsNullOrEmpty(connection) || string.IsNullOrEmpty(accountId) || string.IsNullOrEmpty(roomId))
+                return BindingQueryResult.RequestError("invalid_binding_shape", "rebind requires connection, accountId, and roomId");
+
+            if (mode == RebindMode.Takeover &&
+                _liveConnectionByAccount.TryGetValue(accountId, out string? liveConnection) &&
+                _byConnection.TryGetValue(liveConnection, out ConnectionBinding live))
+            {
+                if (!string.Equals(live.RoomId, roomId, StringComparison.Ordinal))
+                    return BindingQueryResult.RequestError("cross_room_reference", "entity is not in the requested room");
+                return RebindLocked(liveConnection, connection);
+            }
+
+            if (!_retainedByAccount.TryGetValue(accountId, out string? netEntityId) ||
+                !_entities.TryGetValue(netEntityId, out Occupancy? occupancy) ||
+                occupancy.Presence != OccupancyState.Live)
+                return BindingQueryResult.RequestError("binding_not_found", "no retained binding for reconnect");
+            if (!string.Equals(occupancy.RoomId, roomId, StringComparison.Ordinal))
+                return BindingQueryResult.RequestError("cross_room_reference", "entity is not in the requested room");
+
+            ulong nextGeneration = checked(occupancy.ConnectionGeneration + 1UL);
+            occupancy.ConnectionGeneration = nextGeneration;
+            occupancy.Revision++;
+            occupancy.Tick++;
+            var updated = new ConnectionBinding(accountId, roomId, netEntityId, occupancy.EntityType, nextGeneration);
+            AttachBinding(connection, updated);
+            _retainedByAccount.Remove(accountId);
+            return BindingQueryResult.OkBinding(updated, occupancy.Revision);
+        }
+    }
+
+    public BindingQueryResult Expire(string netEntityId)
+    {
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            if (string.IsNullOrEmpty(netEntityId))
+                return BindingQueryResult.RequestError("invalid_binding_shape", "netEntityId is required");
+            if (!_entities.TryGetValue(netEntityId, out Occupancy? occupancy))
+                return IsRetired(netEntityId)
+                    ? BindingQueryResult.OutcomeFailure("tombstoned")
+                    : BindingQueryResult.OutcomeFailure("non_existent");
+            return DestroyLocked(occupancy.RoomId, netEntityId);
+        }
+    }
+
+    public BindingQueryResult ListBindings(string roomId)
+    {
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            if (string.IsNullOrEmpty(roomId))
+                return BindingQueryResult.RequestError("invalid_binding_shape", "roomId is required");
+
+            var matches = new List<ConnectionBinding>();
+            foreach (ConnectionBinding binding in _byConnection.Values)
+            {
+                if (string.Equals(binding.RoomId, roomId, StringComparison.Ordinal))
+                    matches.Add(binding);
+            }
+
+            matches.Sort(static (left, right) => string.CompareOrdinal(left.NetEntityId, right.NetEntityId));
+            return BindingQueryResult.OkBindings(roomId, matches.ToArray());
+        }
+    }
+
+    public IdentityTableSnapshot CaptureIdentityTable()
+    {
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            var records = new List<IssuedNetEntity>();
+            foreach (string id in _issued)
+            {
+                string roomId = string.Empty;
+                string entityType = "player";
+                bool tombstoned = IsRetired(id);
+                if (_entities.TryGetValue(id, out Occupancy? occupancy))
+                {
+                    roomId = occupancy.RoomId;
+                    entityType = occupancy.EntityType;
+                    tombstoned = occupancy.Presence == OccupancyState.Tombstoned || tombstoned;
+                }
+
+                records.Add(new IssuedNetEntity(id, roomId, entityType, tombstoned));
+            }
+
+            records.Sort(static (left, right) => string.CompareOrdinal(left.NetEntityId, right.NetEntityId));
+            return new IdentityTableSnapshot(records);
         }
     }
 
@@ -110,7 +281,13 @@ public sealed class EntityBindingQuery : IDisposable
         {
             ThrowIfDisposed();
             var hits = new List<string>();
-            CollectForbidden(request.AccountEntityRef, request.StorageHandle, request.HostPointer, hits);
+            CollectForbidden(
+                request.AccountEntityRef,
+                request.StorageHandle,
+                request.HostPointer,
+                request.HostHandle,
+                request.SessionId,
+                hits);
             if (string.IsNullOrEmpty(connection) || !IsValidBindingShape(request))
             {
                 hits.Add("invalid_binding_shape");
@@ -126,15 +303,19 @@ public sealed class EntityBindingQuery : IDisposable
             string entityType = request.EntityType!;
             ulong generation = request.ConnectionGeneration ?? 1UL;
 
-            if (_liveConnectionByAccount.TryGetValue(accountId, out string? liveConnection) &&
-                _byConnection.TryGetValue(liveConnection, out ConnectionBinding live) &&
-                !string.Equals(liveConnection, connectionId, StringComparison.Ordinal))
+            if (NetEntityId.TryParse(netEntityId, out _))
             {
-                hits.Add(string.Equals(live.RoomId, roomId, StringComparison.Ordinal)
-                    ? "invalid_binding_shape"
-                    : "cross_room_reference");
-                return RankedError(hits, "account already has an active room binding");
+                if (IsRetired(netEntityId))
+                    return BindingQueryResult.OutcomeFailure("tombstoned");
+                if (!_issued.Contains(netEntityId))
+                {
+                    hits.Add("invalid_binding_shape");
+                    return RankedError(hits, "netEntityId is not registered in the identity table");
+                }
             }
+
+            CollectAccountConflict(accountId, connectionId, roomId, netEntityId, hits);
+            if (hits.Count > 0) return RankedError(hits, "account already has an active room binding");
 
             if (CountLiveBindings(roomId) >= MaxBindingsPerRoom &&
                 !_byConnection.ContainsKey(connectionId))
@@ -147,10 +328,9 @@ public sealed class EntityBindingQuery : IDisposable
                 return BindingQueryResult.OutcomeFailure("tombstoned");
 
             var binding = new ConnectionBinding(accountId, roomId, netEntityId, entityType, generation);
-            _byConnection[connectionId] = binding;
-            _liveConnectionByAccount[accountId] = connectionId;
-            EnsureLiveEntity(netEntityId, roomId, entityType, generation, replicateToReplica: true);
-            return BindingQueryResult.OkBinding(binding, _entities[netEntityId].Revision);
+            AttachBinding(connectionId, binding);
+            Occupancy occupancy = EnsureLiveEntity(netEntityId, roomId, entityType, generation, replicateToReplica: true);
+            return BindingQueryResult.OkBinding(binding, occupancy.Revision);
         }
     }
 
@@ -161,25 +341,7 @@ public sealed class EntityBindingQuery : IDisposable
             ThrowIfDisposed();
             if (string.IsNullOrEmpty(fromConnection) || string.IsNullOrEmpty(toConnection))
                 return BindingQueryResult.RequestError("invalid_binding_shape", "connection refs are required");
-            if (!_byConnection.TryGetValue(fromConnection, out ConnectionBinding current))
-                return BindingQueryResult.RequestError("binding_not_found", "no active binding");
-
-            ulong nextGeneration = checked(current.ConnectionGeneration + 1UL);
-            var updated = current with { ConnectionGeneration = nextGeneration };
-            _byConnection.Remove(fromConnection);
-            _byConnection[toConnection] = updated;
-            _liveConnectionByAccount[current.AccountId] = toConnection;
-            if (_claims.TryGetValue(fromConnection, out HashSet<string>? claims))
-            {
-                _claims.Remove(fromConnection);
-                _claims[toConnection] = claims;
-            }
-
-            Occupancy occupancy = _entities[current.NetEntityId];
-            occupancy.ConnectionGeneration = nextGeneration;
-            occupancy.Revision++;
-            occupancy.Tick++;
-            return BindingQueryResult.OkBinding(updated, occupancy.Revision);
+            return RebindLocked(fromConnection, toConnection);
         }
     }
 
@@ -241,7 +403,13 @@ public sealed class EntityBindingQuery : IDisposable
         {
             ThrowIfDisposed();
             var hits = new List<string>();
-            CollectForbidden(request.AccountEntityRef, request.StorageHandle, request.HostPointer, hits);
+            CollectForbidden(
+                request.AccountEntityRef,
+                request.StorageHandle,
+                request.HostPointer,
+                request.HostHandle,
+                request.SessionId,
+                hits);
             CollectScopeHits(request.CallerScope, request.Origin, hits);
             if (RequiresAuthoritativeStorage(request.CallerScope) && !IsOwnerThread(AuthoritativeWorld))
                 hits.Add("scope_violation");
@@ -291,6 +459,20 @@ public sealed class EntityBindingQuery : IDisposable
         }
     }
 
+    public BindingQueryResult Spawn(string roomId, string entityType, bool replicateToReplica = true)
+    {
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            if (string.IsNullOrEmpty(roomId) || !IsEntityType(entityType))
+                return BindingQueryResult.RequestError("invalid_binding_shape", "spawn requires room and entityType");
+            string netEntityId = AllocateNetEntityIdLocked();
+            Occupancy occupancy = EnsureLiveEntity(netEntityId, roomId, entityType, connectionGeneration: 0, replicateToReplica);
+            occupancy.InReplica = replicateToReplica;
+            return BindingQueryResult.OkEntity(netEntityId, roomId, entityType, occupancy.Revision);
+        }
+    }
+
     public BindingQueryResult Spawn(string roomId, string netEntityId, string entityType, bool replicateToReplica = true)
     {
         lock (_gate)
@@ -300,6 +482,8 @@ public sealed class EntityBindingQuery : IDisposable
                 return BindingQueryResult.RequestError("invalid_binding_shape", "spawn requires room, netEntityId, and entityType");
             if (IsRetired(netEntityId))
                 return BindingQueryResult.OutcomeFailure("tombstoned");
+            if (NetEntityId.TryParse(netEntityId, out _) && !_issued.Contains(netEntityId))
+                return BindingQueryResult.RequestError("invalid_binding_shape", "netEntityId is not registered in the identity table");
             Occupancy occupancy = EnsureLiveEntity(netEntityId, roomId, entityType, connectionGeneration: 0, replicateToReplica);
             occupancy.InReplica = replicateToReplica;
             return BindingQueryResult.OkEntity(netEntityId, roomId, entityType, occupancy.Revision);
@@ -311,24 +495,7 @@ public sealed class EntityBindingQuery : IDisposable
         lock (_gate)
         {
             ThrowIfDisposed();
-            string id = netEntityId ?? string.Empty;
-            if (!_entities.TryGetValue(id, out Occupancy? occupancy) ||
-                occupancy.Presence != OccupancyState.Live ||
-                !string.Equals(occupancy.RoomId, roomId, StringComparison.Ordinal))
-                return BindingQueryResult.OutcomeFailure("non_existent");
-
-            occupancy.Presence = OccupancyState.Tombstoned;
-            occupancy.Revision++;
-            _retired.Add(id);
-            RetireLiveBinding(id);
-            if (NetEntityId.TryParse(id, out NetEntityId parsed))
-            {
-                IdentityStoreToken token = Identities.CaptureToken();
-                Identities.Remove(parsed, token);
-                Tombstones.Add(parsed, occupancy.Revision, token);
-            }
-
-            return BindingQueryResult.OkEntity(id, roomId, occupancy.EntityType, occupancy.Revision);
+            return DestroyLocked(roomId, netEntityId);
         }
     }
 
@@ -491,6 +658,7 @@ public sealed class EntityBindingQuery : IDisposable
         if (_liveConnectionByAccount.TryGetValue(binding.AccountId, out string? live) &&
             string.Equals(live, connection, StringComparison.Ordinal))
             _liveConnectionByAccount.Remove(binding.AccountId);
+        _retainedByAccount.Remove(binding.AccountId);
         _claims.Remove(connection);
     }
 
@@ -505,6 +673,138 @@ public sealed class EntityBindingQuery : IDisposable
         return count;
     }
 
+    private void RestoreIdentityTable(IdentityTableSnapshot? snapshot)
+    {
+        if (snapshot is null) return;
+        for (int i = 0; i < snapshot.Records.Count; i++)
+        {
+            IssuedNetEntity record = snapshot.Records[i];
+            if (string.IsNullOrEmpty(record.NetEntityId)) continue;
+            _issued.Add(record.NetEntityId);
+            NoteIssuedSequence(record.NetEntityId);
+            if (!record.Tombstoned) continue;
+
+            string roomId = string.IsNullOrEmpty(record.RoomId) ? "room-01" : record.RoomId;
+            string entityType = IsEntityType(record.EntityType) ? record.EntityType : "player";
+            var occupancy = new Occupancy(
+                record.NetEntityId,
+                roomId,
+                entityType,
+                connectionGeneration: 1,
+                new LocalEntityId(_nextLocalIndex++, 1),
+                inReplica: true);
+            occupancy.Presence = OccupancyState.Tombstoned;
+            _entities[record.NetEntityId] = occupancy;
+            _retired.Add(record.NetEntityId);
+            if (NetEntityId.TryParse(record.NetEntityId, out NetEntityId parsed))
+                Tombstones.Add(parsed, occupancy.Revision, Identities.CaptureToken());
+        }
+    }
+
+    private string AllocateNetEntityIdLocked()
+    {
+        while (true)
+        {
+            ulong sequence = _nextIdentitySequence;
+            if (_nextIdentitySequence < ulong.MaxValue) _nextIdentitySequence++;
+            string id = sequence.ToString("x32", CultureInfo.InvariantCulture);
+            if (_issued.Add(id)) return id;
+            if (sequence == ulong.MaxValue)
+                throw new InvalidOperationException("NetEntityId space is exhausted.");
+        }
+    }
+
+    private void NoteIssuedSequence(string netEntityId)
+    {
+        if (!ulong.TryParse(netEntityId, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out ulong value))
+            return;
+        if (value >= _nextIdentitySequence && value < ulong.MaxValue)
+            _nextIdentitySequence = value + 1UL;
+    }
+
+    private void AttachBinding(string connection, ConnectionBinding binding)
+    {
+        _byConnection[connection] = binding;
+        _liveConnectionByAccount[binding.AccountId] = connection;
+        _retainedByAccount.Remove(binding.AccountId);
+    }
+
+    private void CollectAccountConflict(
+        string? accountId,
+        string? connection,
+        string? roomId,
+        string? restoringNetEntityId,
+        List<string> hits)
+    {
+        if (string.IsNullOrEmpty(accountId)) return;
+        if (_liveConnectionByAccount.TryGetValue(accountId, out string? liveConnection) &&
+            _byConnection.TryGetValue(liveConnection, out ConnectionBinding live) &&
+            !string.Equals(liveConnection, connection, StringComparison.Ordinal))
+        {
+            hits.Add(string.Equals(live.RoomId, roomId, StringComparison.Ordinal)
+                ? "invalid_binding_shape"
+                : "cross_room_reference");
+            return;
+        }
+
+        if (_retainedByAccount.TryGetValue(accountId, out string? retainedId) &&
+            _entities.TryGetValue(retainedId, out Occupancy? occupancy) &&
+            occupancy.Presence == OccupancyState.Live &&
+            !string.Equals(retainedId, restoringNetEntityId, StringComparison.Ordinal))
+        {
+            hits.Add(string.Equals(occupancy.RoomId, roomId, StringComparison.Ordinal)
+                ? "invalid_binding_shape"
+                : "cross_room_reference");
+        }
+    }
+
+    private BindingQueryResult RebindLocked(string fromConnection, string toConnection)
+    {
+        if (!_byConnection.TryGetValue(fromConnection, out ConnectionBinding current))
+            return BindingQueryResult.RequestError("binding_not_found", "no active binding");
+
+        ulong nextGeneration = checked(current.ConnectionGeneration + 1UL);
+        var updated = current with { ConnectionGeneration = nextGeneration };
+        _byConnection.Remove(fromConnection);
+        _byConnection[toConnection] = updated;
+        _liveConnectionByAccount[current.AccountId] = toConnection;
+        _retainedByAccount.Remove(current.AccountId);
+        if (_claims.TryGetValue(fromConnection, out HashSet<string>? claims))
+        {
+            _claims.Remove(fromConnection);
+            _claims[toConnection] = claims;
+        }
+
+        Occupancy occupancy = _entities[current.NetEntityId];
+        occupancy.ConnectionGeneration = nextGeneration;
+        occupancy.Revision++;
+        occupancy.Tick++;
+        return BindingQueryResult.OkBinding(updated, occupancy.Revision);
+    }
+
+    private BindingQueryResult DestroyLocked(string roomId, string netEntityId)
+    {
+        string id = netEntityId ?? string.Empty;
+        if (!_entities.TryGetValue(id, out Occupancy? occupancy) ||
+            occupancy.Presence != OccupancyState.Live ||
+            !string.Equals(occupancy.RoomId, roomId, StringComparison.Ordinal))
+            return BindingQueryResult.OutcomeFailure("non_existent");
+
+        occupancy.Presence = OccupancyState.Tombstoned;
+        occupancy.Revision++;
+        _retired.Add(id);
+        _issued.Add(id);
+        RetireLiveBinding(id);
+        if (NetEntityId.TryParse(id, out NetEntityId parsed))
+        {
+            IdentityStoreToken token = Identities.CaptureToken();
+            Identities.Remove(parsed, token);
+            Tombstones.Add(parsed, occupancy.Revision, token);
+        }
+
+        return BindingQueryResult.OkEntity(id, roomId, occupancy.EntityType, occupancy.Revision);
+    }
+
     private void CollectCrossRoomHit(string? roomId, string? netEntityId, string? callerScope, List<string> hits)
     {
         if (string.IsNullOrEmpty(roomId) || string.IsNullOrEmpty(netEntityId)) return;
@@ -515,9 +815,19 @@ public sealed class EntityBindingQuery : IDisposable
             hits.Add("cross_room_reference");
     }
 
-    private static void CollectForbidden(object? accountEntityRef, object? storageHandle, object? hostPointer, List<string> hits)
+    private static void CollectForbidden(
+        object? accountEntityRef,
+        object? storageHandle,
+        object? hostPointer,
+        object? hostHandle,
+        string? sessionId,
+        List<string> hits)
     {
-        if (accountEntityRef is not null || storageHandle is not null || hostPointer is not null)
+        if (accountEntityRef is not null ||
+            storageHandle is not null ||
+            hostPointer is not null ||
+            hostHandle is not null ||
+            !string.IsNullOrEmpty(sessionId))
             hits.Add("invalid_binding_shape");
     }
 
