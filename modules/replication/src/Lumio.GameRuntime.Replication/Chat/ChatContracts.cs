@@ -9,6 +9,7 @@ public static class ChatMapping
     public const string InputMappingId = "chat.input";
     public const string EventMappingId = "chat.event";
     public const string ComponentMappingId = "chat.component";
+    public const string IdentityMappingId = "entity.identity";
     public const int MaxTextUtf8Bytes = 512;
     public const int MaxChatInputPerSenderPerTick = 1;
     public const int MaxCommandsPerEnvelope = 16;
@@ -24,7 +25,14 @@ public static class ChatMapping
     };
 
     public static readonly string[] ComponentFieldOrder = { "lastMessageText", "lastMessageTick" };
+
+    public static readonly string[] IdentityFieldOrder = { "netEntityId", "entityType", "unmappedMark" };
 }
+
+internal readonly record struct EntityIdentityRecord(
+    ulong NetEntityId,
+    string EntityType,
+    string UnmappedMark);
 
 public readonly record struct ChatInput(string Text);
 

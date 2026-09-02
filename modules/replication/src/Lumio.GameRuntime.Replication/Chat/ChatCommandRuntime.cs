@@ -226,15 +226,15 @@ public sealed class ChatCommandRuntime : IDisposable
     }
 
     /// <summary>
-    /// C-1 FullSnapshot JSON. Live entities are enumerated; stateBlocks stay empty until C-1
-    /// registers a kind=state mapping for reconstructable replica state.
+    /// C-1 FullSnapshot JSON. Live rooms emit one entity.identity stateBlock;
+    /// zero live entities emit empty stateBlocks.
     /// </summary>
     public string BuildFullSnapshot(string roomId, ulong tickId, ulong revision)
     {
         lock (_gate)
         {
-            _ = LiveNetEntityIdsFor(roomId);
-            return ChatEnvelope.FullSnapshot(tickId, revision);
+            IReadOnlyList<EntityIdentityRecord> records = CollectIdentityRecords(roomId);
+            return ChatEnvelope.FullSnapshot(tickId, revision, records);
         }
     }
 
@@ -472,6 +472,77 @@ public sealed class ChatCommandRuntime : IDisposable
         counters[key] = next;
         return next;
     }
+
+    private IReadOnlyList<EntityIdentityRecord> CollectIdentityRecords(string roomId)
+    {
+        IReadOnlyList<string> live = LiveNetEntityIdsFor(roomId);
+        if (live.Count == 0 || _bindings is null)
+            return Array.Empty<EntityIdentityRecord>();
+
+        var records = new List<EntityIdentityRecord>(live.Count);
+        for (int i = 0; i < live.Count; i++)
+        {
+            string netEntityId = live[i];
+            if (!ChatPayload.TryParseSender(netEntityId, out ulong id))
+                continue;
+            if (!TryReadEntityType(roomId, netEntityId, out string entityType))
+                continue;
+            records.Add(new EntityIdentityRecord(id, entityType, ReadUnmappedMark(roomId, netEntityId)));
+        }
+
+        records.Sort(static (left, right) => left.NetEntityId.CompareTo(right.NetEntityId));
+        return records;
+    }
+
+    private bool TryReadEntityType(string roomId, string netEntityId, out string entityType)
+    {
+        entityType = string.Empty;
+        BindingQueryResult attribute = _bindings!.QueryAttribute(
+            new AttributeQueryRequest
+            {
+                CallerScope = "server-authoritative",
+                RoomId = roomId,
+                NetEntityId = netEntityId,
+                AttributeId = "EntityIdentity.entityType",
+            });
+        if (attribute.Outcome == "ok" &&
+            attribute.Value is string fromAttribute &&
+            IsWireEntityType(fromAttribute))
+        {
+            entityType = fromAttribute;
+            return true;
+        }
+
+        BindingQueryResult occupancy = _bindings.ResolveByNetEntityId(
+            roomId,
+            netEntityId,
+            connectionGeneration: null,
+            "server-authoritative");
+        if (occupancy.Outcome == "ok" && IsWireEntityType(occupancy.EntityType))
+        {
+            entityType = occupancy.EntityType!;
+            return true;
+        }
+
+        return false;
+    }
+
+    private string ReadUnmappedMark(string roomId, string netEntityId)
+    {
+        BindingQueryResult result = _bindings!.QueryAttribute(
+            new AttributeQueryRequest
+            {
+                CallerScope = "server-authoritative",
+                RoomId = roomId,
+                NetEntityId = netEntityId,
+                AttributeId = "EntityIdentity.unmappedMark",
+            });
+        return result.Outcome == "ok" && result.Value is string mark ? mark : string.Empty;
+    }
+
+    private static bool IsWireEntityType(string? entityType) =>
+        string.Equals(entityType, "player", StringComparison.Ordinal) ||
+        string.Equals(entityType, "bot", StringComparison.Ordinal);
 
     private IReadOnlyList<string> LiveNetEntityIdsFor(string roomId)
     {

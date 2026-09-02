@@ -18,7 +18,7 @@ namespace Lumio.GameRuntime.Replication.Tests;
 
 public sealed class ChatCommandRuntimeTests
 {
-    private const string FrozenBlob = "f558b4042ed180a9ea53a74d04b5865442bee025";
+    private const string FrozenBlob = "f045da8e2fc2f22c87a5aa6cb80cc7f88da0788e";
     private const string N04Sha256 = "a47e92d663ba8f9726cf8defdacf2f56ebbaf1b93a8be9b7435430fad48bddc0";
     private const string GgPayload = "020000006767";
     private const string GgSha256 = "5dbd584f1718b8bcd0dab4abeea83169f4a990defab81a8316ed845798d92dab";
@@ -448,11 +448,20 @@ public sealed class ChatCommandRuntimeTests
     }
 
     [Fact]
-    public void C1MappingsHaveNoKindStateEntry()
+    public void C1RegistersEntityIdentityAsKindState()
     {
         using JsonDocument document = JsonDocument.Parse(File.ReadAllText(ContractPath()));
-        foreach (JsonProperty mapping in document.RootElement.GetProperty("mappings").EnumerateObject())
-            Assert.NotEqual("state", mapping.Value.GetProperty("kind").GetString());
+        JsonElement mappings = document.RootElement.GetProperty("mappings");
+        Assert.Equal("state", mappings.GetProperty("entity.identity").GetProperty("kind").GetString());
+        Assert.Equal(
+            new[] { "netEntityId", "entityType", "unmappedMark" },
+            mappings.GetProperty("entity.identity").GetProperty("fieldOrder").EnumerateArray()
+                .Select(static item => item.GetString()).ToArray());
+        Assert.Equal("command", mappings.GetProperty("chat.input").GetProperty("kind").GetString());
+        Assert.Equal("event", mappings.GetProperty("chat.event").GetProperty("kind").GetString());
+        Assert.Equal("componentState", mappings.GetProperty("chat.component").GetProperty("kind").GetString());
+        Assert.False(mappings.TryGetProperty(EntityTypeMapping, out _));
+        Assert.False(mappings.TryGetProperty("mapping-entity-identity-claimed-mark", out _));
     }
 
     [Fact]
@@ -462,6 +471,57 @@ public sealed class ChatCommandRuntimeTests
                           Block(EntityTypeMapping, GgPayload, GgSha256) + "]}";
         ChatMappingResult result = ChatEnvelope.Validate(snapshot);
         AssertRejected(result, "state_block_kind_mismatch");
+    }
+
+    [Fact]
+    public void BuildFullSnapshotEncodesTwoLiveEntityIdentities()
+    {
+        EntityBindingQuery bindings = EntityBindingQuery.Create();
+        ConnectionBinding player = Admit(bindings, "C1", "acct-07", "room-01", "player");
+        ConnectionBinding bot = Admit(bindings, "C2", "acct-08", "room-01", "bot");
+        using var runtime = ChatCommandRuntime.Create(bindings, ownsBindings: true);
+        AssertOk(runtime.AttachMember("room-01", "C1"));
+        AssertOk(runtime.AttachMember("room-01", "C2"));
+
+        ulong playerId = SenderU64(player.NetEntityId);
+        ulong botId = SenderU64(bot.NetEntityId);
+        string snapshot = runtime.BuildFullSnapshot("room-01", 7, 1);
+        AssertOk(ChatEnvelope.Validate(snapshot));
+        Assert.DoesNotContain("chat.event", snapshot, StringComparison.Ordinal);
+        Assert.DoesNotContain("chat.component", snapshot, StringComparison.Ordinal);
+        Assert.DoesNotContain(EntityTypeMapping, snapshot, StringComparison.Ordinal);
+        Assert.DoesNotContain("mapping-entity-identity-claimed-mark", snapshot, StringComparison.Ordinal);
+        Assert.True(TryDecodeEntityIdentity(snapshot, out DecodedIdentity[] records), snapshot);
+        Assert.Equal(2, records.Length);
+
+        DecodedIdentity[] expected = playerId < botId
+            ? new[]
+            {
+                new DecodedIdentity(playerId, "player", string.Empty),
+                new DecodedIdentity(botId, "bot", string.Empty),
+            }
+            : new[]
+            {
+                new DecodedIdentity(botId, "bot", string.Empty),
+                new DecodedIdentity(playerId, "player", string.Empty),
+            };
+        Assert.Equal(expected, records);
+        Assert.Equal(new[] { playerId, botId }.OrderBy(static id => id).ToArray(),
+            records.Select(static record => record.NetEntityId).ToArray());
+        Assert.DoesNotContain(records, static record => record.UnmappedMark == "mark");
+    }
+
+    [Fact]
+    public void BuildFullSnapshotHasEmptyStateBlocksWhenRoomHasNoLiveEntities()
+    {
+        EntityBindingQuery bindings = EntityBindingQuery.Create();
+        using var runtime = ChatCommandRuntime.Create(bindings, ownsBindings: true);
+        string snapshot = runtime.BuildFullSnapshot("room-01", 0, 0);
+        AssertOk(ChatEnvelope.Validate(snapshot));
+        Assert.Contains("\"stateBlocks\":[]", snapshot, StringComparison.Ordinal);
+        Assert.DoesNotContain("entity.identity", snapshot, StringComparison.Ordinal);
+        Assert.True(TryDecodeEntityIdentity(snapshot, out DecodedIdentity[] records), snapshot);
+        Assert.Empty(records);
     }
 
     [Fact]
@@ -634,6 +694,65 @@ public sealed class ChatCommandRuntimeTests
 
     private static string Block(string mappingId, string payload, string sha256) =>
         "{\"mappingId\":\"" + mappingId + "\",\"payload\":\"" + payload + "\",\"payloadSha256\":\"" + sha256 + "\"}";
+
+    private readonly record struct DecodedIdentity(ulong NetEntityId, string EntityType, string UnmappedMark);
+
+    private static bool TryDecodeEntityIdentity(string snapshot, out DecodedIdentity[] records)
+    {
+        records = Array.Empty<DecodedIdentity>();
+        using JsonDocument document = JsonDocument.Parse(snapshot);
+        if (!document.RootElement.TryGetProperty("stateBlocks", out JsonElement blocks) ||
+            blocks.ValueKind != JsonValueKind.Array)
+            return false;
+        if (blocks.GetArrayLength() == 0) return true;
+        if (blocks.GetArrayLength() != 1) return false;
+
+        JsonElement block = blocks[0];
+        if (!string.Equals(block.GetProperty("mappingId").GetString(), "entity.identity", StringComparison.Ordinal))
+            return false;
+
+        string payloadHex = block.GetProperty("payload").GetString() ?? string.Empty;
+        string sha256 = block.GetProperty("payloadSha256").GetString() ?? string.Empty;
+        if ((payloadHex.Length & 1) != 0) return false;
+        byte[] payload = Convert.FromHexString(payloadHex);
+        if (!string.Equals(sha256, Sha256Hex(payload), StringComparison.Ordinal)) return false;
+
+        int offset = 0;
+        if (offset + 4 > payload.Length) return false;
+        uint count = BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(offset, 4));
+        offset += 4;
+        var decoded = new List<DecodedIdentity>((int)count);
+        ulong previous = 0;
+        for (uint i = 0; i < count; i++)
+        {
+            if (offset + 8 > payload.Length) return false;
+            ulong netEntityId = BinaryPrimitives.ReadUInt64LittleEndian(payload.AsSpan(offset, 8));
+            offset += 8;
+            if (!TryReadUtf8(payload, ref offset, out string entityType) ||
+                !TryReadUtf8(payload, ref offset, out string unmappedMark))
+                return false;
+            if (i > 0 && netEntityId <= previous) return false;
+            if (entityType is not ("player" or "bot")) return false;
+            previous = netEntityId;
+            decoded.Add(new DecodedIdentity(netEntityId, entityType, unmappedMark));
+        }
+
+        if (offset != payload.Length) return false;
+        records = decoded.ToArray();
+        return true;
+    }
+
+    private static bool TryReadUtf8(byte[] data, ref int offset, out string value)
+    {
+        value = string.Empty;
+        if (offset + 4 > data.Length) return false;
+        uint length = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(offset, 4));
+        offset += 4;
+        if (length > (uint)(data.Length - offset)) return false;
+        value = Encoding.UTF8.GetString(data, offset, (int)length);
+        offset += (int)length;
+        return true;
+    }
 
     private static (string Payload, string Sha256) EncodeChatInput(string text)
     {
