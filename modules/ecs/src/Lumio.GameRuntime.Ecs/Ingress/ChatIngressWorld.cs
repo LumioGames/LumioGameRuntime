@@ -33,6 +33,8 @@ public sealed class ChatIngressWorld : IDisposable
 
     private const int LastMessageTextSizeBytes = 4 + LastMessageTextMaxUtf8Bytes;
     private const int LastMessageTickSizeBytes = 8;
+    // ADR-032: recordVersion + recordSeq + schemaEpoch + two length-prefixed sha256 hex hashes.
+    private const int PersistRecordHeaderBytes = 8 + 8 + 8 + (4 + 64) + (4 + 64);
 
     private readonly object _gate = new();
     private readonly ReferenceWorldStorageAdapter _storage;
@@ -59,7 +61,7 @@ public sealed class ChatIngressWorld : IDisposable
     public static ChatIngressWorld Create(int maxEntities = 128)
     {
         var worldId = new WorldId(370);
-        var budget = new EcsBudget(maxEntities, 128, 128, 4096);
+        var budget = new EcsBudget(maxEntities, 128, 128, PersistSnapshotBudgetBytes(maxEntities));
         var request = new EcsWorldCreateRequest(worldId, budget);
         var storage = new ReferenceWorldStorageAdapter(worldId, maxEntities, budget.MaxSnapshotBytes);
         var world = new EcsWorld(in request, storage);
@@ -276,6 +278,12 @@ public sealed class ChatIngressWorld : IDisposable
                 LastMessageTickSizeBytes,
                 ComponentFieldPersistence.PersistOnly)
         });
+
+    private static int PersistSnapshotBudgetBytes(int maxEntities)
+    {
+        int persistBytesPerEntity = LastMessageTextSizeBytes + LastMessageTickSizeBytes;
+        return checked(persistBytesPerEntity * maxEntities + PersistRecordHeaderBytes);
+    }
 
     private static bool TryDecodeText(byte[] field, out string text)
     {
