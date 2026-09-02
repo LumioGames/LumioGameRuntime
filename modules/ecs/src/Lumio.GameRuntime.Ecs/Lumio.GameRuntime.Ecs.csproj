@@ -9,5 +9,6 @@
   <ItemGroup>
     <ProjectReference Include="../../../../src/Lumio.GameRuntime.GeneratedContracts/Lumio.GameRuntime.GeneratedContracts.csproj" />
     <Compile Include="../../../../src/Lumio.GameRuntime.GeneratedContracts/Generated/Compatibility/IsExternalInit.cs" Link="Compatibility/IsExternalInit.cs" />
+    <EmbeddedResource Include="../../generated/attribute-declarations.json" LogicalName="Lumio.GameRuntime.Ecs.generated.attribute-declarations.json" />
   </ItemGroup>
 </Project>

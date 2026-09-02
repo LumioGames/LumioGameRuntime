@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 using Lumio.GameRuntime.Ecs;
+using Lumio.GameRuntime.Ecs.Annotations;
 using Lumio.GameRuntime.Replication.Lifecycle;
 using Lumio.GameRuntime.Replication.Mapping;
 
@@ -594,12 +595,12 @@ public sealed class EntityBindingQuery : IDisposable
 
     private void DeclareDefaults()
     {
-        Declare(new AttributeDeclaration(EntityTypeAttribute, "enum:entityType", "ephemeral", "replicated", "room-public"));
-        Declare(new AttributeDeclaration(ClaimedAttribute, "utf8-string", "ephemeral", "replicated", "claim-scoped"));
-        Declare(new AttributeDeclaration(UnmappedMarkAttribute, "utf8-string", "ephemeral", "replicated", "room-public"));
-        Declare(new AttributeDeclaration(PersistOnlyAttribute, "utf8-string", "persistent", "not-replicated", "server-only"));
-        Declare(new AttributeDeclaration(LastMessageTextAttribute, "utf8-string", "persistent", "not-replicated", "server-only"));
-        Declare(new AttributeDeclaration(LastMessageTickAttribute, "u64", "persistent", "not-replicated", "server-only"));
+        IReadOnlyList<FieldAttributeDeclaration> rows = AttributeDeclarationCatalog.LoadEmbedded();
+        for (int i = 0; i < rows.Count; i++)
+        {
+            FieldAttributeDeclaration row = rows[i];
+            Declare(new AttributeDeclaration(row.AttributeId, row.ValueType, row.Persistence, row.Replication, row.Visibility));
+        }
     }
 
     private void Declare(AttributeDeclaration declaration) => _declarations[declaration.AttributeId] = declaration;

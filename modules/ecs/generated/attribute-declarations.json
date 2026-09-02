@@ -1,0 +1,44 @@
+[
+  {
+    "attributeId": "ChatComponent.lastMessagePersistOnly",
+    "persistence": "persistent",
+    "replication": "not-replicated",
+    "valueType": "utf8-string",
+    "visibility": "server-only"
+  },
+  {
+    "attributeId": "ChatComponent.lastMessageText",
+    "persistence": "persistent",
+    "replication": "not-replicated",
+    "valueType": "utf8-string",
+    "visibility": "server-only"
+  },
+  {
+    "attributeId": "ChatComponent.lastMessageTick",
+    "persistence": "persistent",
+    "replication": "not-replicated",
+    "valueType": "u64",
+    "visibility": "server-only"
+  },
+  {
+    "attributeId": "EntityIdentity.claimedMark",
+    "persistence": "ephemeral",
+    "replication": "replicated",
+    "valueType": "utf8-string",
+    "visibility": "claim-scoped"
+  },
+  {
+    "attributeId": "EntityIdentity.entityType",
+    "persistence": "ephemeral",
+    "replication": "replicated",
+    "valueType": "enum:entityType",
+    "visibility": "room-public"
+  },
+  {
+    "attributeId": "EntityIdentity.unmappedMark",
+    "persistence": "ephemeral",
+    "replication": "replicated",
+    "valueType": "utf8-string",
+    "visibility": "room-public"
+  }
+]
