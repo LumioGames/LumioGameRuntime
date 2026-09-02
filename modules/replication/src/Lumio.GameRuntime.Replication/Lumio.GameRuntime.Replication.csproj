@@ -8,6 +8,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../../ecs/src/Lumio.GameRuntime.Ecs/Lumio.GameRuntime.Ecs.csproj" />
+    <ProjectReference Include="../../../command/src/Lumio.GameRuntime.Command/Lumio.GameRuntime.Command.csproj" />
     <ProjectReference Include="../../../gas/src/Lumio.GameRuntime.Gas/Lumio.GameRuntime.Gas.csproj" />
     <ProjectReference Include="../../../coordination/src/Lumio.GameRuntime.Coordination/Lumio.GameRuntime.Coordination.csproj" />
     <ProjectReference Include="../../../config/src/Lumio.GameRuntime.Config/Lumio.GameRuntime.Config.csproj" />
