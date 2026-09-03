@@ -93,6 +93,7 @@ public sealed class WorldManager : IDisposable
             manager.World.Tombstones.Add(id);
         }
 
+        manager.World.RebuildAccountIndex();
         return manager;
     }
 
@@ -316,11 +317,10 @@ public sealed class WorldManager : IDisposable
         }
 
         object? old = field.BoxedValue;
-        generated?.WriteField(fieldId, value, silent: false);
+        generated?.WriteField(fieldId, value, silent: true);
         if (generated is null)
             field.AssignFromRemote(value);
-        World.Dirty.Add(new DirtyEntry(target, field, old, value, ChangeReason.Sync));
-        World.PendingHooks.Add(new HookEntry(component, field.Ordinal, old, value, ChangeReason.Sync));
+        World.Dirty.Add(new DirtyEntry(target, field, old, value, ChangeReason.Sync, suppressWriterEcho: true));
         World.Revision++;
     }
 
@@ -410,20 +410,9 @@ public sealed class WorldManager : IDisposable
 
         // Recipients already have entities; send only new creates this tick via Dirty of kind create.
         // For the slice, emit a full live census on the first pack and deltas afterwards.
-        var fields = new List<FieldChange>();
+        var echoed = new List<DirtyEntry>(World.Dirty.Count);
         for (int i = 0; i < World.Dirty.Count; i++)
-        {
-            DirtyEntry dirty = World.Dirty[i];
-            fields.Add(new FieldChange(
-                dirty.Entity,
-                ComponentName(dirty.Field),
-                FieldName(dirty.Field),
-                dirty.NewValue,
-                ChangeReason.Sync));
-        }
-
-        for (int i = 0; i < World.PendingCorrections.Count; i++)
-            fields.Add(World.PendingCorrections[i]);
+            echoed.Add(World.Dirty[i]);
 
         var rpcs = new List<ClientRpcRecord>(World.PendingRpcs.Count);
         for (int i = 0; i < World.PendingRpcs.Count; i++)
@@ -457,8 +446,47 @@ public sealed class WorldManager : IDisposable
             MarkKnown(record.Id);
         }
 
-        _outbox.Add(new WorldChangeMessage(World.Tick, newCreates, fields, Array.Empty<NetEntityId>(), rpcs));
+        if (_session.Count == 0)
+        {
+            _outbox.Add(new WorldChangeMessage(
+                World.Tick, newCreates, FieldsFor(echoed, writer: null), Array.Empty<NetEntityId>(), rpcs));
+        }
+        else
+        {
+            foreach (KeyValuePair<string, NetEntityId> pair in _session)
+            {
+                _outbox.Add(new WorldChangeMessage(
+                    World.Tick,
+                    newCreates,
+                    FieldsFor(echoed, writer: pair.Value),
+                    Array.Empty<NetEntityId>(),
+                    rpcs,
+                    pair.Key));
+            }
+        }
+
         FireLocalHooks();
+    }
+
+    private List<FieldChange> FieldsFor(List<DirtyEntry> dirty, NetEntityId? writer)
+    {
+        var fields = new List<FieldChange>(dirty.Count + World.PendingCorrections.Count);
+        for (int i = 0; i < dirty.Count; i++)
+        {
+            DirtyEntry entry = dirty[i];
+            if (entry.SuppressWriterEcho && writer.HasValue && entry.Entity == writer.Value)
+                continue;
+            fields.Add(new FieldChange(
+                entry.Entity,
+                ComponentName(entry.Field),
+                FieldName(entry.Field),
+                entry.NewValue,
+                ChangeReason.Sync));
+        }
+
+        for (int i = 0; i < World.PendingCorrections.Count; i++)
+            fields.Add(World.PendingCorrections[i]);
+        return fields;
     }
 
     private readonly HashSet<NetEntityId> _knownToClients = new();
@@ -560,7 +588,8 @@ public sealed class WorldManager : IDisposable
             ISyncField? sync = FindSyncField(component, field.FieldId);
             object? old = sync?.BoxedValue;
             EcsRegistry.Generated(component)?.WriteField(field.FieldId, field.Value, silent: true);
-            if (sync is not null)
+            if (sync is not null &&
+                (field.Reason != ChangeReason.Sync || !Equals(old, field.Value)))
                 pendingHooks.Add(new HookEntry(component, sync.Ordinal, old, field.Value, field.Reason));
         }
 
@@ -700,7 +729,7 @@ public sealed class WorldManager : IDisposable
         if (_disposed) throw new ObjectDisposedException(nameof(WorldManager));
     }
 
-    private sealed class VisibleFieldCollector : PersistWriter
+    private sealed class VisibleFieldCollector : IPersistWriter
     {
         private readonly Component _component;
         private readonly List<FieldValue> _fields;

@@ -49,5 +49,5 @@ public abstract class EcsRegistry
         Generated(component)?.BindFields(host);
 
     /// <summary>Looks up a generated component dispatcher when the instance implements it.</summary>
-    internal static IGeneratedComponent? Generated(Component component) => component as IGeneratedComponent;
+    public static IGeneratedComponent? Generated(Component component) => component as IGeneratedComponent;
 }

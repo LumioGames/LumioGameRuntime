@@ -99,7 +99,9 @@ public sealed class EntityOrder
     internal World World { get; }
     internal Type EntityType { get; }
     internal Component[] Components { get; }
-    internal NetEntityId AssignedId;
+    /// <summary>Identity issued at commit. Default until the create is committed.</summary>
+    public NetEntityId AssignedId { get; internal set; }
+
     internal bool Issued;
 
     /// <summary>Reads a component on the not-yet-committed entity so birth values can be set.</summary>
@@ -111,6 +113,18 @@ public sealed class EntityOrder
         }
 
         throw new InvalidOperationException("Component " + typeof(T).Name + " is not on the create order.");
+    }
+
+    /// <summary>Finds a birth component by CLR type name.</summary>
+    public Component? NamedComponent(string typeName)
+    {
+        for (int i = 0; i < Components.Length; i++)
+        {
+            if (string.Equals(Components[i].GetType().Name, typeName, StringComparison.Ordinal))
+                return Components[i];
+        }
+
+        return null;
     }
 }
 

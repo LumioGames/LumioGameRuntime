@@ -45,17 +45,17 @@ public sealed partial class IdentityComponent : IGeneratedComponent
     {
     }
 
-    void IGeneratedComponent.CapturePersist(PersistWriter writer)
+    void IGeneratedComponent.CapturePersist(IPersistWriter writer)
     {
         writer.WriteString("IdentityComponent.name", Name.Value);
     }
 
-    void IGeneratedComponent.CaptureSync(PersistWriter writer)
+    void IGeneratedComponent.CaptureSync(IPersistWriter writer)
     {
         writer.WriteString("IdentityComponent.name", Name.Value);
     }
 
-    void IGeneratedComponent.RestorePersist(PersistReader reader)
+    void IGeneratedComponent.RestorePersist(IPersistReader reader)
     {
         if (reader.TryReadString("IdentityComponent.name", out string nameRestore))
             Name.SetSilent(nameRestore);

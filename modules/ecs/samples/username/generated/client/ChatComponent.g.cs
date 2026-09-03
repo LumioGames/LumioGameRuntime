@@ -46,15 +46,15 @@ public sealed partial class ChatComponent : IGeneratedComponent
         }
     }
 
-    void IGeneratedComponent.CapturePersist(PersistWriter writer)
+    void IGeneratedComponent.CapturePersist(IPersistWriter writer)
     {
     }
 
-    void IGeneratedComponent.CaptureSync(PersistWriter writer)
+    void IGeneratedComponent.CaptureSync(IPersistWriter writer)
     {
     }
 
-    void IGeneratedComponent.RestorePersist(PersistReader reader)
+    void IGeneratedComponent.RestorePersist(IPersistReader reader)
     {
     }
 

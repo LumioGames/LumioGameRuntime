@@ -227,7 +227,7 @@ internal static class WorldSnapshotCodec
         internal readonly byte[] Bytes;
     }
 
-    private sealed class SnapshotWriter : PersistWriter
+    private sealed class SnapshotWriter : IPersistWriter
     {
         private readonly List<KeyValuePair<string, FieldBlob>> _fields;
 
@@ -253,7 +253,7 @@ internal static class WorldSnapshotCodec
             _fields.Add(new KeyValuePair<string, FieldBlob>(attributeId, new FieldBlob(3, new[] { value ? (byte)1 : (byte)0 })));
     }
 
-    internal sealed class SnapshotReader : PersistReader
+    internal sealed class SnapshotReader : IPersistReader
     {
         private readonly Dictionary<string, FieldBlob> _fields;
 

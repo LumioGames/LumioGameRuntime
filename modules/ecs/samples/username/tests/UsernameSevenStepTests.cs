@@ -3,6 +3,7 @@ extern alias UsernameClient;
 
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Threading;
 using Lumio.GameRuntime.Ecs;
 using UsernameClient::Lumio.GameRuntime.Samples.Username.Components.Identity;
@@ -67,16 +68,30 @@ public sealed class UsernameSevenStepTests
         Assert.True(client.World.TypeOf(player).Is<ClientPlayer>());
         Assert.True(server.World.TypeOf(player).Is<ServerPlayer>());
 
-        client.World.Self.Get<ClientIdentity>().Name.Value = "ABCD";
-        client.Tick();
-        Pump(server, client);
-        Assert.Equal("ABCD", server.World.Get<ServerIdentity>(player).Name.Value);
-        Assert.Equal("ABCD", client.World.Get<ClientIdentity>(player).Name.Value);
+        var captured = new StringWriter();
+        TextWriter previous = Console.Out;
+        Console.SetOut(captured);
+        try
+        {
+            client.World.Self.Get<ClientIdentity>().Name.Value = "ABCD";
+            client.Tick();
+            Pump(server, client);
+            Assert.Equal("ABCD", server.World.Get<ServerIdentity>(player).Name.Value);
+            Assert.Equal("ABCD", client.World.Get<ClientIdentity>(player).Name.Value);
 
-        client.World.Self.Get<ClientIdentity>().Name.Value = "this-name-is-way-too-long";
-        client.Tick();
-        Pump(server, client);
-        Assert.Equal("ABCD", server.World.Get<ServerIdentity>(player).Name.Value);
+            client.World.Self.Get<ClientIdentity>().Name.Value = "this-name-is-way-too-long";
+            client.Tick();
+            Pump(server, client);
+            Assert.Equal("ABCD", server.World.Get<ServerIdentity>(player).Name.Value);
+        }
+        finally
+        {
+            Console.SetOut(previous);
+        }
+
+        string log = captured.ToString();
+        Assert.DoesNotContain("ABCD -> ABCD (Sync)", log, StringComparison.Ordinal);
+        Assert.Contains("this-name-is-way-too-long -> ABCD (Correction)", log, StringComparison.Ordinal);
 
         client.World.Self.Get<ClientChat>().Say("gg");
         client.Tick();
@@ -95,6 +110,8 @@ public sealed class UsernameSevenStepTests
         Assert.True(restored.World.IsLive(player));
         Assert.Equal("ABCD", restored.World.Get<ServerIdentity>(player).Name.Value);
         Assert.False(restored.World.Get<ServerIdentity>(player).Connected);
+        Assert.True(restored.World.TryGetAccount("acct-07", out NetEntityId restoredId));
+        Assert.Equal(player, restoredId);
         EntityOrder extra = restored.World.Commands.Create<ServerPlayer>();
         extra.Get<ServerIdentity>().AccountId = "acct-new";
         restored.Tick();

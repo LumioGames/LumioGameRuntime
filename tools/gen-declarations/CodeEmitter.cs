@@ -412,7 +412,7 @@ internal static class CodeEmitter
 
         sb.AppendLine("    }");
         sb.AppendLine();
-        sb.AppendLine("    void IGeneratedComponent.CapturePersist(PersistWriter writer)");
+        sb.AppendLine("    void IGeneratedComponent.CapturePersist(IPersistWriter writer)");
         sb.AppendLine("    {");
         for (int i = 0; i < component.Fields.Count; i++)
         {
@@ -430,7 +430,7 @@ internal static class CodeEmitter
 
         sb.AppendLine("    }");
         sb.AppendLine();
-        sb.AppendLine("    void IGeneratedComponent.CaptureSync(PersistWriter writer)");
+        sb.AppendLine("    void IGeneratedComponent.CaptureSync(IPersistWriter writer)");
         sb.AppendLine("    {");
         for (int i = 0; i < component.Fields.Count; i++)
         {
@@ -447,7 +447,7 @@ internal static class CodeEmitter
 
         sb.AppendLine("    }");
         sb.AppendLine();
-        sb.AppendLine("    void IGeneratedComponent.RestorePersist(PersistReader reader)");
+        sb.AppendLine("    void IGeneratedComponent.RestorePersist(IPersistReader reader)");
         sb.AppendLine("    {");
         for (int i = 0; i < component.Fields.Count; i++)
         {

@@ -46,17 +46,17 @@ public sealed partial class ChatComponent : IGeneratedComponent
     {
     }
 
-    void IGeneratedComponent.CapturePersist(PersistWriter writer)
+    void IGeneratedComponent.CapturePersist(IPersistWriter writer)
     {
         writer.WriteString("ChatComponent.lastMessageText", LastMessageText);
         writer.WriteUInt64("ChatComponent.lastMessageTick", LastMessageTick);
     }
 
-    void IGeneratedComponent.CaptureSync(PersistWriter writer)
+    void IGeneratedComponent.CaptureSync(IPersistWriter writer)
     {
     }
 
-    void IGeneratedComponent.RestorePersist(PersistReader reader)
+    void IGeneratedComponent.RestorePersist(IPersistReader reader)
     {
         if (reader.TryReadString("ChatComponent.lastMessageText", out string lastMessageTextRestore))
             LastMessageText = lastMessageTextRestore;

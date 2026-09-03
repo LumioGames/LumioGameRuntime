@@ -162,8 +162,8 @@ public readonly struct SyncWrite
     public T Value<T>() => (T)_value!;
 }
 
-/// <summary>Internal identity for a bound <see cref="Sync{T}"/> location.</summary>
-internal interface ISyncField
+/// <summary>Bound <see cref="Sync{T}"/> location used by generated dispatch.</summary>
+public interface ISyncField
 {
     int Ordinal { get; }
     string AttributeId { get; }
@@ -202,7 +202,7 @@ internal sealed class SyncSlot<T> : ISyncField
 }
 
 /// <summary>World-facing dirty sink used by <see cref="Sync{T}"/> setters.</summary>
-internal interface ISyncHost
+public interface ISyncHost
 {
     bool IsServer { get; }
     bool IsApplyingRemote { get; }
@@ -268,7 +268,8 @@ public struct Sync<T>
     internal Authority DeclaredAuthority => _slot?.Authority ?? _authority;
     internal Notify DeclaredNotify => _slot?.Notify ?? _notify;
 
-    internal Sync<T> Bound(ISyncHost host, Component owner, int ordinal, string attributeId)
+    /// <summary>Binds this field to a world slot. Called from generated <c>BindFields</c>.</summary>
+    public Sync<T> Bound(ISyncHost host, Component owner, int ordinal, string attributeId)
     {
         var slot = new SyncSlot<T>
         {
@@ -287,7 +288,8 @@ public struct Sync<T>
         return copy;
     }
 
-    internal void SetSilent(T value)
+    /// <summary>Writes without dirty/upload. Used for downlink and snapshot restore.</summary>
+    public void SetSilent(T value)
     {
         if (_slot is null) _unbound = value;
         else _slot.Value = value;

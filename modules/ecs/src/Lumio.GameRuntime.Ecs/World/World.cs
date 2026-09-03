@@ -53,6 +53,9 @@ public sealed class World : ISyncHost
     /// <summary>Structural command buffer.</summary>
     public CommandBuffer Commands { get; }
 
+    /// <summary>Identities in create order, including tombstoned slots that remain in the census.</summary>
+    public IReadOnlyList<NetEntityId> IssuedIds => CreationOrder;
+
     internal Dictionary<NetEntityId, EntityRecord> Entities { get; }
     internal List<EntityOrder> PendingCreates { get; }
     internal List<NetEntityId> PendingDestroys { get; }
@@ -93,6 +96,35 @@ public sealed class World : ISyncHost
     /// <summary>True when <paramref name="id"/> is live.</summary>
     public bool IsLive(NetEntityId id) =>
         Entities.TryGetValue(id, out EntityRecord? record) && record.Presence == Presence.Live;
+
+    /// <summary>True when <paramref name="id"/> is a tombstone.</summary>
+    public bool IsTombstoned(NetEntityId id) => Tombstones.Contains(id);
+
+    /// <summary>Looks up the live entity bound to <paramref name="accountId"/>.</summary>
+    public bool TryGetAccount(string accountId, out NetEntityId id)
+    {
+        if (string.IsNullOrEmpty(accountId))
+        {
+            id = default;
+            return false;
+        }
+
+        return AccountIndex.TryGetValue(accountId, out id);
+    }
+
+    /// <summary>Finds a live component by CLR type name (for AttributeId adapters).</summary>
+    public Component? NamedComponent(NetEntityId id, string typeName)
+    {
+        if (!Entities.TryGetValue(id, out EntityRecord? record) || record.Presence != Presence.Live)
+            return null;
+        for (int i = 0; i < record.Components.Length; i++)
+        {
+            if (string.Equals(record.Components[i].GetType().Name, typeName, StringComparison.Ordinal))
+                return record.Components[i];
+        }
+
+        return null;
+    }
 
     /// <summary>Iterates live components of type <typeparamref name="T"/> in create order.</summary>
     public IEnumerable<T> Each<T>() where T : Component
@@ -138,6 +170,9 @@ public sealed class World : ISyncHost
         return new EntityTypeRef(record.EntityType, Registry);
     }
 
+    /// <summary>Queues <paramref name="id"/> for destruction at the next commit.</summary>
+    public void QueueDestroy(NetEntityId id) => PendingDestroys.Add(id);
+
     internal void RequestSave(string slot) => PendingSaveSlot = slot;
 
     internal NetEntityId IssueId()
@@ -166,13 +201,19 @@ public sealed class World : ISyncHost
         return record;
     }
 
+    internal void RebuildAccountIndex()
+    {
+        AccountIndex.Clear();
+        for (int i = 0; i < CreationOrder.Count; i++)
+        {
+            if (!Entities.TryGetValue(CreationOrder[i], out EntityRecord? record)) continue;
+            if (record.Presence != Presence.Live) continue;
+            IndexAccount(record);
+        }
+    }
+
     internal void IndexAccount(EntityRecord record)
     {
-        if (record.TryGet(typeof(object), out _))
-        {
-            // keep analyzer quiet; real path below
-        }
-
         for (int i = 0; i < record.Components.Length; i++)
         {
             Component component = record.Components[i];
@@ -182,7 +223,8 @@ public sealed class World : ISyncHost
         }
     }
 
-    internal static string? TryReadAccountId(Component component)
+    /// <summary>Reads IdentityComponent.AccountId when present.</summary>
+    public static string? TryReadAccountId(Component component)
     {
         IGeneratedComponent? generated = EcsRegistry.Generated(component);
         if (generated is not null)
@@ -195,7 +237,8 @@ public sealed class World : ISyncHost
         return field?.GetValue(component) as string;
     }
 
-    internal static bool TryReadConnected(Component component, out bool connected)
+    /// <summary>Reads IdentityComponent.Connected when present.</summary>
+    public static bool TryReadConnected(Component component, out bool connected)
     {
         IGeneratedComponent? generated = EcsRegistry.Generated(component);
         if (generated is not null)
@@ -252,13 +295,20 @@ public sealed class World : ISyncHost
 
 internal readonly struct DirtyEntry
 {
-    internal DirtyEntry(NetEntityId entity, ISyncField field, object? oldValue, object? newValue, ChangeReason reason)
+    internal DirtyEntry(
+        NetEntityId entity,
+        ISyncField field,
+        object? oldValue,
+        object? newValue,
+        ChangeReason reason,
+        bool suppressWriterEcho = false)
     {
         Entity = entity;
         Field = field;
         OldValue = oldValue;
         NewValue = newValue;
         Reason = reason;
+        SuppressWriterEcho = suppressWriterEcho;
     }
 
     internal readonly NetEntityId Entity;
@@ -266,6 +316,7 @@ internal readonly struct DirtyEntry
     internal readonly object? OldValue;
     internal readonly object? NewValue;
     internal readonly ChangeReason Reason;
+    internal readonly bool SuppressWriterEcho;
 }
 
 internal readonly struct HookEntry

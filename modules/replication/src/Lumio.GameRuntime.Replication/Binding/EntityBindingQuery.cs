@@ -78,7 +78,7 @@ public sealed class EntityBindingQuery : IDisposable
                 hits.Add("invalid_binding_shape");
             if (hits.Count > 0) return RankedError(hits);
 
-            if (_manager.World.AccountIndex.TryGetValue(request.AccountId!, out NetEntityId existing) &&
+            if (_manager.World.TryGetAccount(request.AccountId!, out NetEntityId existing) &&
                 _manager.World.IsLive(existing))
             {
                 Component? identity = FindIdentity(existing);
@@ -89,6 +89,15 @@ public sealed class EntityBindingQuery : IDisposable
                         NetEntityId = existing.ToHex(),
                     };
                 }
+
+                ulong generation = ReadGeneration(identity) + 1UL;
+                WriteIdentity(identity, request.AccountId!, connected: true, generation);
+                _manager.BindSelf(request.Connection!, existing);
+                _roomByConnection[request.Connection!] = request.RoomId!;
+                _clientVisible.Add(existing.ToHex());
+                var rebound = new ConnectionBinding(
+                    request.AccountId!, request.RoomId!, existing.ToHex(), request.EntityType!, generation);
+                return BindingQueryResult.OkBinding(rebound, _manager.World.Revision);
             }
 
             Type entityClr = ResolveEntity(request.EntityType!);
@@ -128,7 +137,7 @@ public sealed class EntityBindingQuery : IDisposable
             ThrowIfDisposed();
             if (string.IsNullOrEmpty(connection) || string.IsNullOrEmpty(accountId) || string.IsNullOrEmpty(roomId))
                 return BindingQueryResult.RequestError("invalid_binding_shape", "rebind requires connection, accountId, and roomId");
-            if (!_manager.World.AccountIndex.TryGetValue(accountId, out NetEntityId id) || !_manager.World.IsLive(id))
+            if (!_manager.World.TryGetAccount(accountId, out NetEntityId id) || !_manager.World.IsLive(id))
                 return BindingQueryResult.RequestError("binding_not_found", "no retained binding for reconnect");
             _ = mode;
             Component? identity = FindIdentity(id);
@@ -164,11 +173,11 @@ public sealed class EntityBindingQuery : IDisposable
             ThrowIfDisposed();
             if (!NetEntityId.TryParse(netEntityId, out NetEntityId id))
                 return BindingQueryResult.RequestError("invalid_binding_shape", "netEntityId is required");
-            if (_manager.World.Tombstones.Contains(id))
+            if (_manager.World.IsTombstoned(id))
                 return BindingQueryResult.OutcomeFailure("tombstoned");
             if (!_manager.World.IsLive(id))
                 return BindingQueryResult.OutcomeFailure("non_existent");
-            _manager.World.PendingDestroys.Add(id);
+            _manager.World.QueueDestroy(id);
             _manager.Tick();
             return BindingQueryResult.OutcomeFailure("tombstoned");
         }
@@ -291,7 +300,7 @@ public sealed class EntityBindingQuery : IDisposable
             !TryParseLoose(request.NetEntityId, out id))
             return BindingQueryResult.OutcomeFailure("non_existent");
 
-        if (_manager.World.Tombstones.Contains(id))
+        if (_manager.World.IsTombstoned(id))
             return BindingQueryResult.OutcomeFailure("tombstoned");
         if (!_manager.World.IsLive(id))
             return BindingQueryResult.OutcomeFailure("non_existent");
@@ -347,15 +356,8 @@ public sealed class EntityBindingQuery : IDisposable
         if (dot <= 0) return null;
         string componentId = attributeId.Substring(0, dot);
         string fieldId = attributeId.Substring(dot + 1);
-        if (!_manager.World.Entities.TryGetValue(id, out EntityRecord? record)) return null;
-        for (int i = 0; i < record.Components.Length; i++)
-        {
-            Component component = record.Components[i];
-            if (!string.Equals(component.GetType().Name, componentId, StringComparison.Ordinal)) continue;
-            return EcsRegistry.Generated(component)?.ReadField(fieldId);
-        }
-
-        return null;
+        Component? component = _manager.World.NamedComponent(id, componentId);
+        return component is IGeneratedComponent generated ? generated.ReadField(fieldId) : null;
     }
 
     private ConnectionBinding BindingOf(string connection, NetEntityId id)
@@ -367,55 +369,31 @@ public sealed class EntityBindingQuery : IDisposable
         return new ConnectionBinding(account, room ?? string.Empty, id.ToHex(), entityType, ReadGeneration(identity));
     }
 
-    private Component? FindIdentity(NetEntityId id)
-    {
-        if (!_manager.World.Entities.TryGetValue(id, out EntityRecord? record)) return null;
-        for (int i = 0; i < record.Components.Length; i++)
-        {
-            if (string.Equals(record.Components[i].GetType().Name, "IdentityComponent", StringComparison.Ordinal))
-                return record.Components[i];
-        }
+    private Component? FindIdentity(NetEntityId id) =>
+        _manager.World.NamedComponent(id, "IdentityComponent");
 
-        return null;
-    }
-
-    private static Component FindIdentityOn(EntityOrder order)
-    {
-        for (int i = 0; i < order.Components.Length; i++)
-        {
-            if (string.Equals(order.Components[i].GetType().Name, "IdentityComponent", StringComparison.Ordinal))
-                return order.Components[i];
-        }
-
+    private static Component FindIdentityOn(EntityOrder order) =>
+        order.NamedComponent("IdentityComponent") ??
         throw new InvalidOperationException("IdentityComponent is missing.");
-    }
 
     private static void WriteIdentity(Component? identity, string accountId, bool connected, ulong generation)
     {
-        if (identity is null) return;
-        IGeneratedComponent? generated = EcsRegistry.Generated(identity);
-        generated?.WriteField("accountId", accountId, silent: true);
-        generated?.WriteField("connected", connected, silent: true);
-        generated?.WriteField("connectionGeneration", generation, silent: true);
-        if (generated is null)
-        {
-            identity.GetType().GetField("AccountId")?.SetValue(identity, accountId);
-            identity.GetType().GetField("Connected")?.SetValue(identity, connected);
-            identity.GetType().GetField("ConnectionGeneration")?.SetValue(identity, generation);
-        }
+        if (identity is not IGeneratedComponent generated) return;
+        generated.WriteField("accountId", accountId, silent: true);
+        generated.WriteField("connected", connected, silent: true);
+        generated.WriteField("connectionGeneration", generation, silent: true);
     }
 
     private static void WriteDisconnected(Component? identity)
     {
-        if (identity is null) return;
-        IGeneratedComponent? generated = EcsRegistry.Generated(identity);
-        generated?.WriteField("connected", false, silent: true);
+        if (identity is IGeneratedComponent generated)
+            generated.WriteField("connected", false, silent: true);
     }
 
     private static ulong ReadGeneration(Component? identity)
     {
-        if (identity is null) return 1UL;
-        object? value = EcsRegistry.Generated(identity)?.ReadField("connectionGeneration");
+        if (identity is not IGeneratedComponent generated) return 1UL;
+        object? value = generated.ReadField("connectionGeneration");
         return value is ulong generation ? generation : 1UL;
     }
 

@@ -115,7 +115,7 @@ Client 与 Server 共用 `netstandard2.1` 目标。外部程序集应引用：
 
 | 程序集 | 用途 |
 |--------|------|
-| `Lumio.GameRuntime.Ecs` | World Manager、World、Component、`Sync<T>`、标注、NetEntityId、WorldMessage |
+| `Lumio.GameRuntime.Ecs` | World Manager、World、Component、`Sync<T>`、`IGeneratedComponent`、标注、NetEntityId、WorldMessage |
 | `Lumio.GameRuntime.Replication` | Admission / AttributeId 查询适配、C-1 编解码 |
 | `Lumio.GameRuntime.Samples.Username.Server` | 样板服务器玩法程序集（R4-02 宿主装载） |
 | `Lumio.GameRuntime.Samples.Username.Client` | 样板客户端玩法程序集（R4-04 引用） |

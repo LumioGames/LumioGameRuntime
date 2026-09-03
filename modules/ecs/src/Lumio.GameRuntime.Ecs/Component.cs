@@ -108,7 +108,7 @@ public readonly struct RpcContext
 }
 
 /// <summary>Generated hook dispatcher implemented on component <c>.g.cs</c> files.</summary>
-internal interface IGeneratedComponent
+public interface IGeneratedComponent
 {
     void BindFields(ISyncHost host);
     void InvokePostAttribute();
@@ -117,15 +117,15 @@ internal interface IGeneratedComponent
     bool DispatchClientWrite(in SyncWrite write);
     void DispatchServerRpc(string method, object?[] args);
     void DispatchClientRpc(string method, object?[] args);
-    void CapturePersist(PersistWriter writer);
-    void CaptureSync(PersistWriter writer);
-    void RestorePersist(PersistReader reader);
+    void CapturePersist(IPersistWriter writer);
+    void CaptureSync(IPersistWriter writer);
+    void RestorePersist(IPersistReader reader);
     object? ReadField(string fieldId);
     void WriteField(string fieldId, object? value, bool silent);
 }
 
 /// <summary>Writes persistable members into a snapshot.</summary>
-internal interface PersistWriter
+public interface IPersistWriter
 {
     void WriteString(string attributeId, string? value);
     void WriteUInt64(string attributeId, ulong value);
@@ -133,7 +133,7 @@ internal interface PersistWriter
 }
 
 /// <summary>Reads persistable members from a snapshot.</summary>
-internal interface PersistReader
+public interface IPersistReader
 {
     bool TryReadString(string attributeId, out string value);
     bool TryReadUInt64(string attributeId, out ulong value);

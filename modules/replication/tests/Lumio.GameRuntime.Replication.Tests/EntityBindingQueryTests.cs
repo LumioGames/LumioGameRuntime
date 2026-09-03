@@ -121,6 +121,26 @@ public sealed class EntityBindingQueryTests
         Assert.Equal("tombstoned", again.Outcome);
     }
 
+    [Fact]
+    public void CreateFromSnapshotRebuildsAccountIndexAndAdmitRebinds()
+    {
+        using EntityBindingQuery original = EntityBindingQuery.Create();
+        BindingQueryResult first = original.Admit("C1", "acct-07", "room-01", "player");
+        Assert.Equal("ok", first.Outcome);
+        NetEntityId id = NetEntityId.Parse(first.Binding!.Value.NetEntityId);
+        byte[] snapshot = original.Manager.CaptureSnapshot();
+
+        EcsRegistry.Current = GeneratedRegistry.Instance;
+        WorldManager restored = WorldManager.CreateFromSnapshot(snapshot);
+        restored.Start(Thread.CurrentThread);
+        using EntityBindingQuery query = EntityBindingQuery.Create(restored);
+        BindingQueryResult again = query.Admit("C2", "acct-07", "room-01", "player");
+        Assert.Equal("ok", again.Outcome);
+        Assert.Equal(id.ToHex(), again.Binding!.Value.NetEntityId);
+        Assert.True(restored.World.TryGetAccount("acct-07", out NetEntityId indexed));
+        Assert.Equal(id, indexed);
+    }
+
     private static byte[] Encode(string text)
     {
         byte[] utf8 = System.Text.Encoding.UTF8.GetBytes(text);

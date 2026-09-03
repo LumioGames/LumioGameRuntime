@@ -36,7 +36,7 @@ public sealed class ChatCommandRuntime : IDisposable
         get
         {
             var ids = new List<string>();
-            foreach (NetEntityId id in Manager.World.CreationOrder)
+            foreach (NetEntityId id in Manager.World.IssuedIds)
             {
                 if (Manager.World.IsLive(id)) ids.Add(id.ToHex());
             }
