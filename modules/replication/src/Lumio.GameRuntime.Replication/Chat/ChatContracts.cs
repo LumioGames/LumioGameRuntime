@@ -21,7 +21,7 @@ public static class ChatMapping
 
     public static readonly string[] EventFieldOrder =
     {
-        "messageId", "roomSequence", "senderNetEntityId", "text", "appliedTick"
+        "messageId", "roomSequence", "senderNetEntityIdInstanceId", "senderNetEntityIdCounter", "text", "appliedTick"
     };
 
     public static readonly string[] ComponentFieldOrder = { "lastMessageText", "lastMessageTick" };

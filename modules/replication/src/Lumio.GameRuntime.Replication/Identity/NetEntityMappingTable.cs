@@ -98,12 +98,12 @@ public sealed class NetEntityMappingTable
     private readonly Dictionary<NetEntityId, LifecycleFence> _lifecycleFences = new();
     private readonly int _ownerThreadId;
 
-    public NetEntityMappingTable() : this(new WorldId(1), 1)
+    public NetEntityMappingTable() : this(new WorldId(0x11UL), 1)
     {
     }
 
     public NetEntityMappingTable(ulong initialGeneration)
-        : this(new WorldId(1), initialGeneration)
+        : this(new WorldId(0x11UL), initialGeneration)
     {
     }
 
@@ -118,7 +118,7 @@ public sealed class NetEntityMappingTable
     }
 
     internal NetEntityMappingTable(ReplicationStoreScope scope)
-        : this(scope, new WorldId(1))
+        : this(scope, new WorldId(0x11UL))
     {
     }
 

@@ -213,7 +213,7 @@ public sealed partial class EcsWorld
         }
     }
 
-    public StorageOperationResult BeginRegistration()
+    internal StorageOperationResult BeginRegistration()
     {
         lock (_lifecycleSync)
         {
@@ -325,7 +325,7 @@ public sealed partial class EcsWorld
         }
     }
 
-    public StorageOperationResult MarkReady()
+    internal StorageOperationResult MarkReady()
     {
         lock (_lifecycleSync)
         {

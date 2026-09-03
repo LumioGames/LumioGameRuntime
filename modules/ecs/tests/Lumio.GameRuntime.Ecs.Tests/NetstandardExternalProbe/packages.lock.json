@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "dependencies": {
+    ".NETStandard,Version=v2.1": {
+      "lumio.gameruntime.ecs": {
+        "type": "Project",
+        "dependencies": {
+          "Lumio.GameRuntime.GeneratedContracts": "[1.0.0, )"
+        }
+      },
+      "lumio.gameruntime.generatedcontracts": {
+        "type": "Project"
+      }
+    }
+  }
+}

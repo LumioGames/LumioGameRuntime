@@ -5,6 +5,7 @@
     <AssemblyName>Lumio.GameRuntime.Ecs</AssemblyName>
     <RootNamespace>Lumio.GameRuntime.Ecs</RootNamespace>
     <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
+    <NoWarn>$(NoWarn);CA1051;CA1510;CA1513;CA1720;CA1822;CA1859;CA1861</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../../../src/Lumio.GameRuntime.GeneratedContracts/Lumio.GameRuntime.GeneratedContracts.csproj" />

@@ -109,6 +109,24 @@ Running -> Draining -> Disposed
 - **RT-D-001**：逻辑 `ecs` 与 C# 程序集/项目的映射；物理拆分不能改变 World-local 所有权。
 - Component Schema 的新增公共字段仍须回到架构源 Contract Toolchain，不能在本模块 README 中提前发布。
 
+## 公开 API 面（R4-05 / ADR-058）
+
+Client 与 Server 共用 `netstandard2.1` 目标。外部程序集应引用：
+
+| 程序集 | 用途 |
+|--------|------|
+| `Lumio.GameRuntime.Ecs` | World Manager、World、Component、`Sync<T>`、`IGeneratedComponent`、标注、NetEntityId、WorldMessage |
+| `Lumio.GameRuntime.Replication` | Admission / AttributeId 查询适配、C-1 编解码 |
+| `Lumio.GameRuntime.Samples.Username.Server` | 样板服务器玩法程序集（R4-02 宿主装载） |
+| `Lumio.GameRuntime.Samples.Username.Client` | 样板客户端玩法程序集（R4-04 引用） |
+
+World Manager：`WorldManager.Create(GeneratedRegistry.Instance, instanceId)`（服务器必传 instanceId）/ `Create(GeneratedRegistry.Instance)`（客户端不传）/ `CreateFromSnapshot(bytes)` / `Start(ownerThread)` / `Enqueue(WorldMessage)` / `Tick()` / `DrainOutbox()` / `World` / `OwnerThread`。
+
+快照格式 `LWM1`：magic `LWM1` + version u32 + instanceId u64 + nextCounter u64 + tick u64 + nextMessageId u64 + nextRoomSequence u64 + live `[Persist]` 字段 + tombstone counters。恢复只跑 `OnHydrate`。
+
 ## 样板示例（代码标准）
 
-ECS 代码怎么写、怎么读，以 [`samples/username/`](samples/username/README.md) 为唯一标准（用户名的声明 → 建世界 → 创建 → 写 → 同步 → 读 → 存档全链路）。结构定稿见架构仓 ADR-058；本目录 API 由 RM-00011 r4 的 R4-05 卡落地并接进构建。
+ECS 代码怎么写、怎么读，以 [`samples/username/`](samples/username/README.md) 为唯一标准（用户名的声明 → 建世界 → 创建 → 写 → 同步 → 读 → 存档全链路）。结构定稿见架构仓 ADR-058；本目录 API 由 RM-00011 r4 的 R4-05 卡落地并接进构建。样板工程：
+
+- `modules/ecs/samples/username/Lumio.GameRuntime.Samples.Username.Server.csproj`
+- `modules/ecs/samples/username/Lumio.GameRuntime.Samples.Username.Client.csproj`

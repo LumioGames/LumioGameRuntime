@@ -2,7 +2,7 @@ using System;
 
 namespace Lumio.GameRuntime.Ecs.Annotations;
 
-/// <summary>C-2 three-dimension tokens, unmarked defaults, and illegal combination checks.</summary>
+/// <summary>C-2 three-dimension tokens and illegal combination checks.</summary>
 public static class FieldAnnotationRules
 {
     /// <summary>Unmarked persistence: never entered into ECS snapshot/restore.</summary>
@@ -23,7 +23,7 @@ public static class FieldAnnotationRules
     /// <summary>C-2 replication token for fields that never enter the replica stream.</summary>
     public const string ReplicationNotReplicated = "not-replicated";
 
-    /// <summary>C-2 replication token for fields that may enter a ReplicaWorld.</summary>
+    /// <summary>C-2 replication token for fields that may enter a client world.</summary>
     public const string ReplicationReplicated = "replicated";
 
     /// <summary>C-2 visibility token for server-only fields.</summary>
@@ -38,30 +38,14 @@ public static class FieldAnnotationRules
     /// <summary>C-2 visibility token for claim-scoped fields.</summary>
     public const string VisibilityClaimScoped = "claim-scoped";
 
-    /// <summary>Maps a persistence kind onto the C-2 wire token.</summary>
-    public static string Token(PersistenceKind kind) => kind switch
+    /// <summary>Maps <see cref="Scope"/> onto a C-2 visibility token.</summary>
+    public static string Token(Scope scope) => scope switch
     {
-        PersistenceKind.Ephemeral => PersistenceEphemeral,
-        PersistenceKind.Persistent => PersistencePersistent,
-        _ => throw new ArgumentOutOfRangeException(nameof(kind)),
-    };
-
-    /// <summary>Maps a replication kind onto the C-2 wire token.</summary>
-    public static string Token(ReplicationKind kind) => kind switch
-    {
-        ReplicationKind.NotReplicated => ReplicationNotReplicated,
-        ReplicationKind.Replicated => ReplicationReplicated,
-        _ => throw new ArgumentOutOfRangeException(nameof(kind)),
-    };
-
-    /// <summary>Maps a visibility kind onto the C-2 wire token.</summary>
-    public static string Token(VisibilityKind kind) => kind switch
-    {
-        VisibilityKind.ServerOnly => VisibilityServerOnly,
-        VisibilityKind.RoomPublic => VisibilityRoomPublic,
-        VisibilityKind.AoiScoped => VisibilityAoiScoped,
-        VisibilityKind.ClaimScoped => VisibilityClaimScoped,
-        _ => throw new ArgumentOutOfRangeException(nameof(kind)),
+        Scope.Room => VisibilityRoomPublic,
+        Scope.Aoi => VisibilityAoiScoped,
+        Scope.Owner => VisibilityServerOnly,
+        Scope.Claim => VisibilityClaimScoped,
+        _ => throw new ArgumentOutOfRangeException(nameof(scope)),
     };
 
     /// <summary>

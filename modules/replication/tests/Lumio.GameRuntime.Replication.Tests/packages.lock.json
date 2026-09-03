@@ -283,6 +283,12 @@
           "Lumio.GameRuntime.GeneratedContracts": "[1.0.0, )",
           "Lumio.GameRuntime.Observability": "[1.0.0, )"
         }
+      },
+      "lumio.gameruntime.samples.username.server": {
+        "type": "Project",
+        "dependencies": {
+          "Lumio.GameRuntime.Ecs": "[1.0.0, )"
+        }
       }
     }
   }

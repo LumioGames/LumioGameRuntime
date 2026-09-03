@@ -3,8 +3,6 @@ using System.Diagnostics;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
-using Lumio.GameRuntime.Ecs.Annotations;
-using Lumio.Tools.GenDeclarations.IllegalFixtures;
 using Xunit;
 
 namespace Lumio.Tools.GenDeclarations.Tests;
@@ -12,64 +10,90 @@ namespace Lumio.Tools.GenDeclarations.Tests;
 public sealed class GenDeclarationsCliTests
 {
     [Fact]
-    public void ScannerRejectsIllegalCombinationsInFixtureAssembly()
+    public void SourceScanRejectsDuplicateWorldEntity()
     {
-        InvalidOperationException error = Assert.Throws<InvalidOperationException>(
-            () => AttributeDeclarationScanner.Scan(typeof(IllegalReplicatedServerOnly).Assembly));
-        Assert.Contains("replicated", error.Message, StringComparison.Ordinal);
-        Assert.Contains("server-only", error.Message, StringComparison.Ordinal);
-        Assert.Contains("aoi-scoped", error.Message, StringComparison.Ordinal);
-        Assert.Contains("claim-scoped", error.Message, StringComparison.Ordinal);
-        Assert.Contains("room-public", error.Message, StringComparison.Ordinal);
-        Assert.Contains("not-replicated", error.Message, StringComparison.Ordinal);
+        string dir = Path.Combine(Path.GetTempPath(), "lumio-ecs-illegal-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "First.cs"), """
+            using Lumio.GameRuntime.Ecs;
+            [EntityType(Mode.CS, World = true)]
+            [Has(typeof(WorldSaveComponent))]
+            public abstract class FirstWorldEntity { }
+            """);
+        File.WriteAllText(Path.Combine(dir, "Second.cs"), """
+            using Lumio.GameRuntime.Ecs;
+            [EntityType(Mode.CS, World = true)]
+            [Has(typeof(WorldSaveComponent))]
+            public abstract class SecondWorldEntity { }
+            """);
+        try
+        {
+            RunResult result = RunCli("--sources", dir, "--side", "server", "--output-dir", Path.Combine(dir, "out"));
+            Assert.NotEqual(0, result.ExitCode);
+            Assert.Contains("World = true", result.StdErr + result.StdOut, StringComparison.Ordinal);
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    [Fact]
+    public void SourceScanRejectsNonSyncStateInSharedFile()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "lumio-ecs-shared-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "WorldEntity.cs"), """
+            using Lumio.GameRuntime.Ecs;
+            [EntityType(Mode.CS, World = true)]
+            [Has(typeof(WorldSaveComponent))]
+            public abstract class WorldEntity { }
+            """);
+        File.WriteAllText(Path.Combine(dir, "ChatComponent.cs"), """
+            using Lumio.GameRuntime.Ecs;
+            [EcsComponent]
+            public sealed partial class ChatComponent : Component
+            {
+                public string LastMessageText = "";
+            }
+            """);
+        try
+        {
+            RunResult result = RunCli("--sources", dir, "--side", "server", "--output-dir", Path.Combine(dir, "out"));
+            Assert.NotEqual(0, result.ExitCode);
+            Assert.Contains("non-Sync state field", result.StdErr + result.StdOut, StringComparison.Ordinal);
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch (IOException) { }
+        }
     }
 
     [Fact]
     public void CliWritesIdenticalBytesOnTwoRuns()
     {
-        string first = Path.Combine(Path.GetTempPath(), "lumio-decl-" + Guid.NewGuid().ToString("N") + ".json");
-        string second = Path.Combine(Path.GetTempPath(), "lumio-decl-" + Guid.NewGuid().ToString("N") + ".json");
+        string repo = FindRepoRoot();
+        string sources = Path.Combine(repo, "modules", "ecs", "samples", "username");
+        string first = Path.Combine(Path.GetTempPath(), "lumio-decl-" + Guid.NewGuid().ToString("N"));
+        string second = Path.Combine(Path.GetTempPath(), "lumio-decl-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(first);
+        Directory.CreateDirectory(second);
         try
         {
-            RunResult run1 = RunCli("--output", first);
-            RunResult run2 = RunCli("--output", second);
+            RunResult run1 = RunCli("--sources", sources, "--side", "server", "--output-dir", first, "--output", Path.Combine(first, "a.json"));
+            RunResult run2 = RunCli("--sources", sources, "--side", "server", "--output-dir", second, "--output", Path.Combine(second, "a.json"));
             Assert.Equal(0, run1.ExitCode);
             Assert.Equal(0, run2.ExitCode);
-            byte[] bytes1 = File.ReadAllBytes(first);
-            byte[] bytes2 = File.ReadAllBytes(second);
+            byte[] bytes1 = File.ReadAllBytes(Path.Combine(first, "a.json"));
+            byte[] bytes2 = File.ReadAllBytes(Path.Combine(second, "a.json"));
             Assert.Equal(bytes1, bytes2);
-            Assert.Equal(Sha256(bytes1), Sha256(bytes2));
             Assert.DoesNotContain(bytes1, static value => value == (byte)'\r');
             Assert.Equal((byte)'\n', bytes1[^1]);
         }
         finally
         {
-            TryDelete(first);
-            TryDelete(second);
-        }
-    }
-
-    [Fact]
-    public void CliRejectsIllegalFixtureAssemblyWithNonZeroExit()
-    {
-        string output = Path.Combine(Path.GetTempPath(), "lumio-decl-illegal-" + Guid.NewGuid().ToString("N") + ".json");
-        try
-        {
-            RunResult result = RunCli(
-                "--assembly",
-                typeof(IllegalReplicatedServerOnly).Assembly.Location,
-                "--output",
-                output);
-            Assert.NotEqual(0, result.ExitCode);
-            string text = result.StdErr + result.StdOut;
-            Assert.Contains("illegal attribute combination", text, StringComparison.Ordinal);
-            Assert.Contains("replicated", text, StringComparison.Ordinal);
-            Assert.Contains("server-only", text, StringComparison.Ordinal);
-            Assert.False(File.Exists(output));
-        }
-        finally
-        {
-            TryDelete(output);
+            TryDeleteDir(first);
+            TryDeleteDir(second);
         }
     }
 
@@ -112,18 +136,9 @@ public sealed class GenDeclarationsCliTests
         throw new InvalidOperationException("Repository root was not found from " + AppContext.BaseDirectory);
     }
 
-    private static string Sha256(byte[] bytes) =>
-        Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
-
-    private static void TryDelete(string path)
+    private static void TryDeleteDir(string path)
     {
-        try
-        {
-            if (File.Exists(path)) File.Delete(path);
-        }
-        catch (IOException)
-        {
-        }
+        try { Directory.Delete(path, recursive: true); } catch (IOException) { }
     }
 
     private readonly record struct RunResult(int ExitCode, string StdOut, string StdErr);

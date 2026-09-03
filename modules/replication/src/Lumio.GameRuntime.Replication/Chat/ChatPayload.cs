@@ -48,7 +48,8 @@ internal static class ChatPayload
         int offset = 0;
         if (!TryReadUInt64(payload, ref offset, out ulong messageId) ||
             !TryReadUInt64(payload, ref offset, out ulong roomSequence) ||
-            !TryReadUInt64(payload, ref offset, out ulong sender) ||
+            !TryReadUInt64(payload, ref offset, out ulong senderInstance) ||
+            !TryReadUInt64(payload, ref offset, out ulong senderCounter) ||
             !TryReadString(payload, ref offset, out string text, out bool tooLong) ||
             !TryReadUInt64(payload, ref offset, out ulong appliedTick) ||
             offset != payload.Length)
@@ -62,32 +63,41 @@ internal static class ChatPayload
         mapped = new ChatMessageEvent(
             messageId,
             roomSequence,
-            sender.ToString(CultureInfo.InvariantCulture),
+            new Lumio.GameRuntime.Ecs.NetEntityId(senderInstance, senderCounter).ToHex(),
             text,
             appliedTick);
         code = string.Empty;
         return true;
     }
 
-    internal static bool TryParseSender(string? netEntityId, out ulong sender)
+    internal static bool TryParseSender(string? netEntityId, out ulong instanceId, out ulong counter)
     {
-        sender = 0;
+        instanceId = 0;
+        counter = 0;
+        if (Lumio.GameRuntime.Ecs.NetEntityId.TryParse(netEntityId, out Lumio.GameRuntime.Ecs.NetEntityId id))
+        {
+            instanceId = id.InstanceId;
+            counter = id.Counter;
+            return true;
+        }
+
         if (string.IsNullOrEmpty(netEntityId)) return false;
-        if (netEntityId.Length == 32)
-            return ulong.TryParse(netEntityId, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out sender);
-        return ulong.TryParse(netEntityId, NumberStyles.None, CultureInfo.InvariantCulture, out sender);
+        if (ulong.TryParse(netEntityId, NumberStyles.None, CultureInfo.InvariantCulture, out counter))
+            return true;
+        return false;
     }
 
     internal static byte[] EncodeEvent(ChatMessageEvent mapped)
     {
-        if (!TryParseSender(mapped.SenderNetEntityId, out ulong sender))
-            throw new ArgumentException("senderNetEntityId is not a C-1 u64.", nameof(mapped));
+        if (!TryParseSender(mapped.SenderNetEntityId, out ulong instanceId, out ulong counter))
+            throw new ArgumentException("senderNetEntityId is not a C-1 u128 pair.", nameof(mapped));
         byte[] utf8 = Encoding.UTF8.GetBytes(mapped.Text ?? string.Empty);
-        byte[] bytes = new byte[8 + 8 + 8 + 4 + utf8.Length + 8];
+        byte[] bytes = new byte[8 + 8 + 8 + 8 + 4 + utf8.Length + 8];
         int offset = 0;
         WriteUInt64(bytes, ref offset, mapped.MessageId);
         WriteUInt64(bytes, ref offset, mapped.RoomSequence);
-        WriteUInt64(bytes, ref offset, sender);
+        WriteUInt64(bytes, ref offset, instanceId);
+        WriteUInt64(bytes, ref offset, counter);
         WriteUtf8(bytes, ref offset, utf8);
         WriteUInt64(bytes, ref offset, mapped.AppliedTick);
         return bytes;

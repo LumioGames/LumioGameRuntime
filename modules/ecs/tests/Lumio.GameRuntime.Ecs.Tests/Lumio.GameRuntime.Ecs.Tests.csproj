@@ -9,6 +9,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="NetstandardExternalProbe/**" />
+    <None Include="NetstandardExternalProbe/**" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="../../src/Lumio.GameRuntime.Ecs/Lumio.GameRuntime.Ecs.csproj" />
     <PackageReference Include="xunit.v3" />
     <PackageReference Include="Microsoft.Testing.Platform" />

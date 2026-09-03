@@ -5,13 +5,12 @@ using Lumio.GameRuntime.Replication.Validation;
 namespace Lumio.GameRuntime.Replication.Chat;
 
 /// <summary>
-/// Client replica of C-1 FullSnapshot / Delta. Server chat.input no longer lives here:
-/// it goes through <see cref="ChatCommandRuntime"/> IngressCapture → CommandBuffer → Tick.
+/// Validates C-1 FullSnapshot / Delta envelopes. Chat windows live in the UI layer;
+/// this type does not retain per-connection event history.
 /// </summary>
 public sealed class ChatTypedMapping
 {
     private readonly object _gate = new();
-    private readonly Dictionary<string, List<ChatMessageEvent>> _displayed = new(StringComparer.Ordinal);
     private readonly Dictionary<string, ulong> _observedSequence = new(StringComparer.Ordinal);
     private readonly Dictionary<string, ulong> _observedMessageId = new(StringComparer.Ordinal);
     private readonly HashSet<string> _awaitingLiveBaseline = new(StringComparer.Ordinal);
@@ -34,23 +33,11 @@ public sealed class ChatTypedMapping
         }
     }
 
-    /// <summary>Events accepted into the replica chat window after FullSnapshot baseline + live Delta.</summary>
-    public ChatMessageEvent[] DisplayedEvents(string connectionId)
-    {
-        lock (_gate)
-        {
-            if (!_displayed.TryGetValue(connectionId ?? string.Empty, out List<ChatMessageEvent>? events))
-                return Array.Empty<ChatMessageEvent>();
-            return events.ToArray();
-        }
-    }
-
     private ChatMappingResult ApplySnapshot(string connectionId, StructuredJsonValue root)
     {
         if (!ChatEnvelope.TryReadSnapshot(root, out ChatMappingResult failure))
             return failure;
 
-        _displayed[connectionId] = new List<ChatMessageEvent>();
         _observedSequence.Remove(connectionId);
         _observedMessageId.Remove(connectionId);
         _awaitingLiveBaseline.Add(connectionId);
@@ -73,13 +60,6 @@ public sealed class ChatTypedMapping
                 return ChatMappingResult.Reject("bad_envelope", "chat.event roomSequence must strictly increase");
         }
 
-        if (!_displayed.TryGetValue(connectionId, out List<ChatMessageEvent>? window))
-        {
-            window = new List<ChatMessageEvent>();
-            _displayed[connectionId] = window;
-        }
-
-        window.Add(mapped);
         _observedSequence[connectionId] = mapped.RoomSequence;
         _observedMessageId[connectionId] = mapped.MessageId;
         return ChatMappingResult.Ok(mapped);

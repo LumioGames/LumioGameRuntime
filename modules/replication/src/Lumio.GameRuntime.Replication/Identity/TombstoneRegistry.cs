@@ -10,7 +10,7 @@ public sealed class TombstoneRegistry
 {
     private readonly ReplicationStoreScope _scope;
     // This is the scope-owned canonical fence shared with the mapping table.
-    private readonly Dictionary<NetEntityId, ulong> _values;
+    private readonly Dictionary<NetEntityId, ulong> _until;
 
     public TombstoneRegistry() : this(1)
     {
@@ -24,12 +24,12 @@ public sealed class TombstoneRegistry
     internal TombstoneRegistry(ReplicationStoreScope scope)
     {
         _scope = scope ?? throw new ArgumentNullException(nameof(scope));
-        _values = scope.Tombstones;
+        _until = scope.Tombstones;
     }
 
     public int Count
     {
-        get { lock (_scope.Gate) return _scope.State == IdentityStoreState.Active ? _values.Count : 0; }
+        get { lock (_scope.Gate) return _scope.State == IdentityStoreState.Active ? _until.Count : 0; }
     }
 
     public ulong Generation
@@ -103,12 +103,12 @@ public sealed class TombstoneRegistry
 
     public bool Contains(NetEntityId id)
     {
-        lock (_scope.Gate) return _scope.State == IdentityStoreState.Active && _values.ContainsKey(id);
+        lock (_scope.Gate) return _scope.State == IdentityStoreState.Active && _until.ContainsKey(id);
     }
 
     public bool Contains(NetEntityId id, IdentityStoreToken token)
     {
-        lock (_scope.Gate) return _scope.IsCurrentLocked(token) && _values.ContainsKey(id);
+        lock (_scope.Gate) return _scope.IsCurrentLocked(token) && _until.ContainsKey(id);
     }
 
     internal int Collect(ulong revision, in TombstoneHorizonResult horizon) =>
@@ -131,22 +131,22 @@ public sealed class TombstoneRegistry
 
     internal bool Remove(NetEntityId id)
     {
-        lock (_scope.Gate) return _scope.State == IdentityStoreState.Active && _values.Remove(id);
+        lock (_scope.Gate) return _scope.State == IdentityStoreState.Active && _until.Remove(id);
     }
 
     public bool Remove(NetEntityId id, IdentityStoreToken token)
     {
-        lock (_scope.Gate) return _scope.IsCurrentLocked(token) && _values.Remove(id);
+        lock (_scope.Gate) return _scope.IsCurrentLocked(token) && _until.Remove(id);
     }
 
     public IReadOnlyDictionary<NetEntityId, ulong> Snapshot()
     {
-        lock (_scope.Gate) return _scope.State == IdentityStoreState.Active ? new Dictionary<NetEntityId, ulong>(_values) : new Dictionary<NetEntityId, ulong>();
+        lock (_scope.Gate) return _scope.State == IdentityStoreState.Active ? new Dictionary<NetEntityId, ulong>(_until) : new Dictionary<NetEntityId, ulong>();
     }
 
     public IReadOnlyDictionary<NetEntityId, ulong> Snapshot(IdentityStoreToken token)
     {
-        lock (_scope.Gate) return _scope.IsCurrentLocked(token) ? new Dictionary<NetEntityId, ulong>(_values) : new Dictionary<NetEntityId, ulong>();
+        lock (_scope.Gate) return _scope.IsCurrentLocked(token) ? new Dictionary<NetEntityId, ulong>(_until) : new Dictionary<NetEntityId, ulong>();
     }
 
     public bool TrySnapshot(IdentityStoreToken token, out IReadOnlyDictionary<NetEntityId, ulong> snapshot)
@@ -159,7 +159,7 @@ public sealed class TombstoneRegistry
                 return false;
             }
 
-            snapshot = new Dictionary<NetEntityId, ulong>(_values);
+            snapshot = new Dictionary<NetEntityId, ulong>(_until);
             return true;
         }
     }
@@ -169,7 +169,7 @@ public sealed class TombstoneRegistry
         lock (_scope.Gate)
         {
             if (_scope.Mode != ReplicationStoreScopeMode.Standalone || !_scope.TryAdvanceConnectionGenerationLocked(nextGeneration)) return false;
-            _values.Clear();
+            _until.Clear();
             return true;
         }
     }
@@ -179,7 +179,7 @@ public sealed class TombstoneRegistry
         lock (_scope.Gate)
         {
             if (_scope.Mode != ReplicationStoreScopeMode.Standalone || !_scope.TryAdvanceConnectionGenerationLocked()) return false;
-            _values.Clear();
+            _until.Clear();
             return true;
         }
     }
@@ -193,7 +193,7 @@ public sealed class TombstoneRegistry
         lock (_scope.Gate)
         {
             if (_scope.Mode != ReplicationStoreScopeMode.Standalone || !_scope.IsCurrentLocked(expectedToken) || !_scope.TryAdvanceConnectionGenerationLocked()) return false;
-            _values.Clear();
+            _until.Clear();
             return true;
         }
     }
@@ -203,7 +203,7 @@ public sealed class TombstoneRegistry
         lock (_scope.Gate)
         {
             if (_scope.Mode != ReplicationStoreScopeMode.Standalone || !_scope.IsCurrentLocked(expectedToken) || !_scope.TryAdvanceConnectionGenerationLocked(nextGeneration)) return false;
-            _values.Clear();
+            _until.Clear();
             return true;
         }
     }
@@ -213,7 +213,7 @@ public sealed class TombstoneRegistry
         lock (_scope.Gate)
         {
             if (_scope.Mode != ReplicationStoreScopeMode.Standalone || !_scope.TryTransitionTerminalLocked(false)) return false;
-            _values.Clear();
+            _until.Clear();
             return true;
         }
     }
@@ -223,7 +223,7 @@ public sealed class TombstoneRegistry
         lock (_scope.Gate)
         {
             if (_scope.Mode != ReplicationStoreScopeMode.Standalone || expectedGeneration != _scope.ConnectionGeneration || !_scope.TryTransitionTerminalLocked(false)) return false;
-            _values.Clear();
+            _until.Clear();
             return true;
         }
     }
@@ -233,7 +233,7 @@ public sealed class TombstoneRegistry
         lock (_scope.Gate)
         {
             if (_scope.Mode != ReplicationStoreScopeMode.Standalone || !_scope.IsCurrentLocked(expectedToken) || !_scope.TryTransitionTerminalLocked(false)) return false;
-            _values.Clear();
+            _until.Clear();
             return true;
         }
     }
@@ -243,7 +243,7 @@ public sealed class TombstoneRegistry
         lock (_scope.Gate)
         {
             if (_scope.Mode != ReplicationStoreScopeMode.Standalone || !_scope.TryTransitionTerminalLocked(true)) return false;
-            _values.Clear();
+            _until.Clear();
             return true;
         }
     }
@@ -253,7 +253,7 @@ public sealed class TombstoneRegistry
         lock (_scope.Gate)
         {
             if (_scope.Mode != ReplicationStoreScopeMode.Standalone || !_scope.IsCurrentLocked(expectedToken) || !_scope.TryTransitionTerminalLocked(true)) return false;
-            _values.Clear();
+            _until.Clear();
             return true;
         }
     }
@@ -273,8 +273,8 @@ public sealed class TombstoneRegistry
         {
             if (tokenRequired ? !_scope.IsCurrentLocked(token) : _scope.State != IdentityStoreState.Active) return false;
             if (!id.IsValid) return false;
-            if (_values.TryGetValue(id, out ulong existing) && untilRevision < existing) return false;
-            _values[id] = untilRevision;
+            if (_until.TryGetValue(id, out ulong existing) && untilRevision < existing) return false;
+            _until[id] = untilRevision;
             return true;
         }
     }
@@ -293,9 +293,9 @@ public sealed class TombstoneRegistry
             if ((tokenRequired ? !_scope.IsCurrentLocked(token) : _scope.State != IdentityStoreState.Active) ||
                 !horizon.Known || revision <= horizon.Horizon) return 0;
             var ids = new List<NetEntityId>();
-            foreach (KeyValuePair<NetEntityId, ulong> item in _values)
+            foreach (KeyValuePair<NetEntityId, ulong> item in _until)
                 if (horizon.CanCollect(item.Value, revision)) ids.Add(item.Key);
-            foreach (NetEntityId id in ids) _values.Remove(id);
+            foreach (NetEntityId id in ids) _until.Remove(id);
             return ids.Count;
         }
     }
@@ -305,14 +305,14 @@ public sealed class TombstoneRegistry
         lock (_scope.Gate)
         {
             return (tokenRequired ? _scope.IsCurrentLocked(token) : _scope.State == IdentityStoreState.Active) &&
-                _values.TryGetValue(id, out ulong until) && horizon.CanCollect(until, currentRevision);
+                _until.TryGetValue(id, out ulong until) && horizon.CanCollect(until, currentRevision);
         }
     }
 
     private bool ContainsLocked(NetEntityId id, ulong revision) =>
-        _values.TryGetValue(id, out ulong until) && revision <= until;
+        _until.TryGetValue(id, out ulong until) && revision <= until;
 
-    internal void ClearContextLocked() => _values.Clear();
+    internal void ClearContextLocked() => _until.Clear();
 }
 
 public sealed class TombstoneRegistryView

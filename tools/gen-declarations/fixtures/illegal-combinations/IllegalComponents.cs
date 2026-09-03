@@ -1,32 +1,21 @@
-using Lumio.GameRuntime.Ecs.Annotations;
+using Lumio.GameRuntime.Ecs;
 
 namespace Lumio.Tools.GenDeclarations.IllegalFixtures;
 
 [EcsComponent]
-public sealed class IllegalReplicatedServerOnly
+public sealed class IllegalSharedState
 {
-    [Replicate]
-    [Visibility(VisibilityKind.ServerOnly)]
-    public string Mark { get; set; } = string.Empty;
+    public string DeadField = string.Empty;
 }
 
-[EcsComponent]
-public sealed class IllegalAoiNotReplicated
-{
-    [Visibility(VisibilityKind.AoiScoped)]
-    public string Mark { get; set; } = string.Empty;
-}
+[EntityType(Mode.CS, World = true)]
+[Has(typeof(WorldSaveComponent))]
+public abstract class FirstWorldEntity { }
 
-[EcsComponent]
-public sealed class IllegalClaimNotReplicated
-{
-    [Visibility(VisibilityKind.ClaimScoped)]
-    public string Mark { get; set; } = string.Empty;
-}
+[EntityType(Mode.CS, World = true)]
+[Has(typeof(WorldSaveComponent))]
+public abstract class SecondWorldEntity { }
 
-[EcsComponent]
-public sealed class IllegalRoomPublicNotReplicated
-{
-    [Visibility(VisibilityKind.RoomPublic)]
-    public string Mark { get; set; } = string.Empty;
-}
+[EntityType(Mode.CS)]
+[Has(typeof(WorldSaveComponent))]
+public class ConcreteEntityType { }

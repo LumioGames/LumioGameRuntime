@@ -23,4 +23,49 @@
       Condition="('$(RuntimeProductionProject)' == 'true' or '$(RuntimeTestProject)' == 'true') and '$(LangVersion)' != '14.0'"
       Text="RUNTIME_BUILD_PROFILE_INVALID LangVersion must remain 14.0 for runtime projects; actual value is $(LangVersion)." />
   </Target>
+
+  <Target
+    Name="GenerateLumioEcsDeclarations"
+    BeforeTargets="DispatchToInnerBuilds;BeforeCompile"
+    Condition="'$(LumioEcsGenerate)' == 'true' and ('$(TargetFramework)' == '' or '$(TargetFramework)' == 'net10.0')">
+    <PropertyGroup>
+      <_LumioEcsToolProject>$(MSBuildThisFileDirectory)tools\gen-declarations\Lumio.Tools.GenDeclarations.csproj</_LumioEcsToolProject>
+      <_LumioEcsSide Condition="'$(_LumioEcsSide)' == ''">$(LumioEcsSide)</_LumioEcsSide>
+      <_LumioEcsSide Condition="'$(_LumioEcsSide)' == ''">server</_LumioEcsSide>
+      <_LumioEcsSources Condition="'$(_LumioEcsSources)' == ''">$(MSBuildProjectDirectory)</_LumioEcsSources>
+      <_LumioEcsOut>$(MSBuildProjectDirectory)\generated\$(_LumioEcsSide)</_LumioEcsOut>
+      <_LumioEcsStamp>$(_LumioEcsOut)\gen.hash</_LumioEcsStamp>
+      <_LumioEcsJson Condition="'$(_LumioEcsSide)' == 'server'">$(MSBuildThisFileDirectory)modules\ecs\generated\attribute-declarations.json</_LumioEcsJson>
+      <_LumioEcsJson Condition="'$(_LumioEcsJson)' == ''">$(_LumioEcsOut)\attribute-declarations.json</_LumioEcsJson>
+    </PropertyGroup>
+    <MakeDir Directories="$(_LumioEcsOut)" />
+    <PropertyGroup>
+      <_LumioEcsToolDll>$(MSBuildThisFileDirectory)tools\gen-declarations\bin\Debug\net10.0\Lumio.Tools.GenDeclarations.dll</_LumioEcsToolDll>
+    </PropertyGroup>
+    <Exec
+      Condition="!Exists('$(_LumioEcsToolDll)')"
+      Command="dotnet build &quot;$(_LumioEcsToolProject)&quot; --nologo -v q" />
+    <Exec
+      Command="dotnet exec &quot;$(_LumioEcsToolDll)&quot; --sources &quot;$(_LumioEcsSources)&quot; --side $(_LumioEcsSide) --output-dir &quot;$(_LumioEcsOut)&quot; --output &quot;$(_LumioEcsJson)&quot; --assembly-name &quot;$(AssemblyName)&quot; --namespace Lumio.GameRuntime.Samples.Username --hash"
+      ConsoleToMSBuild="true"
+      StandardOutputImportance="Low">
+      <Output TaskParameter="ConsoleOutput" ItemName="_LumioEcsHashLines" />
+    </Exec>
+    <PropertyGroup>
+      <_LumioEcsInputHash>@(_LumioEcsHashLines)</_LumioEcsInputHash>
+      <_LumioEcsPreviousHash Condition="Exists('$(_LumioEcsStamp)')">$([System.IO.File]::ReadAllText('$(_LumioEcsStamp)').Trim())</_LumioEcsPreviousHash>
+    </PropertyGroup>
+    <Exec
+      Condition="'$(_LumioEcsInputHash)' != '$(_LumioEcsPreviousHash)'"
+      Command="dotnet exec &quot;$(_LumioEcsToolDll)&quot; --sources &quot;$(_LumioEcsSources)&quot; --side $(_LumioEcsSide) --output-dir &quot;$(_LumioEcsOut)&quot; --output &quot;$(_LumioEcsJson)&quot; --assembly-name &quot;$(AssemblyName)&quot; --namespace Lumio.GameRuntime.Samples.Username" />
+    <WriteLinesToFile
+      File="$(_LumioEcsStamp)"
+      Lines="$(_LumioEcsInputHash)"
+      Overwrite="true"
+      Encoding="UTF-8" />
+    <Message
+      Condition="'$(_LumioEcsInputHash)' == '$(_LumioEcsPreviousHash)'"
+      Importance="high"
+      Text="Lumio ECS generator skipped: inputs unchanged." />
+  </Target>
 </Project>
