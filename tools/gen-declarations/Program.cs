@@ -2,12 +2,13 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text;
 using Lumio.GameRuntime.Ecs.Annotations;
 
 namespace Lumio.Tools.GenDeclarations;
 
-/// <summary>CLI for the field-annotation declaration generator.</summary>
+/// <summary>CLI for the ECS declaration generator: registry + sync table + C-2 JSON.</summary>
 public static class Program
 {
     public static int Main(string[] args)
@@ -25,34 +26,75 @@ public static class Program
 
     private static int Run(string[] args)
     {
-        string? output = null;
+        string? outputJson = null;
+        string? outputDir = null;
+        string? sources = null;
+        string side = "server";
+        string? ns = null;
+        string? assemblyName = null;
         var assemblyPaths = new List<string>();
+        bool hashOnly = false;
         for (int i = 0; i < args.Length; i++)
         {
             string arg = args[i];
-            if (arg == "--output")
-            {
-                output = RequireValue(args, ref i, "--output");
-            }
-            else if (arg == "--assembly")
-            {
-                assemblyPaths.Add(RequireValue(args, ref i, "--assembly"));
-            }
+            if (arg == "--output") outputJson = RequireValue(args, ref i, "--output");
+            else if (arg == "--output-dir") outputDir = RequireValue(args, ref i, "--output-dir");
+            else if (arg == "--sources") sources = RequireValue(args, ref i, "--sources");
+            else if (arg == "--side") side = RequireValue(args, ref i, "--side");
+            else if (arg == "--namespace") ns = RequireValue(args, ref i, "--namespace");
+            else if (arg == "--assembly-name") assemblyName = RequireValue(args, ref i, "--assembly-name");
+            else if (arg == "--assembly") assemblyPaths.Add(RequireValue(args, ref i, "--assembly"));
+            else if (arg == "--hash") hashOnly = true;
             else if (arg == "--help" || arg == "-h")
             {
-                Console.Out.WriteLine("Usage: gen-declarations [--output PATH] [--assembly PATH]...");
+                Console.Out.WriteLine("Usage: gen-declarations [--sources DIR] [--side server|client] [--output-dir DIR] [--output JSON] [--assembly PATH]...");
                 return 0;
             }
-            else
+            else throw new InvalidOperationException("unknown argument: " + arg);
+        }
+
+        if (!string.IsNullOrEmpty(sources))
+        {
+            FileSide keep = string.Equals(side, "client", StringComparison.OrdinalIgnoreCase) ? FileSide.Client : FileSide.Server;
+            var files = new List<string>();
+            foreach (string file in Directory.GetFiles(sources, "*.cs", SearchOption.AllDirectories))
             {
-                throw new InvalidOperationException("unknown argument: " + arg);
+                if (file.EndsWith(".g.cs", StringComparison.OrdinalIgnoreCase)) continue;
+                files.Add(file);
             }
+
+            files.Sort(StringComparer.Ordinal);
+            if (hashOnly)
+            {
+                Console.Out.WriteLine(HashFiles(files));
+                return 0;
+            }
+
+            SourceModel model = SourceScanner.Scan(files, keep);
+            if (model.LintErrors.Count > 0)
+            {
+                for (int e = 0; e < model.LintErrors.Count; e++)
+                    Console.Error.WriteLine(model.LintErrors[e]);
+                return 1;
+            }
+
+            string outDir = outputDir ?? Path.Combine(sources, "generated", keep == FileSide.Client ? "client" : "server");
+            string json = outputJson ?? (keep == FileSide.Server ? DefaultOutputPath() : Path.Combine(outDir, "attribute-declarations.json"));
+            CodeEmitter.Emit(
+                model,
+                keep,
+                assemblyName ?? "Lumio.GameRuntime.Samples.Username",
+                ns ?? "Lumio.GameRuntime.Samples.Username",
+                outDir,
+                json);
+            Console.Out.WriteLine("generated " + outDir);
+            return 0;
         }
 
         var assemblies = new List<Assembly>();
         if (assemblyPaths.Count == 0)
         {
-            assemblies.Add(typeof(ChatComponent).Assembly);
+            assemblies.Add(typeof(Lumio.GameRuntime.Ecs.EcsComponentAttribute).Assembly);
         }
         else
         {
@@ -61,12 +103,27 @@ public static class Program
         }
 
         IReadOnlyList<FieldAttributeDeclaration> rows = AttributeDeclarationScanner.Scan(assemblies.ToArray());
-        string json = AttributeDeclarationJson.Format(rows);
-        string dest = output ?? DefaultOutputPath();
+        string jsonText = AttributeDeclarationJson.Format(rows);
+        string dest = outputJson ?? DefaultOutputPath();
         string? directory = Path.GetDirectoryName(dest);
         if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
-        File.WriteAllText(dest, json, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        File.WriteAllText(dest, jsonText, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         return 0;
+    }
+
+    private static string HashFiles(List<string> files)
+    {
+        using SHA256 sha = SHA256.Create();
+        for (int i = 0; i < files.Count; i++)
+        {
+            byte[] name = Encoding.UTF8.GetBytes(files[i].Replace('\\', '/'));
+            sha.TransformBlock(name, 0, name.Length, null, 0);
+            byte[] bytes = File.ReadAllBytes(files[i]);
+            sha.TransformBlock(bytes, 0, bytes.Length, null, 0);
+        }
+
+        sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
+        return Convert.ToHexString(sha.Hash!).ToLowerInvariant();
     }
 
     private static string RequireValue(string[] args, ref int index, string name)

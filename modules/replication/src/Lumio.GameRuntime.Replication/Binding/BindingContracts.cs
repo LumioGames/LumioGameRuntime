@@ -66,9 +66,9 @@ public readonly record struct IssuedNetEntity(
     string EntityType,
     bool Tombstoned);
 
-public sealed class IdentityTableSnapshot
+internal sealed class IdentityTableSnapshot
 {
-    public IdentityTableSnapshot(IReadOnlyList<IssuedNetEntity> records)
+    internal IdentityTableSnapshot(IReadOnlyList<IssuedNetEntity> records)
     {
         Records = records ?? Array.Empty<IssuedNetEntity>();
     }

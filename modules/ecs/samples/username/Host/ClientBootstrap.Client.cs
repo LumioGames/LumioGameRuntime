@@ -1,6 +1,7 @@
 // 客户端宿主侧用法（② 建世界，客户端这一半）。只进 *.Client.csproj。
 using System.Threading;
 using Lumio.GameRuntime.Ecs;
+using Lumio.GameRuntime.Samples.Username;
 
 namespace Lumio.GameRuntime.Samples.Username.Host;
 

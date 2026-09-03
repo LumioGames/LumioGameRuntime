@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using Lumio.GameRuntime.Ecs;
 
 namespace Lumio.GameRuntime.Ecs.Annotations;
 
@@ -8,8 +9,8 @@ namespace Lumio.GameRuntime.Ecs.Annotations;
 public static class AttributeDeclarationScanner
 {
     /// <summary>
-    /// Scans public instance fields and properties. Unannotated members are omitted (default = never on wire, never persisted).
-    /// Illegal C-2 combinations throw <see cref="InvalidOperationException"/>.
+    /// Scans public instance fields. Unannotated ordinary members are omitted.
+    /// <see cref="Sync{T}"/> fields are replicated; <see cref="PersistAttribute"/> marks snapshot membership.
     /// </summary>
     public static IReadOnlyList<FieldAttributeDeclaration> Scan(params Assembly[] assemblies)
     {
@@ -46,20 +47,21 @@ public static class AttributeDeclarationScanner
     private static void ScanType(Type type, List<FieldAttributeDeclaration> rows, List<string> errors)
     {
         const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly;
-        PropertyInfo[] properties = type.GetProperties(flags);
-        for (int i = 0; i < properties.Length; i++)
-        {
-            PropertyInfo property = properties[i];
-            if (property.GetIndexParameters().Length > 0) continue;
-            TryAdd(type, property.Name, property.PropertyType, property, rows, errors);
-        }
-
         FieldInfo[] fields = type.GetFields(flags);
         for (int i = 0; i < fields.Length; i++)
         {
             FieldInfo field = fields[i];
             if (field.IsSpecialName) continue;
             TryAdd(type, field.Name, field.FieldType, field, rows, errors);
+        }
+
+        PropertyInfo[] properties = type.GetProperties(flags);
+        for (int i = 0; i < properties.Length; i++)
+        {
+            PropertyInfo property = properties[i];
+            if (property.GetIndexParameters().Length > 0) continue;
+            if (IsSyncType(property.PropertyType) || property.GetCustomAttribute<PersistAttribute>() is not null)
+                TryAdd(type, property.Name, property.PropertyType, property, rows, errors);
         }
     }
 
@@ -72,35 +74,49 @@ public static class AttributeDeclarationScanner
         List<string> errors)
     {
         PersistAttribute? persist = member.GetCustomAttribute<PersistAttribute>();
-        ReplicateAttribute? replicate = member.GetCustomAttribute<ReplicateAttribute>();
-        VisibilityAttribute? visibility = member.GetCustomAttribute<VisibilityAttribute>();
-        AttributeValueTypeAttribute? valueType = member.GetCustomAttribute<AttributeValueTypeAttribute>();
-        if (persist is null && replicate is null && visibility is null && valueType is null)
-            return;
+        bool isSync = IsSyncType(clrType);
+        if (persist is null && !isSync) return;
 
         string attributeId = type.Name + "." + ToCamelCase(memberName);
-        string persistence = persist is null
-            ? FieldAnnotationRules.DefaultPersistence
-            : FieldAnnotationRules.Token(persist.Kind);
-        string replication = replicate is null
-            ? FieldAnnotationRules.DefaultReplication
-            : FieldAnnotationRules.Token(replicate.Kind);
-        string visibilityToken = visibility is null
-            ? FieldAnnotationRules.DefaultVisibility
-            : FieldAnnotationRules.Token(visibility.Kind);
+        string persistence = persist is null ? FieldAnnotationRules.DefaultPersistence : FieldAnnotationRules.PersistencePersistent;
+        string replication;
+        string visibility;
+        Type valueClr = clrType;
+        if (isSync)
+        {
+            replication = FieldAnnotationRules.ReplicationReplicated;
+            visibility = VisibilityFromSync(member, clrType);
+            valueClr = clrType.IsGenericType ? clrType.GetGenericArguments()[0] : typeof(string);
+        }
+        else
+        {
+            replication = FieldAnnotationRules.ReplicationNotReplicated;
+            visibility = FieldAnnotationRules.VisibilityServerOnly;
+        }
 
         try
         {
-            FieldAnnotationRules.Validate(attributeId, persistence, replication, visibilityToken);
-            string resolvedType = valueType is null ? InferValueType(clrType, attributeId) : valueType.ValueType;
-            if (string.IsNullOrEmpty(resolvedType))
-                throw new InvalidOperationException("valueType is required for " + attributeId);
-            rows.Add(new FieldAttributeDeclaration(attributeId, resolvedType, persistence, replication, visibilityToken));
+            FieldAnnotationRules.Validate(attributeId, persistence, replication, visibility);
+            string resolvedType = InferValueType(valueClr, attributeId);
+            rows.Add(new FieldAttributeDeclaration(attributeId, resolvedType, persistence, replication, visibility));
         }
         catch (InvalidOperationException ex)
         {
             errors.Add(ex.Message);
         }
+    }
+
+    private static bool IsSyncType(Type clrType) =>
+        clrType.IsGenericType &&
+        (clrType.GetGenericTypeDefinition() == typeof(Sync<>) ||
+         clrType.GetGenericTypeDefinition() == typeof(SyncList<>) ||
+         (clrType.GetGenericTypeDefinition() == typeof(SyncDict<,>)));
+
+    private static string VisibilityFromSync(MemberInfo member, Type clrType)
+    {
+        _ = member;
+        _ = clrType;
+        return FieldAnnotationRules.VisibilityRoomPublic;
     }
 
     private static string InferValueType(Type clrType, string attributeId)

@@ -7,6 +7,7 @@
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
     <DefaultItemExcludes>$(DefaultItemExcludes);tests/**;fixtures/**</DefaultItemExcludes>
+    <NoWarn>$(NoWarn);CA1847;CA2249;CA1861;CA1822</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../modules/ecs/src/Lumio.GameRuntime.Ecs/Lumio.GameRuntime.Ecs.csproj" />

@@ -17,7 +17,7 @@ public sealed class ChatMappingTests
         Assert.Equal("entity.identity", ChatMapping.IdentityMappingId);
         Assert.Equal(new[] { "text" }, ChatMapping.InputFieldOrder);
         Assert.Equal(
-            new[] { "messageId", "roomSequence", "senderNetEntityId", "text", "appliedTick" },
+            new[] { "messageId", "roomSequence", "senderNetEntityIdInstanceId", "senderNetEntityIdCounter", "text", "appliedTick" },
             ChatMapping.EventFieldOrder);
         Assert.Equal(new[] { "lastMessageText", "lastMessageTick" }, ChatMapping.ComponentFieldOrder);
         Assert.Equal(new[] { "netEntityId", "entityType", "unmappedMark" }, ChatMapping.IdentityFieldOrder);

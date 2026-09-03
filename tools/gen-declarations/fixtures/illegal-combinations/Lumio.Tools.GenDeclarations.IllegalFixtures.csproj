@@ -5,6 +5,7 @@
     <RootNamespace>Lumio.Tools.GenDeclarations.IllegalFixtures</RootNamespace>
     <IsPackable>false</IsPackable>
     <Nullable>enable</Nullable>
+    <NoWarn>$(NoWarn);CA1051</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../../../modules/ecs/src/Lumio.GameRuntime.Ecs/Lumio.GameRuntime.Ecs.csproj" />

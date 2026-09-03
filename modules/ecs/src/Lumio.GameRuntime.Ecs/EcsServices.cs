@@ -10,6 +10,4 @@ public sealed class EcsServices
         _module = module ?? throw new System.ArgumentNullException(nameof(module));
     }
 
-    public EcsWorldCreateResult CreateWorld(in EcsWorldCreateRequest request) =>
-        _module.CreateWorld(in request);
 }

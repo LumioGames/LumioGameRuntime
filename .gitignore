@@ -11,3 +11,4 @@ obj/
 # 同时匹配生成物目录 src/…/Generated/Artifacts/,使新增的 generated 文件被静默忽略、
 # 无法随生成源一起提交。
 /artifacts/
+**/generated/**/gen.hash

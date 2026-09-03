@@ -4,7 +4,7 @@
     <TargetFrameworks>net10.0;netstandard2.1</TargetFrameworks>
     <AssemblyName>Lumio.GameRuntime.Replication</AssemblyName>
     <RootNamespace>Lumio.GameRuntime.Replication</RootNamespace>
-    <NoWarn>$(NoWarn);CA1711;CA1822;CA1825;CA1846;CA1850;CA1859;CA1861;CA2263;CA1510;CA1512;CA1834</NoWarn>
+    <NoWarn>$(NoWarn);CA1711;CA1822;CA1825;CA1846;CA1850;CA1859;CA1861;CA2263;CA1510;CA1512;CA1513;CA1834</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../../ecs/src/Lumio.GameRuntime.Ecs/Lumio.GameRuntime.Ecs.csproj" />

@@ -5,6 +5,12 @@ using System.Runtime.CompilerServices;
 [assembly: InternalsVisibleTo("Lumio.GameRuntime.Ecs.Tests")]
 [assembly: InternalsVisibleTo("Lumio.GameRuntime.Command")]
 [assembly: InternalsVisibleTo("Lumio.GameRuntime.Command.Tests")]
+[assembly: InternalsVisibleTo("Lumio.GameRuntime.Replication")]
+[assembly: InternalsVisibleTo("Lumio.GameRuntime.Replication.Tests")]
+[assembly: InternalsVisibleTo("Lumio.GameRuntime.Samples.Username.Server")]
+[assembly: InternalsVisibleTo("Lumio.GameRuntime.Samples.Username.Client")]
+[assembly: InternalsVisibleTo("Lumio.GameRuntime.Samples.Username.Tests")]
+[assembly: InternalsVisibleTo("Lumio.Tools.GenDeclarations")]
 
 namespace Lumio.GameRuntime.Ecs;
 
@@ -15,7 +21,7 @@ public sealed class EcsModule : IDisposable
     private readonly HashSet<EcsWorld> _worlds = new();
     private bool _disposed;
 
-    public EcsWorldCreateResult CreateWorld(in EcsWorldCreateRequest request)
+    internal EcsWorldCreateResult CreateWorld(in EcsWorldCreateRequest request)
     {
         lock (_sync)
         {

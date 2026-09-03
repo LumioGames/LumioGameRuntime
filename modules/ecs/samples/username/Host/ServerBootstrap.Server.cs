@@ -1,6 +1,7 @@
 // 服务器宿主侧用法（② 建世界 · ③ 创建 · ⑦ 存档与恢复）。只进 *.Server.csproj。
 using System.Threading;
 using Lumio.GameRuntime.Ecs;
+using Lumio.GameRuntime.Samples.Username;
 using Lumio.GameRuntime.Samples.Username.Components.Identity;
 using Lumio.GameRuntime.Samples.Username.EntityTypes;
 
@@ -34,5 +35,8 @@ public static class ServerBootstrap
 
     /// <summary>⑦ 恢复：从快照建新世界（与 Create 同一条路）；只跑 OnHydrate；未标 [Persist] 的字段取声明默认值（Connected 回来是 false）。</summary>
     public static WorldManager Restore(byte[] snapshotBytes)
-        => WorldManager.CreateFromSnapshot(snapshotBytes);
+    {
+        EcsRegistry.Current = GeneratedRegistry.Instance;
+        return WorldManager.CreateFromSnapshot(snapshotBytes);
+    }
 }

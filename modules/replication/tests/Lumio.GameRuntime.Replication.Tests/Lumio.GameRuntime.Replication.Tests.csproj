@@ -4,11 +4,13 @@
     <TargetFramework>net10.0</TargetFramework>
     <IsPackable>false</IsPackable>
     <OutputType>Exe</OutputType>
+    <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
     <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
     <NoWarn>$(NoWarn);CA1861;xUnit2013</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/Lumio.GameRuntime.Replication/Lumio.GameRuntime.Replication.csproj" />
+    <ProjectReference Include="../../../ecs/samples/username/Lumio.GameRuntime.Samples.Username.Server.csproj" />
     <PackageReference Include="xunit.v3" />
     <PackageReference Include="Microsoft.Testing.Platform" />
     <PackageReference Include="coverlet.MTP" />

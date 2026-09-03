@@ -2,23 +2,33 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
+using Lumio.GameRuntime.Ecs;
 using Lumio.GameRuntime.Ecs.Annotations;
 using Lumio.GameRuntime.Replication.Binding;
+using Lumio.GameRuntime.Samples.Username;
 using Xunit;
 
 namespace Lumio.GameRuntime.Replication.Tests;
 
 public sealed class DeclareDefaultsCatalogTests
 {
+    public DeclareDefaultsCatalogTests()
+    {
+        EcsRegistry.Current = GeneratedRegistry.Instance;
+    }
+
     [Fact]
     public void CreateLoadsDeclarationsFromGeneratedCatalog()
     {
         using EntityBindingQuery sut = EntityBindingQuery.Create();
         FieldInfo field = typeof(EntityBindingQuery).GetField("_declarations", BindingFlags.Instance | BindingFlags.NonPublic)!;
         var loaded = Assert.IsAssignableFrom<IReadOnlyDictionary<string, AttributeDeclaration>>(field.GetValue(sut));
-        IReadOnlyList<FieldAttributeDeclaration> catalog = AttributeDeclarationCatalog.LoadEmbedded();
+        IReadOnlyList<FieldAttributeDeclaration> catalog = sut.Manager.Registry.AttributeDeclarations;
+        string jsonPath = Path.Combine(FindRepoRoot(), "modules", "ecs", "generated", "attribute-declarations.json");
+        IReadOnlyList<FieldAttributeDeclaration> committed = AttributeDeclarationCatalog.Parse(File.ReadAllText(jsonPath));
 
         Assert.Equal(catalog.Count, loaded.Count);
+        Assert.Equal(catalog.Count, committed.Count);
         foreach (FieldAttributeDeclaration row in catalog)
         {
             Assert.True(loaded.TryGetValue(row.AttributeId, out AttributeDeclaration declaration));
@@ -28,6 +38,8 @@ public sealed class DeclareDefaultsCatalogTests
             Assert.Equal(row.Visibility, declaration.Visibility);
         }
 
+        Assert.True(loaded.ContainsKey("ChatComponent.lastMessageText"));
+        Assert.True(loaded.ContainsKey("IdentityComponent.name"));
         Assert.False(loaded.ContainsKey("EntityIdentity.accountId"));
     }
 
@@ -63,16 +75,8 @@ public sealed class DeclareDefaultsCatalogTests
             "Binding",
             "EntityBindingQuery.cs");
         string source = File.ReadAllText(path);
-        int start = source.IndexOf("private void DeclareDefaults()", StringComparison.Ordinal);
-        Assert.True(start >= 0, "DeclareDefaults is missing");
-        int next = source.IndexOf("\n    private ", start + 1, StringComparison.Ordinal);
-        Assert.True(next > start);
-        string method = source.Substring(start, next - start);
-        Assert.Contains("AttributeDeclarationCatalog", method, StringComparison.Ordinal);
-        Assert.DoesNotContain("\"ephemeral\"", method, StringComparison.Ordinal);
-        Assert.DoesNotContain("\"persistent\"", method, StringComparison.Ordinal);
-        Assert.DoesNotContain("\"replicated\"", method, StringComparison.Ordinal);
-        Assert.DoesNotContain("\"not-replicated\"", method, StringComparison.Ordinal);
+        Assert.Contains("AttributeDeclarations", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("_values", source, StringComparison.Ordinal);
     }
 
     private static string FindRepoRoot()

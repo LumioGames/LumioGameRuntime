@@ -4,6 +4,7 @@ using System.Threading;
 using Lumio.GameRuntime.Ecs;
 using Lumio.GameRuntime.Replication.Lifecycle;
 using Lumio.GameRuntime.Replication.Mapping;
+using NetEntityId = Lumio.GameRuntime.Replication.Mapping.NetEntityId;
 using Lumio.Gen.ContractTypes;
 using Xunit;
 

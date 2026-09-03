@@ -552,7 +552,7 @@ public sealed class ReplicationProjection
     {
         private readonly int _capacity;
         private readonly long _byteCapacity;
-        private readonly Dictionary<string, T> _values = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, T> _items = new(StringComparer.Ordinal);
         private readonly Dictionary<string, long> _sizes = new(StringComparer.Ordinal);
         private readonly Queue<string> _order = new();
         private long _bytes;
@@ -563,28 +563,28 @@ public sealed class ReplicationProjection
             _byteCapacity = budget.HistoryBytes;
         }
 
-        public bool TryGet(string key, out T? value) => _values.TryGetValue(key, out value);
+        public bool TryGet(string key, out T? value) => _items.TryGetValue(key, out value);
 
         public bool CanAdd(string key, long size)
         {
-            if (_values.ContainsKey(key)) return true;
+            if (_items.ContainsKey(key)) return true;
             return _capacity > 0 && size >= 0 && size <= _byteCapacity;
         }
 
         public bool Add(string key, T value, long size)
         {
             if (!CanAdd(key, size)) return false;
-            if (_values.ContainsKey(key)) return true;
+            if (_items.ContainsKey(key)) return true;
 
-            while (_values.Count >= _capacity || _bytes > _byteCapacity - size)
+            while (_items.Count >= _capacity || _bytes > _byteCapacity - size)
             {
                 if (_order.Count == 0) return false;
                 string oldest = _order.Dequeue();
-                if (!_values.Remove(oldest)) continue;
+                if (!_items.Remove(oldest)) continue;
                 if (_sizes.Remove(oldest, out long previous)) _bytes -= previous;
             }
 
-            _values[key] = value;
+            _items[key] = value;
             _sizes[key] = size;
             _order.Enqueue(key);
             _bytes += size;
@@ -593,7 +593,7 @@ public sealed class ReplicationProjection
 
         public void Clear()
         {
-            _values.Clear();
+            _items.Clear();
             _sizes.Clear();
             _order.Clear();
             _bytes = 0;
@@ -609,7 +609,7 @@ public sealed class ReplicationProjection
     {
         private readonly int _capacity;
         private readonly long _byteCapacity;
-        private readonly Dictionary<string, ulong> _values = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, ulong> _items = new(StringComparer.Ordinal);
         private readonly Dictionary<string, long> _sizes = new(StringComparer.Ordinal);
         private readonly Queue<string> _order = new();
         private long _bytes;
@@ -623,14 +623,14 @@ public sealed class ReplicationProjection
         public bool TryGet(string key, out ulong sequence)
         {
             sequence = 0;
-            return !string.IsNullOrEmpty(key) && _values.TryGetValue(key, out sequence);
+            return !string.IsNullOrEmpty(key) && _items.TryGetValue(key, out sequence);
         }
 
         public bool CanAdd(string key)
         {
             if (string.IsNullOrEmpty(key)) return false;
-            if (_values.ContainsKey(key)) return true;
-            if (_capacity <= 0 || _values.Count >= _capacity) return false;
+            if (_items.ContainsKey(key)) return true;
+            if (_capacity <= 0 || _items.Count >= _capacity) return false;
             long keyBytes = Encoding.UTF8.GetByteCount(key);
             if (keyBytes > long.MaxValue - sizeof(ulong)) return false;
             long size = keyBytes + sizeof(ulong);
@@ -639,11 +639,11 @@ public sealed class ReplicationProjection
 
         public bool Add(string key, ulong sequence)
         {
-            if (_values.ContainsKey(key)) return true;
+            if (_items.ContainsKey(key)) return true;
             if (!CanAdd(key)) return false;
             long keyBytes = Encoding.UTF8.GetByteCount(key);
             long size = keyBytes + sizeof(ulong);
-            _values[key] = sequence;
+            _items[key] = sequence;
             _sizes[key] = size;
             _order.Enqueue(key);
             _bytes += size;
@@ -652,7 +652,7 @@ public sealed class ReplicationProjection
 
         public void Clear()
         {
-            _values.Clear();
+            _items.Clear();
             _sizes.Clear();
             _order.Clear();
             _bytes = 0;

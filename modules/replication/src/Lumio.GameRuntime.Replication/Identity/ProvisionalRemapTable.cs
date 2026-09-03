@@ -21,12 +21,12 @@ public sealed class ProvisionalRemapTable
     private readonly Dictionary<NetEntityId, NetEntityId> _byAuthoritative = new();
     private readonly int _ownerThreadId;
 
-    public ProvisionalRemapTable() : this(new WorldId(1), 1)
+    public ProvisionalRemapTable() : this(new WorldId(0x11UL), 1)
     {
     }
 
     public ProvisionalRemapTable(ulong initialGeneration)
-        : this(new WorldId(1), initialGeneration)
+        : this(new WorldId(0x11UL), initialGeneration)
     {
     }
 
@@ -41,7 +41,7 @@ public sealed class ProvisionalRemapTable
     }
 
     internal ProvisionalRemapTable(ReplicationStoreScope scope)
-        : this(scope, new WorldId(1))
+        : this(scope, new WorldId(0x11UL))
     {
     }
 
