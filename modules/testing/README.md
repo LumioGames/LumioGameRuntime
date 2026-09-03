@@ -12,7 +12,7 @@
 
 ## 负责什么
 
-- 组装无网络、可控时钟的 Reference Host、GameWorld/ReplicaWorld 和 `ReferenceVoxelPort`。
+- 组装无网络、可控时钟的 Reference Host、GameWorld/客户端 World 和 `ReferenceVoxelPort`。
 - 执行 Golden、Property、Fuzz、Stress/Soak、Differential、Fault 和 Replay 测试，并保存可重放输入。
 - 计算 Canonical State Hash、比较 Server/Client/Replay 结果，报告首个差异 Tick/Phase/Processor。
 - 提供 Scenario Adapter 的 Required/Provided Capability 匹配、确定性 Seed、故障注入和 Workload 记录。

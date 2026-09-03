@@ -37,7 +37,7 @@ Tick/Processor、Revision、Txn、Replication、Mapping、Snapshot 和 Failure B
 ## 拥有的状态与生命周期
 
 - 每个 Role/World 独立的 Entity、Component Storage、Query、CommandBuffer 和 Change Tracking。
-- `GameWorld`、`ReplicaWorld` 的逻辑创建、Tick Phase、结构提交、Snapshot Projection 和销毁。
+- `GameWorld`、客户端 World 的逻辑创建、Tick Phase、结构提交、Snapshot Projection 和销毁。
 - `SimulationSession` 对外聚合/暴露 Logical Tick 与 Coordinator Facade：`simulation` 唯一拥有 Logical TickId、Phase 与 Determinism Context；Revision、Txn、Reservation、SnapshotCut 唯一归 `coordination`；Facade 只转发查询或命令，不缓存第二份可变状态。
 - GAS Ability/Effect/Attribute/Tag 状态、Handle、Prediction Context、Snapshot/Restore。
 - Replication Projection/History/Apply 的通用语义和 Hot Gameplay ModuleScope 契约。
@@ -149,7 +149,7 @@ Runtime 只定义统一 Event Schema 和关联 API；具体 Sink 由 Host 提供
 ```text
 Server/Client Host
   -> stable LumioGameRuntime
-  -> role-specific GameWorld/ReplicaWorld
+  -> role-specific GameWorld / 客户端 World
   -> ServerGameplay.dll or ClientGameplay.dll
   -> Voxel Port / GAS / generated contracts
 ```
