@@ -108,3 +108,7 @@ Running -> Draining -> Disposed
 - **RT-D-002**：Archetype、Column、Sparse Set 或其他 Storage 表示；只冻结 Entity/Component/Query 语义，选型须通过 Property、Golden 和 Benchmark。
 - **RT-D-001**：逻辑 `ecs` 与 C# 程序集/项目的映射；物理拆分不能改变 World-local 所有权。
 - Component Schema 的新增公共字段仍须回到架构源 Contract Toolchain，不能在本模块 README 中提前发布。
+
+## 样板示例（代码标准）
+
+ECS 代码怎么写、怎么读，以 [`samples/username/`](samples/username/README.md) 为唯一标准（用户名的声明 → 建世界 → 创建 → 写 → 同步 → 读 → 存档全链路）。结构定稿见架构仓 ADR-058；本目录 API 由 RM-00011 r4 的 R4-05 卡落地并接进构建。
