@@ -13,8 +13,9 @@ public sealed class StructureAssertionTests
     {
         string root = FindRepoRoot();
         var files = new List<string>();
-        Collect(Path.Combine(root, "modules", "ecs", "src"), files);
-        Collect(Path.Combine(root, "modules", "replication", "src"), files);
+        string modules = Path.Combine(root, "modules");
+        foreach (string module in Directory.GetDirectories(modules))
+            Collect(Path.Combine(module, "src"), files);
         Collect(Path.Combine(root, "modules", "ecs", "samples", "username"), files);
 
         var createWorld = new List<string>();
@@ -23,6 +24,7 @@ public sealed class StructureAssertionTests
         {
             "_values",
             "_liveConnectionByAccount",
+            "_session",
             "_eventsByRoomTick",
             "_displayed",
             "ChatIngressWorld",
@@ -30,6 +32,11 @@ public sealed class StructureAssertionTests
             "WorldId(2)",
             "WorldId(370)",
             "GetField(\"_componentRegistrationCapability\"",
+            "EcsWorld",
+            "SyncSlot",
+            "GrantClaim",
+            "TryParseLoose",
+            "GetField(",
             "[Replicate]",
             "[Visibility(",
         };
@@ -45,7 +52,9 @@ public sealed class StructureAssertionTests
                 createWorld.Add(Path.GetRelativePath(root, path));
             for (int t = 0; t < tokens.Length; t++)
             {
-                if (text.Contains(tokens[t], StringComparison.Ordinal))
+                if (tokens[t] == "_session" && Regex.IsMatch(text, @"(?<![A-Za-z0-9])_session(?![A-Za-z0-9])"))
+                    banned.Add(Path.GetRelativePath(root, path) + ": " + tokens[t]);
+                else if (tokens[t] != "_session" && text.Contains(tokens[t], StringComparison.Ordinal))
                     banned.Add(Path.GetRelativePath(root, path) + ": " + tokens[t]);
             }
         }

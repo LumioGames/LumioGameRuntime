@@ -156,7 +156,8 @@ public readonly struct SyncWrite
 
     /// <summary>True when <paramref name="field"/> is the field being written.</summary>
     public bool Is<T>(in Sync<T> field) =>
-        _field is not null && field.Identity is not null && ReferenceEquals(_field, field.Identity);
+        _field is not null && field.Identity is not null &&
+        string.Equals(_field.AttributeId, field.AttributeId, StringComparison.Ordinal);
 
     /// <summary>Payload decoded as <typeparamref name="T"/>.</summary>
     public T Value<T>() => (T)_value!;
@@ -170,35 +171,28 @@ public interface ISyncField
     Scope Scope { get; }
     Authority Authority { get; }
     Notify Notify { get; }
+    string? ClaimBy { get; }
     Type ValueType { get; }
     object? BoxedValue { get; }
     Component Owner { get; }
     void AssignFromRemote(object? value);
 }
 
-/// <summary>Heap slot backing a bound <see cref="Sync{T}"/> field.</summary>
-internal sealed class SyncSlot<T> : ISyncField
+/// <summary>Metadata shared by replicated container fields.</summary>
+public interface ISyncContainer
 {
-    internal T Value = default!;
-    internal ISyncHost? Host;
-    internal Component? OwnerComponent;
-    internal int Ordinal;
-    internal string AttributeId = string.Empty;
-    internal Scope Scope;
-    internal Authority Authority;
-    internal Notify Notify;
-
-    int ISyncField.Ordinal => Ordinal;
-    string ISyncField.AttributeId => AttributeId;
-    Scope ISyncField.Scope => Scope;
-    Authority ISyncField.Authority => Authority;
-    Notify ISyncField.Notify => Notify;
-    Type ISyncField.ValueType => typeof(T);
-    object? ISyncField.BoxedValue => Value;
-    Component ISyncField.Owner => OwnerComponent!;
-
-    void ISyncField.AssignFromRemote(object? value) =>
-        Value = value is T match ? match : default!;
+    Scope Scope { get; }
+    Authority Authority { get; }
+    Notify Notify { get; }
+    string? ClaimBy { get; }
+    string AttributeId { get; }
+    Component Owner { get; }
+    int Ordinal { get; }
+    Type ValueType { get; }
+    object? BoxedValue { get; }
+    void Bind(ISyncHost host, Component owner, string attributeId);
+    void AssignFromRemote(object? value);
+    void ResetForReuse();
 }
 
 /// <summary>World-facing dirty sink used by <see cref="Sync{T}"/> setters.</summary>
@@ -209,104 +203,123 @@ public interface ISyncHost
     WorldManager Manager { get; }
     World World { get; }
     void OnLocalWrite(Component owner, ISyncField field, object? oldValue, object? newValue);
+    void OnContainerWrite(Component owner, ISyncContainer container, object? oldValue, object? newValue);
 }
 
 /// <summary>
 /// Replicated scalar. Write <see cref="Value"/>; read via implicit conversion.
 /// Must remain a struct (ADR-058 §7 / §9).
 /// </summary>
-public struct Sync<T>
+public struct Sync<T> : ISyncField
 {
-    private T _unbound;
-    private SyncSlot<T>? _slot;
+    private T _value;
+    private ISyncHost? _host;
+    private Component? _owner;
+    private int _ordinal;
+    private string? _attributeId;
     private Scope _scope;
     private Authority _authority;
     private Notify _notify;
+    private string? _claimBy;
 
     /// <summary>Declares a replicated field. Default authority is server; default notify is remote.</summary>
-    public Sync(Scope scope, Authority authority = Authority.Server, Notify notify = Notify.Remote)
+    public Sync(Scope scope, Authority authority = Authority.Server, Notify notify = Notify.Remote, string? claimBy = null)
     {
-        _unbound = default!;
-        _slot = null;
+        _value = default!;
+        _host = null;
+        _owner = null;
+        _ordinal = -1;
+        _attributeId = null;
         _scope = scope;
         _authority = authority;
         _notify = notify;
+        _claimBy = claimBy;
     }
 
     /// <summary>Current value. Setter marks dirty and, on an owner client, auto-uploads.</summary>
     public T Value
     {
-        get => _slot is null ? _unbound : _slot.Value;
+        get => _value;
         set
         {
-            if (_slot is null)
-            {
-                _unbound = value;
-                return;
-            }
-
-            T old = _slot.Value;
+            T old = _value;
             if (EqualityComparer<T>.Default.Equals(old, value))
             {
-                _slot.Value = value;
+                _value = value;
                 return;
             }
 
-            _slot.Value = value;
-            ISyncHost? host = _slot.Host;
+            _value = value;
+            ISyncHost? host = _host;
             if (host is not null && !host.IsApplyingRemote)
-                host.OnLocalWrite(_slot.OwnerComponent!, _slot, old, value);
+                host.OnLocalWrite(_owner!, this, old, value);
         }
     }
 
     /// <summary>Reads the current value.</summary>
     public static implicit operator T(Sync<T> field) => field.Value;
 
-    internal ISyncField? Identity => _slot;
+    internal ISyncField? Identity => _attributeId is null ? null : this;
 
-    internal Scope DeclaredScope => _slot?.Scope ?? _scope;
-    internal Authority DeclaredAuthority => _slot?.Authority ?? _authority;
-    internal Notify DeclaredNotify => _slot?.Notify ?? _notify;
+    internal Scope DeclaredScope => _scope;
+    internal Authority DeclaredAuthority => _authority;
+    internal Notify DeclaredNotify => _notify;
+    public string? ClaimBy => _claimBy;
+    internal string AttributeId => _attributeId ?? string.Empty;
 
     /// <summary>Binds this field to a world slot. Called from generated <c>BindFields</c>.</summary>
     public Sync<T> Bound(ISyncHost host, Component owner, int ordinal, string attributeId)
     {
-        var slot = new SyncSlot<T>
-        {
-            Value = _slot is null ? _unbound : _slot.Value,
-            Host = host,
-            OwnerComponent = owner,
-            Ordinal = ordinal,
-            AttributeId = attributeId,
-            Scope = _scope,
-            Authority = _authority,
-            Notify = _notify,
-        };
         Sync<T> copy = this;
-        copy._slot = slot;
-        copy._unbound = default!;
+        copy._host = host;
+        copy._owner = owner;
+        copy._ordinal = ordinal;
+        copy._attributeId = attributeId;
         return copy;
     }
 
     /// <summary>Writes without dirty/upload. Used for downlink and snapshot restore.</summary>
     public void SetSilent(T value)
     {
-        if (_slot is null) _unbound = value;
-        else _slot.Value = value;
+        _value = value;
+    }
+
+    int ISyncField.Ordinal => _ordinal;
+    string ISyncField.AttributeId => _attributeId ?? string.Empty;
+    Scope ISyncField.Scope => _scope;
+    Authority ISyncField.Authority => _authority;
+    Notify ISyncField.Notify => _notify;
+    string? ISyncField.ClaimBy => _claimBy;
+    Type ISyncField.ValueType => typeof(T);
+    object? ISyncField.BoxedValue => _value;
+    Component ISyncField.Owner => _owner!;
+    void ISyncField.AssignFromRemote(object? value)
+    {
+        if (value is T typed) _value = typed;
     }
 }
 
 /// <summary>Replicated list. Mutations are reported per entry.</summary>
-public sealed class SyncList<T>
+public sealed class SyncList<T> : ISyncContainer
 {
     private readonly List<T> _items = new();
+    private ISyncHost? _host;
+    private Component? _owner;
+    private string _attributeId = string.Empty;
 
     /// <summary>Declares a replicated list.</summary>
-    public SyncList(Scope scope, Authority authority = Authority.Server, Notify notify = Notify.Remote)
+    public SyncList(Scope scope, Authority authority = Authority.Server, Notify notify = Notify.Remote, string? claimBy = null)
     {
         Scope = scope;
         Authority = authority;
         Notify = notify;
+        ClaimBy = claimBy;
+    }
+
+    public SyncList<T> Bound(ISyncHost host, Component owner, string attributeId)
+    {
+        ((ISyncContainer)this).Bind(host, owner, attributeId);
+        return this;
     }
 
     /// <summary>Visibility of the list.</summary>
@@ -318,6 +331,9 @@ public sealed class SyncList<T>
     /// <summary>Hook notify mode.</summary>
     public Notify Notify { get; }
 
+    /// <summary>Same-component Sync container that supplies claims for this field.</summary>
+    public string? ClaimBy { get; }
+
     /// <summary>Number of entries.</summary>
     public int Count => _items.Count;
 
@@ -325,33 +341,114 @@ public sealed class SyncList<T>
     public T this[int index]
     {
         get => _items[index];
-        set => _items[index] = value;
+        set
+        {
+            var old = new List<T>(_items);
+            _items[index] = value;
+            Changed(old);
+        }
     }
 
     /// <summary>Appends <paramref name="item"/>.</summary>
-    public void Add(T item) => _items.Add(item);
+    public void Add(T item)
+    {
+        var old = new List<T>(_items);
+        _items.Add(item);
+        Changed(old);
+    }
 
     /// <summary>Inserts <paramref name="item"/> at <paramref name="index"/>.</summary>
-    public void Insert(int index, T item) => _items.Insert(index, item);
+    public void Insert(int index, T item)
+    {
+        var old = new List<T>(_items);
+        _items.Insert(index, item);
+        Changed(old);
+    }
 
     /// <summary>Removes the entry at <paramref name="index"/>.</summary>
-    public void RemoveAt(int index) => _items.RemoveAt(index);
+    public void RemoveAt(int index)
+    {
+        var old = new List<T>(_items);
+        _items.RemoveAt(index);
+        Changed(old);
+    }
 
     /// <summary>Removes every entry.</summary>
-    public void Clear() => _items.Clear();
+    public void Clear()
+    {
+        if (_items.Count == 0) return;
+        var old = new List<T>(_items);
+        _items.Clear();
+        Changed(old);
+    }
+
+    /// <summary>Returns true when the list contains <paramref name="item"/>.</summary>
+    public bool Contains(T item) => _items.Contains(item);
+
+    /// <summary>Enumerates the current entries.</summary>
+    public IReadOnlyList<T> Values => _items;
+
+    string ISyncContainer.AttributeId => _attributeId;
+    Component ISyncContainer.Owner => _owner!;
+    int ISyncContainer.Ordinal => -1;
+    Type ISyncContainer.ValueType => typeof(SyncList<T>);
+    object? ISyncContainer.BoxedValue => new List<T>(_items);
+    void ISyncContainer.Bind(ISyncHost host, Component owner, string attributeId)
+    {
+        _host = host;
+        _owner = owner;
+        _attributeId = attributeId ?? string.Empty;
+    }
+    void ISyncContainer.AssignFromRemote(object? value)
+    {
+        _items.Clear();
+        if (value is SyncList<T> source)
+            _items.AddRange(source._items);
+        else if (value is IEnumerable<T> values)
+            _items.AddRange(values);
+        else if (value is string text)
+            foreach (string token in text.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)) _items.Add(ParseText(token));
+    }
+    void ISyncContainer.ResetForReuse() { _items.Clear(); }
+
+    private void Changed(IReadOnlyList<T> old)
+    {
+        _host?.OnContainerWrite(_owner!, this, old, new List<T>(_items));
+    }
+
+    private static T ParseText(string text)
+    {
+        if (typeof(T) == typeof(NetEntityId))
+        {
+            if (NetEntityId.TryParse(text, out NetEntityId id)) return (T)(object)id;
+            throw new FormatException("invalid container value");
+        }
+        if (typeof(T) == typeof(string)) return (T)(object)text;
+        return (T)Convert.ChangeType(text, typeof(T), System.Globalization.CultureInfo.InvariantCulture);
+    }
 }
 
 /// <summary>Replicated dictionary. Mutations are reported per key.</summary>
-public sealed class SyncDict<TKey, TValue> where TKey : notnull
+public sealed class SyncDict<TKey, TValue> : ISyncContainer where TKey : notnull
 {
     private readonly Dictionary<TKey, TValue> _items = new();
+    private ISyncHost? _host;
+    private Component? _owner;
+    private string _attributeId = string.Empty;
 
     /// <summary>Declares a replicated dictionary.</summary>
-    public SyncDict(Scope scope, Authority authority = Authority.Server, Notify notify = Notify.Remote)
+    public SyncDict(Scope scope, Authority authority = Authority.Server, Notify notify = Notify.Remote, string? claimBy = null)
     {
         Scope = scope;
         Authority = authority;
         Notify = notify;
+        ClaimBy = claimBy;
+    }
+
+    public SyncDict<TKey, TValue> Bound(ISyncHost host, Component owner, string attributeId)
+    {
+        ((ISyncContainer)this).Bind(host, owner, attributeId);
+        return this;
     }
 
     /// <summary>Visibility of the dictionary.</summary>
@@ -363,6 +460,9 @@ public sealed class SyncDict<TKey, TValue> where TKey : notnull
     /// <summary>Hook notify mode.</summary>
     public Notify Notify { get; }
 
+    /// <summary>Same-component Sync container that supplies claims for this field.</summary>
+    public string? ClaimBy { get; }
+
     /// <summary>Number of entries.</summary>
     public int Count => _items.Count;
 
@@ -370,12 +470,82 @@ public sealed class SyncDict<TKey, TValue> where TKey : notnull
     public TValue this[TKey key]
     {
         get => _items[key];
-        set => _items[key] = value;
+        set
+        {
+            var old = new Dictionary<TKey, TValue>(_items);
+            _items[key] = value;
+            Changed(old);
+        }
     }
 
     /// <summary>Removes <paramref name="key"/>.</summary>
-    public bool Remove(TKey key) => _items.Remove(key);
+    public bool Remove(TKey key)
+    {
+        if (!_items.ContainsKey(key)) return false;
+        var old = new Dictionary<TKey, TValue>(_items);
+        bool removed = _items.Remove(key);
+        if (removed) Changed(old);
+        return removed;
+    }
 
     /// <summary>Removes every entry.</summary>
-    public void Clear() => _items.Clear();
+    public void Clear()
+    {
+        if (_items.Count == 0) return;
+        var old = new Dictionary<TKey, TValue>(_items);
+        _items.Clear();
+        Changed(old);
+    }
+
+    /// <summary>Returns true when the dictionary contains <paramref name="key"/>.</summary>
+    public bool ContainsKey(TKey key) => _items.ContainsKey(key);
+
+    /// <summary>Enumerates the current entries.</summary>
+    public IReadOnlyDictionary<TKey, TValue> Values => _items;
+
+    string ISyncContainer.AttributeId => _attributeId;
+    Component ISyncContainer.Owner => _owner!;
+    int ISyncContainer.Ordinal => -1;
+    Type ISyncContainer.ValueType => typeof(SyncDict<TKey, TValue>);
+    object? ISyncContainer.BoxedValue => new Dictionary<TKey, TValue>(_items);
+    void ISyncContainer.Bind(ISyncHost host, Component owner, string attributeId)
+    {
+        _host = host;
+        _owner = owner;
+        _attributeId = attributeId ?? string.Empty;
+    }
+    void ISyncContainer.AssignFromRemote(object? value)
+    {
+        _items.Clear();
+        if (value is SyncDict<TKey, TValue> source)
+            foreach (KeyValuePair<TKey, TValue> pair in source._items) _items[pair.Key] = pair.Value;
+        else if (value is IReadOnlyDictionary<TKey, TValue> values)
+            foreach (KeyValuePair<TKey, TValue> pair in values) _items[pair.Key] = pair.Value;
+        else if (value is string text)
+        {
+            foreach (string pairText in text.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                int separator = pairText.IndexOf('=');
+                if (separator <= 0) continue;
+                _items[ParseText<TKey>(pairText.Substring(0, separator))] = ParseText<TValue>(pairText.Substring(separator + 1));
+            }
+        }
+    }
+    void ISyncContainer.ResetForReuse() { _items.Clear(); }
+
+    private void Changed(IReadOnlyDictionary<TKey, TValue> old)
+    {
+        _host?.OnContainerWrite(_owner!, this, old, new Dictionary<TKey, TValue>(_items));
+    }
+
+    private static T ParseText<T>(string text)
+    {
+        if (typeof(T) == typeof(NetEntityId))
+        {
+            if (NetEntityId.TryParse(text, out NetEntityId id)) return (T)(object)id;
+            throw new FormatException("invalid container value");
+        }
+        if (typeof(T) == typeof(string)) return (T)(object)text;
+        return (T)Convert.ChangeType(text, typeof(T), System.Globalization.CultureInfo.InvariantCulture);
+    }
 }

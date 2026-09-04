@@ -33,29 +33,17 @@ public sealed class GeneratedRegistry : EcsRegistry
     /// <inheritdoc />
     public override Component[] CreateComponents(Type entityType)
     {
-        var list = new List<Component>();
-        AddComponents(entityType, list);
-        return list.ToArray();
-    }
-
-    private static void AddComponents(Type entityType, List<Component> list)
-    {
         if (entityType == typeof(BotEntity))
         {
-            list.Add(new IdentityComponent());
-            list.Add(new ChatComponent());
-            return;
+            return BotEntityTemplate.CreateComponents();
         }
         if (entityType == typeof(PlayerEntity))
         {
-            list.Add(new IdentityComponent());
-            list.Add(new ChatComponent());
-            return;
+            return PlayerEntityTemplate.CreateComponents();
         }
         if (entityType == typeof(WorldEntity))
         {
-            list.Add(new WorldSaveComponent());
-            return;
+            return WorldEntityTemplate.CreateComponents();
         }
         throw new InvalidOperationException("Unknown entity type " + entityType.Name);
     }
@@ -101,17 +89,12 @@ public sealed class GeneratedRegistry : EcsRegistry
     {
         return new FieldAttributeDeclaration[]
         {
-            new FieldAttributeDeclaration("ChatComponent.lastMessagePersistOnly", "utf8-string", "persistent", "not-replicated", "server-only"),
             new FieldAttributeDeclaration("ChatComponent.lastMessageText", "utf8-string", "persistent", "not-replicated", "server-only"),
             new FieldAttributeDeclaration("ChatComponent.lastMessageTick", "u64", "persistent", "not-replicated", "server-only"),
-            new FieldAttributeDeclaration("EntityIdentity.claimedMark", "utf8-string", "ephemeral", "replicated", "claim-scoped"),
-            new FieldAttributeDeclaration("EntityIdentity.entityType", "enum:entityType", "ephemeral", "replicated", "room-public"),
-            new FieldAttributeDeclaration("EntityIdentity.unmappedMark", "utf8-string", "ephemeral", "replicated", "room-public"),
             new FieldAttributeDeclaration("IdentityComponent.accountId", "utf8-string", "persistent", "not-replicated", "server-only"),
-            new FieldAttributeDeclaration("IdentityComponent.connected", "bool", "ephemeral", "not-replicated", "server-only"),
-            new FieldAttributeDeclaration("IdentityComponent.connectionGeneration", "u64", "ephemeral", "not-replicated", "server-only"),
-            new FieldAttributeDeclaration("IdentityComponent.disconnectedAtTick", "u64", "ephemeral", "not-replicated", "server-only"),
-            new FieldAttributeDeclaration("IdentityComponent.name", "utf8-string", "persistent", "replicated", "room-public")
+            new FieldAttributeDeclaration("IdentityComponent.friends", "list", "persistent", "replicated", "room-public"),
+            new FieldAttributeDeclaration("IdentityComponent.name", "utf8-string", "persistent", "replicated", "room-public"),
+            new FieldAttributeDeclaration("IdentityComponent.realName", "utf8-string", "persistent", "replicated", "claim-scoped")
         };
     }
 }

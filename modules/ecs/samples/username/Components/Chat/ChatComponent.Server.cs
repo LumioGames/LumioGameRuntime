@@ -22,7 +22,7 @@ public sealed partial class ChatComponent
 
         string name = Get<IdentityComponent>().Name;    // 同一实体上的另一个组件：Get<T>() 没参数 = 自己
         string line = $"{name}: {text}";                // 名字 + 内容拼成一行
-        if (Encoding.UTF8.GetByteCount(line) > 512) return;   // 按拼好的行、按 UTF-8 字节卡：C-1 chat.event.text maxUtf8Bytes = 512
+        if (Encoding.UTF8.GetByteCount(line) > 512) return;   // 按拼好的行限制 UTF-8 字节数
 
         Console.WriteLine($"[server] {name} says: {text}");
 

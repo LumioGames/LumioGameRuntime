@@ -27,6 +27,11 @@ internal static class CodeEmitter
             ComponentModel component = model.Components[i];
             WriteIfChanged(Path.Combine(outputDir, component.Name + ".g.cs"), EmitComponent(component, side), encoding);
         }
+        for (int i = 0; i < model.EntityTypes.Count; i++)
+        {
+            EntityTypeModel entity = model.EntityTypes[i];
+            WriteIfChanged(Path.Combine(outputDir, entity.Name + ".Template.g.cs"), EmitTemplate(entity, model.EntityTypes, model.Components), encoding);
+        }
 
         if (!string.IsNullOrEmpty(jsonPath))
         {
@@ -57,30 +62,6 @@ internal static class CodeEmitter
             }
         }
 
-        rows.Add(new FieldAttributeDeclaration(
-            "EntityIdentity.entityType",
-            "enum:entityType",
-            FieldAnnotationRules.PersistenceEphemeral,
-            FieldAnnotationRules.ReplicationReplicated,
-            FieldAnnotationRules.VisibilityRoomPublic));
-        rows.Add(new FieldAttributeDeclaration(
-            "EntityIdentity.claimedMark",
-            "utf8-string",
-            FieldAnnotationRules.PersistenceEphemeral,
-            FieldAnnotationRules.ReplicationReplicated,
-            FieldAnnotationRules.VisibilityClaimScoped));
-        rows.Add(new FieldAttributeDeclaration(
-            "EntityIdentity.unmappedMark",
-            "utf8-string",
-            FieldAnnotationRules.PersistenceEphemeral,
-            FieldAnnotationRules.ReplicationReplicated,
-            FieldAnnotationRules.VisibilityRoomPublic));
-        rows.Add(new FieldAttributeDeclaration(
-            "ChatComponent.lastMessagePersistOnly",
-            "utf8-string",
-            FieldAnnotationRules.PersistencePersistent,
-            FieldAnnotationRules.ReplicationNotReplicated,
-            FieldAnnotationRules.VisibilityServerOnly));
         rows.Sort(static (left, right) => string.CompareOrdinal(left.AttributeId, right.AttributeId));
         var unique = new List<FieldAttributeDeclaration>();
         for (int i = 0; i < rows.Count; i++)
@@ -162,23 +143,14 @@ internal static class CodeEmitter
         sb.AppendLine("    /// <inheritdoc />");
         sb.AppendLine("    public override Component[] CreateComponents(Type entityType)");
         sb.AppendLine("    {");
-        sb.AppendLine("        var list = new List<Component>();");
-        sb.AppendLine("        AddComponents(entityType, list);");
-        sb.AppendLine("        return list.ToArray();");
-        sb.AppendLine("    }");
-        sb.AppendLine();
-        sb.AppendLine("    private static void AddComponents(Type entityType, List<Component> list)");
-        sb.AppendLine("    {");
         for (int i = 0; i < model.EntityTypes.Count; i++)
         {
             EntityTypeModel entity = model.EntityTypes[i];
             sb.AppendLine("        if (entityType == typeof(" + entity.Name + "))");
             sb.AppendLine("        {");
-            if (entity.BaseName is not null)
-                sb.AppendLine("            AddComponents(typeof(" + entity.BaseName + "), list);");
-            for (int h = 0; h < entity.HasTypes.Count; h++)
-                sb.AppendLine("            list.Add(new " + entity.HasTypes[h] + "());");
-            sb.AppendLine("            return;");
+            var components = new List<string>();
+            CollectEntityComponents(entity, model.EntityTypes, components);
+            sb.AppendLine("            return " + entity.Name + "Template.CreateComponents();");
             sb.AppendLine("        }");
         }
 
@@ -286,12 +258,12 @@ internal static class CodeEmitter
         sb.AppendLine();
         sb.AppendLine("namespace " + component.Namespace + ";");
         sb.AppendLine();
-        sb.AppendLine("public sealed partial class " + component.Name + " : IGeneratedComponent");
+        sb.AppendLine("public sealed partial class " + component.Name + " : IGeneratedComponent, IGeneratedSyncMetadata");
         sb.AppendLine("{");
         for (int i = 0; i < component.Fields.Count; i++)
         {
             FieldModel field = component.Fields[i];
-            if (!field.IsSync) continue;
+            if (!field.IsSync || field.IsContainer) continue;
             sb.AppendLine("    partial void On" + field.Name + "Changing(" + field.ClrType + " old, " + field.ClrType + " @new, ChangeReason reason);");
             sb.AppendLine("    partial void On" + field.Name + "Changed(" + field.ClrType + " old, " + field.ClrType + " @new, ChangeReason reason);");
         }
@@ -307,6 +279,7 @@ internal static class CodeEmitter
             if (!generateStub) continue;
             string emit = rpc.Kind == "ServerRpc" ? "EmitServerRpc" : "EmitClientRpc";
             sb.Append("    public partial void " + rpc.Name + "(" + rpc.Signature + ") => " + emit + "(\"" + rpc.Name + "\"");
+            if (rpc.Kind == "ClientRpc") sb.Append(", Scope." + rpc.Scope);
             for (int p = 0; p < rpc.ParamNames.Length; p++)
             {
                 sb.Append(", ");
@@ -324,8 +297,13 @@ internal static class CodeEmitter
         {
             FieldModel field = component.Fields[i];
             if (!field.IsSync) continue;
-            sb.AppendLine("        " + field.Name + " = " + field.Name + ".Bound(host, this, " + ordinal.ToString(CultureInfo.InvariantCulture) + ", \"" + component.Name + "." + Camel(field.Name) + "\");");
-            ordinal++;
+            if (field.IsContainer)
+                sb.AppendLine("        " + field.Name + ".Bound(host, this, \"" + component.Name + "." + Camel(field.Name) + "\");");
+            else
+            {
+                sb.AppendLine("        " + field.Name + " = " + field.Name + ".Bound(host, this, " + ordinal.ToString(CultureInfo.InvariantCulture) + ", \"" + component.Name + "." + Camel(field.Name) + "\");");
+                ordinal++;
+            }
         }
 
         sb.AppendLine("    }");
@@ -339,7 +317,7 @@ internal static class CodeEmitter
         for (int i = 0; i < component.Fields.Count; i++)
         {
             FieldModel field = component.Fields[i];
-            if (!field.IsSync) continue;
+            if (!field.IsSync || field.IsContainer) continue;
             sb.AppendLine("        if (ordinal == " + ordinal.ToString(CultureInfo.InvariantCulture) + ") On" + field.Name + "Changing((" + field.ClrType + ")oldValue!, (" + field.ClrType + ")newValue!, reason);");
             ordinal++;
         }
@@ -352,7 +330,7 @@ internal static class CodeEmitter
         for (int i = 0; i < component.Fields.Count; i++)
         {
             FieldModel field = component.Fields[i];
-            if (!field.IsSync) continue;
+            if (!field.IsSync || field.IsContainer) continue;
             sb.AppendLine("        if (ordinal == " + ordinal.ToString(CultureInfo.InvariantCulture) + ") On" + field.Name + "Changed((" + field.ClrType + ")oldValue!, (" + field.ClrType + ")newValue!, reason);");
             ordinal++;
         }
@@ -419,7 +397,12 @@ internal static class CodeEmitter
             FieldModel field = component.Fields[i];
             if (!field.Persist) continue;
             string id = component.Name + "." + Camel(field.Name);
-            string read = field.IsSync ? field.Name + ".Value" : field.Name;
+            string read = field.IsSync && !field.IsContainer ? field.Name + ".Value" : field.Name;
+            if (field.IsContainer)
+            {
+                sb.AppendLine("        writer.WriteContainer(\"" + id + "\", " + field.Name + ");");
+                continue;
+            }
             if (field.ClrType == "string")
                 sb.AppendLine("        writer.WriteString(\"" + id + "\", " + read + ");");
             else if (field.ClrType == "ulong")
@@ -435,8 +418,14 @@ internal static class CodeEmitter
         for (int i = 0; i < component.Fields.Count; i++)
         {
             FieldModel field = component.Fields[i];
-            if (!field.IsSync) continue;
             string id = component.Name + "." + Camel(field.Name);
+            if (field.IsContainer)
+            {
+                if (field.IsSync)
+                    sb.AppendLine("        if (writer is IContainerFieldWriter containerWriter) containerWriter.WriteContainer(\"" + id + "\", " + field.Name + ");");
+                continue;
+            }
+            if (!field.IsSync) continue;
             if (field.ClrType == "string")
                 sb.AppendLine("        writer.WriteString(\"" + id + "\", " + field.Name + ".Value);");
             else if (field.ClrType == "ulong")
@@ -454,6 +443,12 @@ internal static class CodeEmitter
             FieldModel field = component.Fields[i];
             if (!field.Persist) continue;
             string id = component.Name + "." + Camel(field.Name);
+            if (field.IsContainer)
+            {
+                sb.AppendLine("        if (reader.TryReadContainer(\"" + id + "\", out object " + Camel(field.Name) + "Restore))");
+                sb.AppendLine("            ((ISyncContainer)" + field.Name + ").AssignFromRemote(" + Camel(field.Name) + "Restore);");
+                continue;
+            }
             if (field.ClrType == "string")
             {
                 sb.AppendLine("        if (reader.TryReadString(\"" + id + "\", out string " + Camel(field.Name) + "Restore))");
@@ -479,7 +474,7 @@ internal static class CodeEmitter
         {
             FieldModel field = component.Fields[i];
             string camel = Camel(field.Name);
-            string read = field.IsSync ? field.Name + ".Value" : field.Name;
+            string read = field.IsSync && !field.IsContainer ? field.Name + ".Value" : field.Name;
             sb.AppendLine("        if (string.Equals(fieldId, \"" + camel + "\", StringComparison.Ordinal) || string.Equals(fieldId, \"" + field.Name + "\", StringComparison.Ordinal)) return " + read + ";");
         }
 
@@ -494,20 +489,36 @@ internal static class CodeEmitter
             string camel = Camel(field.Name);
             sb.AppendLine("        if (string.Equals(fieldId, \"" + camel + "\", StringComparison.Ordinal) || string.Equals(fieldId, \"" + field.Name + "\", StringComparison.Ordinal))");
             sb.AppendLine("        {");
-            if (field.IsSync)
+            if (field.IsSync && !field.IsContainer)
             {
                 sb.AppendLine("            if (silent) " + field.Name + ".SetSilent((" + field.ClrType + ")value!);");
                 sb.AppendLine("            else " + field.Name + ".Value = (" + field.ClrType + ")value!;");
             }
             else
             {
-                sb.AppendLine("            " + field.Name + " = (" + field.ClrType + ")value!;");
+                if (field.IsContainer)
+                    sb.AppendLine("            ((ISyncContainer)" + field.Name + ").AssignFromRemote(value);");
+                else
+                    sb.AppendLine("            " + field.Name + " = (" + field.ClrType + ")value!;");
             }
 
             sb.AppendLine("            return;");
             sb.AppendLine("        }");
         }
 
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    bool IGeneratedSyncMetadata.TryGetSyncField(string fieldId, out ISyncField field)");
+        sb.AppendLine("    {");
+        for (int i = 0; i < component.Fields.Count; i++)
+        {
+            FieldModel item = component.Fields[i];
+            if (!item.IsSync || item.IsContainer) continue;
+            string camel = Camel(item.Name);
+            sb.AppendLine("        if (string.Equals(fieldId, \"" + camel + "\", StringComparison.Ordinal) || string.Equals(fieldId, \"" + item.Name + "\", StringComparison.OrdinalIgnoreCase)) { field = " + item.Name + "; return true; }");
+        }
+        sb.AppendLine("        field = null!;");
+        sb.AppendLine("        return false;");
         sb.AppendLine("    }");
         sb.AppendLine("}");
         return sb.ToString();
@@ -519,10 +530,54 @@ internal static class CodeEmitter
         return char.ToLowerInvariant(name[0]) + name.Substring(1);
     }
 
+    private static string EmitTemplate(EntityTypeModel entity, List<EntityTypeModel> all, List<ComponentModel> components)
+    {
+        var names = new List<string>();
+        CollectEntityComponents(entity, all, names);
+        var sb = new StringBuilder();
+        sb.AppendLine("// <auto-generated/>");
+        sb.AppendLine("#nullable enable");
+        sb.AppendLine("using Lumio.GameRuntime.Ecs;");
+        var namespaces = new HashSet<string>(StringComparer.Ordinal);
+        for (int i = 0; i < components.Count; i++) namespaces.Add(components[i].Namespace);
+        for (int i = 0; i < all.Count; i++) namespaces.Add(all[i].Namespace);
+        foreach (string ns in namespaces) sb.AppendLine("using " + ns + ";");
+        sb.AppendLine("namespace " + entity.Namespace + ";");
+        sb.AppendLine();
+        sb.AppendLine("internal sealed class " + entity.Name + "Template");
+        sb.AppendLine("{");
+        sb.AppendLine("    internal static readonly int ComponentCount = " + names.Count.ToString(CultureInfo.InvariantCulture) + ";");
+        sb.AppendLine("    internal static readonly int ObserverIndex = " + names.IndexOf("ObserverComponent").ToString(CultureInfo.InvariantCulture) + ";");
+        sb.AppendLine("    internal static Component[] CreateComponents() => new Component[]");
+        sb.AppendLine("    {");
+        for (int i = 0; i < names.Count; i++)
+            sb.AppendLine("        new " + names[i] + "()" + (i + 1 == names.Count ? "" : ","));
+        sb.AppendLine("    };");
+        sb.AppendLine("}");
+        return sb.ToString();
+    }
+
+    private static void CollectEntityComponents(EntityTypeModel entity, IReadOnlyList<EntityTypeModel> all, List<string> result)
+    {
+        if (entity.BaseName is not null)
+        {
+            for (int i = 0; i < all.Count; i++)
+                if (string.Equals(all[i].Name, entity.BaseName, StringComparison.Ordinal))
+                    CollectEntityComponents(all[i], all, result);
+        }
+        for (int i = 0; i < entity.HasTypes.Count; i++)
+        {
+            bool present = false;
+            for (int r = 0; r < result.Count; r++)
+                if (string.Equals(result[r], entity.HasTypes[i], StringComparison.Ordinal)) { present = true; break; }
+            if (!present) result.Add(entity.HasTypes[i]);
+        }
+    }
+
     private static string Visibility(string scope) => scope switch
     {
         "Aoi" => FieldAnnotationRules.VisibilityAoiScoped,
-        "Owner" => FieldAnnotationRules.VisibilityServerOnly,
+        "Owner" => FieldAnnotationRules.VisibilityRoomPublic,
         "Claim" => FieldAnnotationRules.VisibilityClaimScoped,
         _ => FieldAnnotationRules.VisibilityRoomPublic,
     };
@@ -534,6 +589,8 @@ internal static class CodeEmitter
         "bool" => "bool",
         "int" => "i32",
         "uint" => "u32",
+        _ when clr.StartsWith("SyncList<", StringComparison.Ordinal) => "list",
+        _ when clr.StartsWith("SyncDict<", StringComparison.Ordinal) => "dict",
         _ => "utf8-string",
     };
 

@@ -12,4 +12,10 @@ public sealed partial class IdentityComponent : Component
     /// 实体是 player 还是 bot 看 EntityType（world.TypeOf(id)），不另设字段。
     /// </summary>
     [Persist] public Sync<string> Name = new(Scope.Room, Authority.Owner);
+
+    /// <summary>Owner-maintained observer allow-list used by claim-scoped fields.</summary>
+    [Persist] public SyncList<NetEntityId> Friends = new(Scope.Owner, Authority.Owner);
+
+    /// <summary>Claim-scoped identity data; the generator validates the same-component source.</summary>
+    [Persist] public Sync<string> RealName = new(Scope.Claim, claimBy: nameof(Friends));
 }

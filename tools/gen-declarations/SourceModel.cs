@@ -22,6 +22,8 @@ internal sealed class FieldModel
     internal string Scope = "Room";
     internal string Authority = "Server";
     internal string Notify = "Remote";
+    internal string? ClaimBy;
+    internal bool IsContainer;
 }
 
 internal sealed class RpcModel
@@ -172,7 +174,7 @@ internal static class SourceScanner
             }
         }
 
-        foreach (Match field in Regex.Matches(text, @"(?:\[Persist\]\s*)?public\s+Sync<([^>]+)>\s+([A-Za-z0-9_]+)\s*=\s*new\s*\(\s*Scope\.([A-Za-z]+)(?:\s*,\s*Authority\.([A-Za-z]+))?(?:\s*,\s*Notify\.([A-Za-z]+))?\s*\)"))
+        foreach (Match field in Regex.Matches(text, @"(?:\[Persist\]\s*)?public\s+Sync<([^>]+)>\s+([A-Za-z0-9_]+)\s*=\s*new\s*\(\s*Scope\.([A-Za-z]+)(?:\s*,\s*Authority\.([A-Za-z]+))?(?:\s*,\s*Notify\.([A-Za-z]+))?(?:\s*,\s*claimBy\s*:\s*nameof\(([A-Za-z0-9_]+)\))?\s*\)"))
         {
             bool persist = field.Value.Contains("[Persist]", StringComparison.Ordinal) || IndexHasPersist(text, field.Index);
             component.Fields.Add(new FieldModel
@@ -184,6 +186,23 @@ internal static class SourceScanner
                 Scope = field.Groups[3].Value,
                 Authority = field.Groups[4].Success && field.Groups[4].Length > 0 ? field.Groups[4].Value : "Server",
                 Notify = field.Groups[5].Success && field.Groups[5].Length > 0 ? field.Groups[5].Value : "Remote",
+                ClaimBy = field.Groups[6].Success && field.Groups[6].Length > 0 ? field.Groups[6].Value : null,
+            });
+        }
+
+        foreach (Match field in Regex.Matches(text, @"(?:\[Persist\]\s*)?public\s+(SyncList<[^>]+>|SyncDict<[^>]+>)\s+([A-Za-z0-9_]+)\s*=\s*new\s*\(\s*Scope\.([A-Za-z]+)(?:\s*,\s*Authority\.([A-Za-z]+))?(?:\s*,\s*Notify\.([A-Za-z]+))?(?:\s*,\s*claimBy\s*:\s*nameof\(([A-Za-z0-9_]+)\))?\s*\)"))
+        {
+            component.Fields.Add(new FieldModel
+            {
+                Name = field.Groups[2].Value,
+                ClrType = field.Groups[1].Value.Trim(),
+                Persist = field.Value.Contains("[Persist]", StringComparison.Ordinal) || IndexHasPersist(text, field.Index),
+                IsSync = true,
+                IsContainer = true,
+                Scope = field.Groups[3].Value,
+                Authority = field.Groups[4].Success && field.Groups[4].Length > 0 ? field.Groups[4].Value : "Server",
+                Notify = field.Groups[5].Success && field.Groups[5].Length > 0 ? field.Groups[5].Value : "Remote",
+                ClaimBy = field.Groups[6].Success && field.Groups[6].Length > 0 ? field.Groups[6].Value : null,
             });
         }
 
@@ -260,6 +279,30 @@ internal static class SourceScanner
             EntityTypeModel entity = model.EntityTypes[i];
             if (entity.HasTypes.Count == 0 && entity.BaseName is null)
                 model.LintErrors.Add("EntityType " + entity.Name + " is missing [Has] components");
+            if (!entity.World)
+            {
+                bool observer = false;
+                for (int h = 0; h < entity.HasTypes.Count; h++)
+                    if (string.Equals(entity.HasTypes[h], "ObserverComponent", StringComparison.Ordinal)) { observer = true; break; }
+                if (!observer) model.LintErrors.Add("EntityType " + entity.Name + " must declare [Has(typeof(ObserverComponent))]");
+            }
+        }
+        for (int i = 0; i < model.Components.Count; i++)
+        {
+            ComponentModel component = model.Components[i];
+            for (int f = 0; f < component.Fields.Count; f++)
+            {
+                FieldModel field = component.Fields[f];
+                if (field.Scope != "Claim") continue;
+                if (string.IsNullOrEmpty(field.ClaimBy))
+                {
+                    model.LintErrors.Add(component.Name + "." + field.Name + ": Scope.Claim requires claimBy");
+                    continue;
+                }
+                FieldModel? source = component.Fields.Find(candidate => string.Equals(candidate.Name, field.ClaimBy, StringComparison.Ordinal));
+                if (source is null || !source.IsContainer)
+                    model.LintErrors.Add(component.Name + "." + field.Name + ": claimBy must name a SyncList or SyncDict on the same component");
+            }
         }
     }
 

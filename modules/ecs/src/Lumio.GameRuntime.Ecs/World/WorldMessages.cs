@@ -26,7 +26,17 @@ public sealed class InputCommandMessage : WorldMessage
         MappingId = mappingId ?? throw new ArgumentNullException(nameof(mappingId));
         Sender = sender;
         Payload = payload;
+        Commands = new[] { new InputCommandPart(MappingId, Payload) };
         Connection = connection;
+    }
+
+    public InputCommandMessage(NetEntityId sender, IReadOnlyList<InputCommandPart> commands, string? connection = null)
+    {
+        Sender = sender;
+        Commands = commands ?? throw new ArgumentNullException(nameof(commands));
+        Connection = connection;
+        MappingId = Commands.Count == 0 ? string.Empty : Commands[0].MappingId;
+        Payload = Commands.Count == 0 ? ReadOnlyMemory<byte>.Empty : Commands[0].Payload;
     }
 
     /// <summary>C-1 mapping id (<c>chat.input</c>, <c>field.write</c>, or a generated rpc id).</summary>
@@ -37,6 +47,20 @@ public sealed class InputCommandMessage : WorldMessage
 
     /// <summary>LumioBinV1 payload.</summary>
     public ReadOnlyMemory<byte> Payload { get; }
+
+    public IReadOnlyList<InputCommandPart> Commands { get; }
+}
+
+public readonly struct InputCommandPart
+{
+    public InputCommandPart(string mappingId, ReadOnlyMemory<byte> payload)
+    {
+        MappingId = mappingId ?? throw new ArgumentNullException(nameof(mappingId));
+        Payload = payload;
+    }
+
+    public string MappingId { get; }
+    public ReadOnlyMemory<byte> Payload { get; }
 }
 
 /// <summary>First client message after connect: world instance id + this connection's entity.</summary>
@@ -44,9 +68,16 @@ public sealed class WelcomeMessage : WorldMessage
 {
     /// <summary>Creates a welcome message.</summary>
     public WelcomeMessage(ulong instanceId, NetEntityId self, string? connection = null)
+        : this(instanceId, self, 1UL, connection)
+    {
+    }
+
+    /// <summary>Creates a welcome message with the current binding generation.</summary>
+    public WelcomeMessage(ulong instanceId, NetEntityId self, ulong connectionGeneration, string? connection = null)
     {
         InstanceId = instanceId;
         Self = self;
+        ConnectionGeneration = connectionGeneration;
         Connection = connection;
     }
 
@@ -55,6 +86,9 @@ public sealed class WelcomeMessage : WorldMessage
 
     /// <summary>This connection's bound entity. Applied to <see cref="World.Self"/> at commit.</summary>
     public NetEntityId Self { get; }
+
+    /// <summary>Binding generation delivered with this welcome.</summary>
+    public ulong ConnectionGeneration { get; }
 }
 
 /// <summary>One create record: entity type + net id + visible field values.</summary>
@@ -107,12 +141,19 @@ public readonly struct FieldChange
 {
     /// <summary>Creates a field change.</summary>
     public FieldChange(NetEntityId netEntityId, string componentId, string fieldId, object? value, ChangeReason reason)
+        : this(netEntityId, componentId, fieldId, value, reason, default)
+    {
+    }
+
+    /// <summary>Creates a field change optionally addressed to one observer.</summary>
+    public FieldChange(NetEntityId netEntityId, string componentId, string fieldId, object? value, ChangeReason reason, NetEntityId observerId)
     {
         NetEntityId = netEntityId;
         ComponentId = componentId;
         FieldId = fieldId;
         Value = value;
         Reason = reason;
+        ObserverId = observerId;
     }
 
     /// <summary>Target entity.</summary>
@@ -129,6 +170,9 @@ public readonly struct FieldChange
 
     /// <summary>Sync or Correction.</summary>
     public ChangeReason Reason { get; }
+
+    /// <summary>Observer that should receive a correction; zero means normal broadcast.</summary>
+    public NetEntityId ObserverId { get; }
 }
 
 /// <summary>One ClientRpc invocation in a world-change pack.</summary>
@@ -143,7 +187,8 @@ public readonly struct ClientRpcRecord
         ulong messageId,
         ulong roomSequence,
         NetEntityId sender,
-        ulong appliedTick)
+        ulong appliedTick,
+        Scope scope = Scope.Room)
     {
         Target = target;
         ComponentId = componentId;
@@ -153,6 +198,7 @@ public readonly struct ClientRpcRecord
         RoomSequence = roomSequence;
         Sender = sender;
         AppliedTick = appliedTick;
+        Scope = scope;
     }
 
     /// <summary>Entity whose component receives the RPC.</summary>
@@ -178,6 +224,7 @@ public readonly struct ClientRpcRecord
 
     /// <summary>Tick the event was committed on.</summary>
     public ulong AppliedTick { get; }
+    public Scope Scope { get; }
 }
 
 /// <summary>
@@ -193,7 +240,8 @@ public sealed class WorldChangeMessage : WorldMessage
         IReadOnlyList<FieldChange> fields,
         IReadOnlyList<NetEntityId> destroys,
         IReadOnlyList<ClientRpcRecord> rpcs,
-        string? connection = null)
+        string? connection = null,
+        NetEntityId observerId = default)
     {
         Tick = tick;
         Creates = creates ?? Array.Empty<CreateRecord>();
@@ -201,6 +249,7 @@ public sealed class WorldChangeMessage : WorldMessage
         Destroys = destroys ?? Array.Empty<NetEntityId>();
         Rpcs = rpcs ?? Array.Empty<ClientRpcRecord>();
         Connection = connection;
+        ObserverId = observerId;
     }
 
     /// <summary>Authoritative tick of this pack.</summary>
@@ -217,4 +266,7 @@ public sealed class WorldChangeMessage : WorldMessage
 
     /// <summary>ClientRpcs stamped this tick.</summary>
     public IReadOnlyList<ClientRpcRecord> Rpcs { get; }
+
+    /// <summary>Observer identity addressed by this pack. Zero means broadcast/unaddressed.</summary>
+    public NetEntityId ObserverId { get; }
 }

@@ -1,12 +1,5 @@
 [
   {
-    "attributeId": "ChatComponent.lastMessagePersistOnly",
-    "persistence": "persistent",
-    "replication": "not-replicated",
-    "valueType": "utf8-string",
-    "visibility": "server-only"
-  },
-  {
     "attributeId": "ChatComponent.lastMessageText",
     "persistence": "persistent",
     "replication": "not-replicated",
@@ -21,27 +14,6 @@
     "visibility": "server-only"
   },
   {
-    "attributeId": "EntityIdentity.claimedMark",
-    "persistence": "ephemeral",
-    "replication": "replicated",
-    "valueType": "utf8-string",
-    "visibility": "claim-scoped"
-  },
-  {
-    "attributeId": "EntityIdentity.entityType",
-    "persistence": "ephemeral",
-    "replication": "replicated",
-    "valueType": "enum:entityType",
-    "visibility": "room-public"
-  },
-  {
-    "attributeId": "EntityIdentity.unmappedMark",
-    "persistence": "ephemeral",
-    "replication": "replicated",
-    "valueType": "utf8-string",
-    "visibility": "room-public"
-  },
-  {
     "attributeId": "IdentityComponent.accountId",
     "persistence": "persistent",
     "replication": "not-replicated",
@@ -49,25 +21,11 @@
     "visibility": "server-only"
   },
   {
-    "attributeId": "IdentityComponent.connected",
-    "persistence": "ephemeral",
-    "replication": "not-replicated",
-    "valueType": "bool",
-    "visibility": "server-only"
-  },
-  {
-    "attributeId": "IdentityComponent.connectionGeneration",
-    "persistence": "ephemeral",
-    "replication": "not-replicated",
-    "valueType": "u64",
-    "visibility": "server-only"
-  },
-  {
-    "attributeId": "IdentityComponent.disconnectedAtTick",
-    "persistence": "ephemeral",
-    "replication": "not-replicated",
-    "valueType": "u64",
-    "visibility": "server-only"
+    "attributeId": "IdentityComponent.friends",
+    "persistence": "persistent",
+    "replication": "replicated",
+    "valueType": "list",
+    "visibility": "room-public"
   },
   {
     "attributeId": "IdentityComponent.name",
@@ -75,5 +33,12 @@
     "replication": "replicated",
     "valueType": "utf8-string",
     "visibility": "room-public"
+  },
+  {
+    "attributeId": "IdentityComponent.realName",
+    "persistence": "persistent",
+    "replication": "replicated",
+    "valueType": "utf8-string",
+    "visibility": "claim-scoped"
   }
 ]

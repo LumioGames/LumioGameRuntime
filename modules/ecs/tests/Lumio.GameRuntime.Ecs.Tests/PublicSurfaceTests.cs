@@ -6,11 +6,8 @@ namespace Lumio.GameRuntime.Ecs.Tests;
 public sealed class PublicSurfaceTests
 {
     [Fact]
-    public void ReferenceStorageAdapterIsNotPublicStableSurface()
+    public void LegacyStorageAdapterIsAbsent()
     {
-        Type adapterType = typeof(ReferenceWorldStorageAdapter);
-
-        Assert.False(adapterType.IsPublic);
-        Assert.False(adapterType.IsNestedPublic);
+        Assert.DoesNotContain(typeof(EcsModule).Assembly.GetTypes(), static type => type.Name == "ReferenceWorldStorageAdapter");
     }
 }

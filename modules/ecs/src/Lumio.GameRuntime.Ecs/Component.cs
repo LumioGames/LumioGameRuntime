@@ -77,9 +77,12 @@ public abstract class Component
 
     /// <summary>Generated ClientRpc send stub calls this on the server.</summary>
     protected internal void EmitClientRpc(string method, params object?[] args)
+        => EmitClientRpc(method, Scope.Room, args);
+
+    protected internal void EmitClientRpc(string method, Scope scope, params object?[] args)
     {
         if (WorldInternal is null) return;
-        WorldInternal.EnqueueClientRpc(this, method, args ?? Array.Empty<object?>());
+        WorldInternal.EnqueueClientRpc(this, method, scope, args ?? Array.Empty<object?>());
     }
 
     /// <summary>Generated ServerRpc send stub calls this on the client.</summary>
@@ -124,12 +127,25 @@ public interface IGeneratedComponent
     void WriteField(string fieldId, object? value, bool silent);
 }
 
+/// <summary>Generated metadata bridge used by the World Manager without reflection.</summary>
+public interface IGeneratedSyncMetadata
+{
+    bool TryGetSyncField(string fieldId, out ISyncField field);
+}
+
 /// <summary>Writes persistable members into a snapshot.</summary>
 public interface IPersistWriter
 {
     void WriteString(string attributeId, string? value);
     void WriteUInt64(string attributeId, ulong value);
     void WriteBoolean(string attributeId, bool value);
+    void WriteContainer(string attributeId, object value) { }
+}
+
+/// <summary>Optional generated bridge for replicated container snapshots.</summary>
+public interface IContainerFieldWriter
+{
+    void WriteContainer(string attributeId, object value);
 }
 
 /// <summary>Reads persistable members from a snapshot.</summary>
@@ -138,4 +154,9 @@ public interface IPersistReader
     bool TryReadString(string attributeId, out string value);
     bool TryReadUInt64(string attributeId, out ulong value);
     bool TryReadBoolean(string attributeId, out bool value);
+    bool TryReadContainer(string attributeId, out object value)
+    {
+        value = string.Empty;
+        return false;
+    }
 }

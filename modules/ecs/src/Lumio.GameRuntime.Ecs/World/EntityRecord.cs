@@ -3,12 +3,6 @@ using System.Collections.Generic;
 
 namespace Lumio.GameRuntime.Ecs;
 
-internal enum Presence
-{
-    Live = 0,
-    Tombstoned = 1,
-}
-
 internal sealed class EntityRecord
 {
     internal EntityRecord(NetEntityId id, Type entityType, Component[] components)
@@ -16,52 +10,46 @@ internal sealed class EntityRecord
         Id = id;
         EntityType = entityType;
         Components = components;
-        Presence = Presence.Live;
-        Appeared = false;
-        Lifecycle = new List<string>();
+        _byType = new Dictionary<Type, Component>();
+        _byName = new Dictionary<string, Component>(StringComparer.Ordinal);
+        for (int i = 0; i < components.Length; i++)
+        {
+            Component component = components[i];
+            _byType[component.GetType()] = component;
+            _byName[component.GetType().Name] = component;
+        }
     }
-
-    internal List<string> Lifecycle;
 
     internal NetEntityId Id;
     internal Type EntityType;
     internal Component[] Components;
-    internal Presence Presence;
+    private readonly Dictionary<Type, Component> _byType;
+    private readonly Dictionary<string, Component> _byName;
     internal bool Appeared;
     internal bool Hydrated;
     internal ulong Revision = 1;
+    internal bool AwakeCalled;
+    internal bool PostAttributeCalled;
+    internal bool Started;
+    internal ulong CreatedTick;
 
     internal T Get<T>() where T : Component
     {
+        if (_byType.TryGetValue(typeof(T), out Component? exact)) return (T)exact;
         for (int i = 0; i < Components.Length; i++)
-        {
             if (Components[i] is T match) return match;
-        }
-
         throw new InvalidOperationException("Component " + typeof(T).Name + " is not on entity " + Id.ToHex());
     }
 
-    internal bool TryGet(Type type, out Component component)
+    internal Component? Find(string componentName)
     {
-        for (int i = 0; i < Components.Length; i++)
-        {
-            if (type.IsInstanceOfType(Components[i]))
-            {
-                component = Components[i];
-                return true;
-            }
-        }
-
-        component = null!;
-        return false;
+        return _byName.TryGetValue(componentName, out Component? component) ? component : null;
     }
 
-    internal IEnumerable<T> OfType<T>() where T : Component
+    internal System.Collections.Generic.IEnumerable<T> OfType<T>() where T : Component
     {
         for (int i = 0; i < Components.Length; i++)
-        {
             if (Components[i] is T match) yield return match;
-        }
     }
 }
 
@@ -74,13 +62,8 @@ public sealed class Entity
         Id = id;
     }
 
-    /// <summary>Owning world.</summary>
     public World World { get; }
-
-    /// <summary>Network identity.</summary>
     public NetEntityId Id { get; }
-
-    /// <summary>Reads a component on this entity.</summary>
     public T Get<T>() where T : Component => World.Get<T>(Id);
 }
 
@@ -91,39 +74,27 @@ public sealed class EntityOrder
     {
         World = world;
         EntityType = entityType;
-        Components = world.Registry.CreateComponents(entityType);
-        for (int i = 0; i < Components.Length; i++)
-            Components[i].WorldInternal = world;
+        Components = world.RentComponents(entityType);
+        for (int i = 0; i < Components.Length; i++) Components[i].WorldInternal = world;
     }
 
     internal World World { get; }
     internal Type EntityType { get; }
     internal Component[] Components { get; }
-    /// <summary>Identity issued at commit. Default until the create is committed.</summary>
     public NetEntityId AssignedId { get; internal set; }
-
     internal bool Issued;
 
-    /// <summary>Reads a component on the not-yet-committed entity so birth values can be set.</summary>
     public T Get<T>() where T : Component
     {
         for (int i = 0; i < Components.Length; i++)
-        {
             if (Components[i] is T match) return match;
-        }
-
         throw new InvalidOperationException("Component " + typeof(T).Name + " is not on the create order.");
     }
 
-    /// <summary>Finds a birth component by CLR type name.</summary>
     public Component? NamedComponent(string typeName)
     {
         for (int i = 0; i < Components.Length; i++)
-        {
-            if (string.Equals(Components[i].GetType().Name, typeName, StringComparison.Ordinal))
-                return Components[i];
-        }
-
+            if (string.Equals(Components[i].GetType().Name, typeName, StringComparison.Ordinal)) return Components[i];
         return null;
     }
 }
@@ -132,18 +103,14 @@ public sealed class EntityOrder
 public sealed class CommandBuffer
 {
     private readonly World _world;
-
     internal CommandBuffer(World world) => _world = world;
 
-    /// <summary>Queues a template copy of <typeparamref name="T"/>. The identity is issued at commit.</summary>
     public EntityOrder Create<T>() where T : class => CreateFor(typeof(T));
 
-    /// <summary>Queues a template copy of <paramref name="type"/>.</summary>
     public EntityOrder CreateFor(Type type)
     {
         if (type is null) throw new ArgumentNullException(nameof(type));
-        if (!_world.Registry.TryResolveEntityType(type.Name, out Type resolved))
-            resolved = type;
+        if (!_world.Registry.TryResolveEntityType(type.Name, out Type resolved)) resolved = type;
         var order = new EntityOrder(_world, resolved);
         _world.PendingCreates.Add(order);
         return order;

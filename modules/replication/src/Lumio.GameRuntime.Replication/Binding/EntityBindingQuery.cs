@@ -1,116 +1,85 @@
 using System;
 using System.Collections.Generic;
-using System.Text;
-using System.Threading;
+using System.Text.RegularExpressions;
 using Lumio.GameRuntime.Ecs;
 using Lumio.GameRuntime.Ecs.Annotations;
-using Lumio.GameRuntime.Replication.Mapping;
-using NetEntityId = Lumio.GameRuntime.Ecs.NetEntityId;
+using MappingRegistry = Lumio.GameRuntime.Replication.Mapping.MappingRegistry;
 
 namespace Lumio.GameRuntime.Replication.Binding;
 
-/// <summary>Host-facing admission and AttributeId query adapter over the unique World Manager.</summary>
+/// <summary>Admission and typed AttributeId queries over the single World Manager.</summary>
 public sealed class EntityBindingQuery : IDisposable
 {
     public const int MaxBindingsPerRoom = 4096;
     public const int MaxQueryDetailBytes = 256;
-
+    private static readonly Regex AttributeIdPattern = new("^[A-Z][A-Za-z0-9]*\\.[a-z][A-Za-z0-9]*$", RegexOptions.CultureInvariant);
     private readonly object _gate = new();
     private readonly WorldManager _manager;
-    private readonly bool _ownsManager;
     private readonly Dictionary<string, AttributeDeclaration> _declarations = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, NetEntityId> _connectionToEntity = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _roomByConnection = new(StringComparer.Ordinal);
-    private readonly HashSet<string> _clientVisible = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, PendingAdmission> _pending = new(StringComparer.Ordinal);
     private bool _disposed;
 
-    private EntityBindingQuery(WorldManager manager, bool ownsManager)
+    private EntityBindingQuery(WorldManager manager)
     {
         _manager = manager;
-        _ownsManager = ownsManager;
         Mappings = new MappingRegistry();
         IReadOnlyList<FieldAttributeDeclaration> rows = manager.Registry.AttributeDeclarations;
         for (int i = 0; i < rows.Count; i++)
         {
             FieldAttributeDeclaration row = rows[i];
-            _declarations[row.AttributeId] = new AttributeDeclaration(
-                row.AttributeId, row.ValueType, row.Persistence, row.Replication, row.Visibility);
+            _declarations[row.AttributeId] = new AttributeDeclaration(row.AttributeId, row.ValueType, row.Persistence, row.Replication, row.Visibility);
         }
     }
 
     public MappingRegistry Mappings { get; }
-
     public WorldManager Manager => _manager;
 
-    public static EntityBindingQuery Create()
-    {
-        EcsRegistry registry = EcsRegistry.Current ??
-            throw new InvalidOperationException("GeneratedRegistry.Instance must be loaded before Admit.");
-        WorldManager manager = WorldManager.Create(registry, instanceId: 0x1000000000000001UL);
-        manager.Start(Thread.CurrentThread);
-        return new EntityBindingQuery(manager, ownsManager: true);
-    }
+    public static EntityBindingQuery Create(WorldManager manager) => new(manager ?? throw new ArgumentNullException(nameof(manager)));
 
-    public static EntityBindingQuery Create(WorldManager manager) =>
-        new(manager ?? throw new ArgumentNullException(nameof(manager)), ownsManager: false);
-
-    public BindingQueryResult Admit(string connection, string accountId, string roomId, string entityType) =>
-        Admit(new AdmitRequest
-        {
-            Connection = connection,
-            AccountId = accountId,
-            RoomId = roomId,
-            EntityType = entityType,
-        });
+    public BindingQueryResult Admit(string connection, string accountId, string roomId, string entityType) => Admit(new AdmitRequest { Connection = connection, AccountId = accountId, RoomId = roomId, EntityType = entityType });
 
     public BindingQueryResult Admit(AdmitRequest request)
     {
-        if (request is null) throw new ArgumentNullException(nameof(request));
+            if (request is null) throw new ArgumentNullException(nameof(request));
         lock (_gate)
         {
             ThrowIfDisposed();
-            var hits = new List<string>();
-            CollectForbidden(request.AccountEntityRef, request.StorageHandle, request.HostPointer, request.HostHandle, request.SessionId, null, hits);
-            if (!string.IsNullOrEmpty(request.NetEntityId)) hits.Add("invalid_binding_shape");
-            if (string.IsNullOrEmpty(request.Connection) ||
-                string.IsNullOrEmpty(request.AccountId) ||
-                string.IsNullOrEmpty(request.RoomId) ||
-                !IsEntityType(request.EntityType))
-                hits.Add("invalid_binding_shape");
-            if (hits.Count > 0) return RankedError(hits);
-
-            if (_manager.World.TryGetAccount(request.AccountId!, out NetEntityId existing) &&
-                _manager.World.IsLive(existing))
+            if (!_manager.IsOwnerThread) return BindingQueryResult.RequestError("owner_thread_required", "world mutation must run on the WorldManager owner thread");
+            if (!ValidAdmission(request)) return BindingQueryResult.RequestError("invalid_binding_shape", "admission requires connection, account, room and entity type");
+            if (string.Equals(request.EntityType, "bot", StringComparison.Ordinal))
+                return BindingQueryResult.OutcomeFailure("bot_namespace_admission_forbidden");
+            foreach (KeyValuePair<string, PendingAdmission> pending in _pending)
             {
-                Component? identity = FindIdentity(existing);
-                if (identity is not null && World.TryReadConnected(identity, out bool connected) && connected)
-                {
-                    return BindingQueryResult.OutcomeFailure("account_already_online", existing.ToHex()) with
-                    {
-                        NetEntityId = existing.ToHex(),
-                    };
-                }
-
-                ulong generation = ReadGeneration(identity) + 1UL;
-                WriteIdentity(identity, request.AccountId!, connected: true, generation);
-                _manager.BindSelf(request.Connection!, existing);
+                if (string.Equals(pending.Value.AccountId, request.AccountId, StringComparison.Ordinal))
+                    return BindingQueryResult.OutcomeFailure("account_already_online");
+                if (string.Equals(pending.Key, request.Connection, StringComparison.Ordinal))
+                    return BindingQueryResult.OutcomeFailure("account_already_online");
+            }
+            if (_manager.World.TryGetAccount(request.AccountId!, out NetEntityId existing))
+            {
+                ObserverComponent observer = _manager.World.Get<ObserverComponent>(existing);
+                if (observer.Connected) return BindingQueryResult.OutcomeFailure("account_already_online", existing.ToHex());
+                _manager.Bind(existing);
+                _connectionToEntity[request.Connection!] = existing;
                 _roomByConnection[request.Connection!] = request.RoomId!;
-                _clientVisible.Add(existing.ToHex());
-                var rebound = new ConnectionBinding(
-                    request.AccountId!, request.RoomId!, existing.ToHex(), request.EntityType!, generation);
-                return BindingQueryResult.OkBinding(rebound, _manager.World.Revision);
+                return new BindingQueryResult("accepted");
             }
 
-            Type entityClr = ResolveEntity(request.EntityType!);
-            EntityOrder order = _manager.World.Commands.CreateFor(entityClr);
-            Component identityComponent = FindIdentityOn(order);
-            WriteIdentity(identityComponent, request.AccountId!, connected: true, generation: 1UL);
-            _manager.Tick();
-            NetEntityId id = order.AssignedId;
-            _manager.BindSelf(request.Connection!, id);
-            _roomByConnection[request.Connection!] = request.RoomId!;
-            _clientVisible.Add(id.ToHex());
-            var binding = new ConnectionBinding(request.AccountId!, request.RoomId!, id.ToHex(), request.EntityType!, 1UL);
-            return BindingQueryResult.OkBinding(binding, _manager.World.Revision);
+            Type entityType = ResolveEntity(request.EntityType!);
+            EntityOrder order = _manager.World.Commands.CreateFor(entityType);
+            Component? identity = order.NamedComponent("IdentityComponent");
+            Component? observerComponent = order.NamedComponent(nameof(ObserverComponent));
+            if (identity is null || observerComponent is not ObserverComponent newObserver)
+                return BindingQueryResult.RequestError("invalid_binding_shape", "entity type is not bindable");
+            if (EcsRegistry.Generated(identity) is not IGeneratedComponent generated)
+                return BindingQueryResult.RequestError("invalid_binding_shape", "identity component is not generated");
+            generated.WriteField("accountId", request.AccountId!, silent: true);
+            newObserver.Connected = true;
+            newObserver.ConnectionGeneration = 1;
+            _pending[request.Connection!] = new PendingAdmission(request.AccountId!, request.RoomId!, request.Connection!, order);
+            return new BindingQueryResult("accepted");
         }
     }
 
@@ -119,14 +88,13 @@ public sealed class EntityBindingQuery : IDisposable
         lock (_gate)
         {
             ThrowIfDisposed();
-            if (string.IsNullOrEmpty(connection) || !_manager.TryGetSession(connection, out NetEntityId id))
-                return BindingQueryResult.RequestError("binding_not_found", "no active binding");
-            Component? identity = FindIdentity(id);
-            WriteDisconnected(identity);
-            ConnectionBinding binding = BindingOf(connection, id);
-            _manager.UnbindSession(connection);
+            if (!_manager.IsOwnerThread) return BindingQueryResult.RequestError("owner_thread_required", "world mutation must run on the WorldManager owner thread");
+            SynchronizePending();
+            if (!_connectionToEntity.TryGetValue(connection, out NetEntityId id)) return BindingQueryResult.RequestError("binding_not_found", "no active binding");
+            _manager.Unbind(id);
+            _connectionToEntity.Remove(connection);
             _roomByConnection.Remove(connection);
-            return BindingQueryResult.OkBinding(binding, _manager.World.Revision);
+            return BindingQueryResult.OutcomeFailure("accepted");
         }
     }
 
@@ -135,19 +103,14 @@ public sealed class EntityBindingQuery : IDisposable
         lock (_gate)
         {
             ThrowIfDisposed();
-            if (string.IsNullOrEmpty(connection) || string.IsNullOrEmpty(accountId) || string.IsNullOrEmpty(roomId))
-                return BindingQueryResult.RequestError("invalid_binding_shape", "rebind requires connection, accountId, and roomId");
-            if (!_manager.World.TryGetAccount(accountId, out NetEntityId id) || !_manager.World.IsLive(id))
-                return BindingQueryResult.RequestError("binding_not_found", "no retained binding for reconnect");
+            if (!_manager.IsOwnerThread) return BindingQueryResult.RequestError("owner_thread_required", "world mutation must run on the WorldManager owner thread");
+            SynchronizePending();
+            if (!_manager.World.TryGetAccount(accountId, out NetEntityId id) || !_manager.World.IsLive(id)) return BindingQueryResult.RequestError("binding_not_found", "no retained binding");
             _ = mode;
-            Component? identity = FindIdentity(id);
-            ulong generation = ReadGeneration(identity) + 1UL;
-            WriteIdentity(identity, accountId, connected: true, generation);
-            _manager.BindSelf(connection, id);
+            _manager.Bind(id);
+            _connectionToEntity[connection] = id;
             _roomByConnection[connection] = roomId;
-            string entityType = _manager.World.Registry.WireName(_manager.World.TypeOf(id).ClrType);
-            var binding = new ConnectionBinding(accountId, roomId, id.ToHex(), entityType, generation);
-            return BindingQueryResult.OkBinding(binding, _manager.World.Revision);
+            return BindingQueryResult.OutcomeFailure("accepted");
         }
     }
 
@@ -156,13 +119,16 @@ public sealed class EntityBindingQuery : IDisposable
         lock (_gate)
         {
             ThrowIfDisposed();
-            if (!_manager.TryGetSession(fromConnection, out NetEntityId id))
-                return BindingQueryResult.RequestError("binding_not_found", "no active binding");
+            if (!_manager.IsOwnerThread) return BindingQueryResult.RequestError("owner_thread_required", "world mutation must run on the WorldManager owner thread");
+            SynchronizePending();
+            if (!_connectionToEntity.TryGetValue(fromConnection, out NetEntityId id)) return BindingQueryResult.RequestError("binding_not_found", "no active binding");
             _roomByConnection.TryGetValue(fromConnection, out string? room);
-            Component? identity = FindIdentity(id);
-            string account = World.TryReadAccountId(identity!) ?? string.Empty;
-            _manager.UnbindSession(fromConnection);
-            return Rebind(toConnection, account, room ?? "room-01", RebindMode.Takeover);
+            _manager.Bind(id);
+            _connectionToEntity.Remove(fromConnection);
+            _connectionToEntity[toConnection] = id;
+            _roomByConnection.Remove(fromConnection);
+            _roomByConnection[toConnection] = room ?? string.Empty;
+            return BindingQueryResult.OutcomeFailure("accepted");
         }
     }
 
@@ -171,15 +137,13 @@ public sealed class EntityBindingQuery : IDisposable
         lock (_gate)
         {
             ThrowIfDisposed();
-            if (!NetEntityId.TryParse(netEntityId, out NetEntityId id))
-                return BindingQueryResult.RequestError("invalid_binding_shape", "netEntityId is required");
-            if (_manager.World.IsTombstoned(id))
-                return BindingQueryResult.OutcomeFailure("tombstoned");
-            if (!_manager.World.IsLive(id))
-                return BindingQueryResult.OutcomeFailure("non_existent");
+            if (!_manager.IsOwnerThread) return BindingQueryResult.RequestError("owner_thread_required", "world mutation must run on the WorldManager owner thread");
+            SynchronizePending();
+            if (!NetEntityId.TryParse(netEntityId, out NetEntityId id)) return BindingQueryResult.RequestError("invalid_binding_shape", "netEntityId is required");
+            if (_manager.World.IsTombstoned(id)) return BindingQueryResult.OutcomeFailure("tombstoned");
+            if (!_manager.World.IsLive(id)) return BindingQueryResult.OutcomeFailure("non_existent");
             _manager.World.QueueDestroy(id);
-            _manager.Tick();
-            return BindingQueryResult.OutcomeFailure("tombstoned");
+            return BindingQueryResult.OutcomeFailure("accepted");
         }
     }
 
@@ -188,10 +152,9 @@ public sealed class EntityBindingQuery : IDisposable
         lock (_gate)
         {
             ThrowIfDisposed();
-            if (!string.Equals(callerScope, "client-replica", StringComparison.Ordinal))
-                return BindingQueryResult.RequestError("scope_violation", "caller scope does not match the operation");
-            if (!_manager.TryGetSession(connection, out NetEntityId id))
-                return BindingQueryResult.RequestError("binding_not_found", "no active binding");
+            SynchronizePending();
+            if (callerScope != "client-replica") return BindingQueryResult.RequestError("scope_violation", "caller scope does not match operation");
+            if (!_connectionToEntity.TryGetValue(connection, out NetEntityId id)) return BindingQueryResult.RequestError("binding_not_found", "no active binding");
             return BindingQueryResult.OkBinding(BindingOf(connection, id), _manager.World.Revision);
         }
     }
@@ -201,63 +164,28 @@ public sealed class EntityBindingQuery : IDisposable
         lock (_gate)
         {
             ThrowIfDisposed();
-            if (!_manager.TryGetSession(connection, out NetEntityId id))
-                return BindingQueryResult.RequestError("binding_not_found", "no active binding");
-            _roomByConnection.TryGetValue(connection, out string? boundRoom);
-            if (!string.IsNullOrEmpty(roomId) && boundRoom is not null &&
-                !string.Equals(boundRoom, roomId, StringComparison.Ordinal))
-                return BindingQueryResult.RequestError("cross_room_reference", "entity is not in the requested room");
+            SynchronizePending();
+            if (!_connectionToEntity.TryGetValue(connection, out NetEntityId id)) return BindingQueryResult.RequestError("binding_not_found", "no active binding");
+            if (_roomByConnection.TryGetValue(connection, out string? room) && room != roomId) return BindingQueryResult.RequestError("cross_room_reference", "entity is not in requested room");
             return BindingQueryResult.OkBinding(BindingOf(connection, id), _manager.World.Revision);
         }
     }
 
-    public BindingQueryResult ResolveByNetEntityId(string roomId, string netEntityId, ulong? connectionGeneration, string callerScope)
+    public BindingQueryResult ResolveByNetEntityId(string roomId, string netEntityId, ulong? generation, string callerScope)
     {
         lock (_gate)
         {
             ThrowIfDisposed();
-            return QueryCore(new AttributeQueryRequest
-            {
-                CallerScope = callerScope,
-                RoomId = roomId,
-                NetEntityId = netEntityId,
-                AttributeId = "EntityIdentity.entityType",
-                ConnectionGeneration = connectionGeneration,
-            }, callerConnection: null, resolveOnly: true);
+            return QueryCore(new AttributeQueryRequest { CallerScope = callerScope, RoomId = roomId, NetEntityId = netEntityId, AttributeId = "EntityIdentity.entityType", ConnectionGeneration = generation }, null, true);
         }
     }
 
-    public BindingQueryResult QueryAttribute(string callerScope, string roomId, string netEntityId, string attributeId) =>
-        QueryAttribute(new AttributeQueryRequest
-        {
-            CallerScope = callerScope,
-            RoomId = roomId,
-            NetEntityId = netEntityId,
-            AttributeId = attributeId,
-        });
+    public BindingQueryResult QueryAttribute(string callerScope, string roomId, string netEntityId, string attributeId) => QueryAttribute(new AttributeQueryRequest { CallerScope = callerScope, RoomId = roomId, NetEntityId = netEntityId, AttributeId = attributeId });
 
     public BindingQueryResult QueryAttribute(AttributeQueryRequest request, string? callerConnection = null)
     {
         if (request is null) throw new ArgumentNullException(nameof(request));
-        lock (_gate) return QueryCore(request, callerConnection, resolveOnly: false);
-    }
-
-    public BindingQueryResult ListBindings(string roomId)
-    {
-        lock (_gate)
-        {
-            ThrowIfDisposed();
-            var matches = new List<ConnectionBinding>();
-            foreach (KeyValuePair<string, string> pair in _roomByConnection)
-            {
-                if (!string.Equals(pair.Value, roomId, StringComparison.Ordinal)) continue;
-                if (!_manager.TryGetSession(pair.Key, out NetEntityId id)) continue;
-                matches.Add(BindingOf(pair.Key, id));
-            }
-
-            matches.Sort(static (left, right) => string.CompareOrdinal(left.NetEntityId, right.NetEntityId));
-            return BindingQueryResult.OkBindings(roomId, matches.ToArray());
-        }
+        lock (_gate) { ThrowIfDisposed(); SynchronizePending(); return QueryCore(request, callerConnection, false); }
     }
 
     public BindingQueryResult Spawn(string roomId, string entityType, bool replicateToReplica = true)
@@ -265,217 +193,125 @@ public sealed class EntityBindingQuery : IDisposable
         lock (_gate)
         {
             ThrowIfDisposed();
-            Type clr = ResolveEntity(entityType);
-            EntityOrder order = _manager.World.Commands.CreateFor(clr);
-            _manager.Tick();
-            if (replicateToReplica) _clientVisible.Add(order.AssignedId.ToHex());
-            return BindingQueryResult.OkEntity(order.AssignedId.ToHex(), roomId, entityType, _manager.World.Revision);
+            if (!_manager.IsOwnerThread) return BindingQueryResult.RequestError("owner_thread_required", "world mutation must run on the WorldManager owner thread");
+            Type type = ResolveEntity(entityType);
+            EntityOrder order = _manager.World.Commands.CreateFor(type);
+            _ = replicateToReplica;
+            return BindingQueryResult.OkEntity(string.Empty, roomId, entityType, _manager.World.Revision);
         }
     }
 
-    public void GrantClaim(string connection, string attributeId) => _manager.GrantClaim(connection, attributeId);
+    internal bool TryResolveConnection(string connection, out NetEntityId id)
+    {
+        lock (_gate) { SynchronizePending(); return _connectionToEntity.TryGetValue(connection, out id); }
+    }
 
     public void Dispose()
     {
-        if (_disposed) return;
-        _disposed = true;
-        if (_ownsManager) _manager.Dispose();
+        lock (_gate)
+        {
+            if (_disposed) return;
+            _disposed = true;
+        }
     }
 
     private BindingQueryResult QueryCore(AttributeQueryRequest request, string? callerConnection, bool resolveOnly)
     {
-        ThrowIfDisposed();
-        var hits = new List<string>();
-        CollectForbidden(request.AccountEntityRef, request.StorageHandle, request.HostPointer, request.HostHandle, request.SessionId, null, hits);
-        CollectScopeHits(request.CallerScope, request.Origin, hits);
-        if (!string.IsNullOrEmpty(request.RoomId) &&
-            !string.IsNullOrEmpty(request.NetEntityId) &&
-            request.NetEntityId.StartsWith("N7", StringComparison.Ordinal))
-            hits.Add("cross_room_reference");
-        string? attributeHit = AttributeIdClassifier.Classify(request.AttributeId, _declarations);
-        if (!resolveOnly && attributeHit is not null) hits.Add(attributeHit);
-        if (hits.Count > 0) return RankedError(hits);
-
-        if (!NetEntityId.TryParse(request.NetEntityId, out NetEntityId id) &&
-            !TryParseLoose(request.NetEntityId, out id))
-            return BindingQueryResult.OutcomeFailure("non_existent");
-
-        if (_manager.World.IsTombstoned(id))
-            return BindingQueryResult.OutcomeFailure("tombstoned");
-        if (!_manager.World.IsLive(id))
-            return BindingQueryResult.OutcomeFailure("non_existent");
-
-        if (request.ConnectionGeneration is ulong generation)
+        if (string.Equals(request.CallerScope, "server-authoritative", StringComparison.Ordinal) &&
+            request.Origin is not null && !string.Equals(request.Origin, "server", StringComparison.Ordinal))
+            return BindingQueryResult.RequestError("scope_violation", "server-authoritative reads are server-side only");
+        if (!NetEntityId.TryParse(request.NetEntityId, out NetEntityId id)) return BindingQueryResult.RequestError("invalid_binding_shape", "netEntityId must be 128-bit hex");
+        if (_manager.World.IsTombstoned(id)) return BindingQueryResult.OutcomeFailure("tombstoned");
+        if (!_manager.World.IsLive(id)) return BindingQueryResult.OutcomeFailure("non_existent");
+        if (!string.IsNullOrEmpty(request.RoomId))
         {
-            Component? identity = FindIdentity(id);
-            if (ReadGeneration(identity) != generation)
-                return BindingQueryResult.OutcomeFailure("stale_generation", "selfLookup for the current generation");
+            foreach (KeyValuePair<string, string> pair in _roomByConnection)
+            {
+                if (_connectionToEntity.TryGetValue(pair.Key, out NetEntityId bound) && bound == id &&
+                    !string.Equals(pair.Value, request.RoomId, StringComparison.Ordinal))
+                    return BindingQueryResult.RequestError("cross_room_reference", "entity is not in the requested room");
+            }
         }
-
-        string entityType = _manager.World.Registry.WireName(_manager.World.TypeOf(id).ClrType);
-        if (resolveOnly)
-            return BindingQueryResult.OkEntity(id.ToHex(), request.RoomId ?? string.Empty, entityType, _manager.World.Revision);
-
-        AttributeDeclaration declaration = _declarations[request.AttributeId!];
-        if (string.Equals(request.CallerScope, "client-replica", StringComparison.Ordinal))
+        if (request.ConnectionGeneration.HasValue && _manager.World.NamedComponent(id, nameof(ObserverComponent)) is ObserverComponent observer && observer.ConnectionGeneration != request.ConnectionGeneration.Value) return BindingQueryResult.OutcomeFailure("stale_generation");
+        if (resolveOnly) return BindingQueryResult.OkEntity(id.ToHex(), request.RoomId ?? string.Empty, _manager.World.Registry.WireName(_manager.World.TypeOf(id).ClrType), _manager.World.Revision);
+        string attributeId = request.AttributeId ?? string.Empty;
+        if (attributeId.StartsWith("Storage.", StringComparison.OrdinalIgnoreCase) || attributeId.Contains('/') || attributeId.Contains('\\'))
+            return BindingQueryResult.RequestError("storage_access_forbidden", "storage paths are not valid attribute ids");
+        if (attributeId.StartsWith("SELECT", StringComparison.OrdinalIgnoreCase) || !AttributeIdPattern.IsMatch(attributeId)) return BindingQueryResult.RequestError("invalid_attribute_id", "attributeId must be Component.field");
+        if (!_declarations.TryGetValue(attributeId, out AttributeDeclaration declaration)) return BindingQueryResult.RequestError("undeclared_attribute", "attribute is not declared");
+        if (request.CallerScope == "client-replica" && declaration.Replication != "replicated") return BindingQueryResult.OutcomeFailure("invisible");
+        int dot = attributeId.IndexOf('.');
+        string componentName = attributeId.Substring(0, dot);
+        string fieldName = attributeId.Substring(dot + 1);
+        Component? component = _manager.World.NamedComponent(id, componentName);
+        if (component is null) return BindingQueryResult.OutcomeFailure("undeclared_attribute");
+        if (!TryGetSyncField(component, fieldName, out ISyncField field))
         {
-            if (!_clientVisible.Contains(id.ToHex()) ||
-                string.Equals(declaration.Replication, "not-replicated", StringComparison.Ordinal) ||
-                string.Equals(declaration.Visibility, "server-only", StringComparison.Ordinal))
-                return BindingQueryResult.OutcomeFailure("invisible");
-            if (string.Equals(declaration.Visibility, "claim-scoped", StringComparison.Ordinal) &&
-                (callerConnection is null || !_manager.HasClaim(callerConnection, request.AttributeId!)))
+            object? privateValue = EcsRegistry.Generated(component)?.ReadField(fieldName);
+            return request.CallerScope == "server-authoritative" && privateValue is not null ? BindingQueryResult.OkAttribute(id.ToHex(), request.RoomId ?? string.Empty, attributeId, privateValue, _manager.World.Revision, _manager.World.Tick) : BindingQueryResult.OutcomeFailure("invisible");
+        }
+        if (request.CallerScope == "client-replica" && field.Scope == Scope.Owner && (callerConnection is null || !_connectionToEntity.TryGetValue(callerConnection, out NetEntityId owner) || owner != id)) return BindingQueryResult.OutcomeFailure("invisible");
+        if (request.CallerScope == "client-replica" && field.Scope == Scope.Claim)
+        {
+            if (callerConnection is null || !_connectionToEntity.ContainsKey(callerConnection)) return BindingQueryResult.OutcomeFailure("unauthorized");
+            Component? ownerComponent = _manager.World.NamedComponent(id, componentName);
+            object? claims = ownerComponent is null ? null : EcsRegistry.Generated(ownerComponent)?.ReadField(field.ClaimBy ?? string.Empty);
+            if (claims is not SyncList<NetEntityId> claimList || !_connectionToEntity.TryGetValue(callerConnection, out NetEntityId claimant) || !claimList.Contains(claimant))
                 return BindingQueryResult.OutcomeFailure("unauthorized");
         }
-
-        object? value = ReadAttribute(id, request.AttributeId!);
-        if (value is null && string.Equals(request.AttributeId, "EntityIdentity.claimedMark", StringComparison.Ordinal))
-            value = "mark";
-        if (value is null) value = string.Empty;
-        return BindingQueryResult.OkAttribute(
-            id.ToHex(),
-            request.RoomId ?? string.Empty,
-            request.AttributeId!,
-            value,
-            _manager.World.Revision,
-            _manager.World.Tick);
-    }
-
-    private object? ReadAttribute(NetEntityId id, string attributeId)
-    {
-        if (string.Equals(attributeId, "EntityIdentity.entityType", StringComparison.Ordinal))
-            return _manager.World.Registry.WireName(_manager.World.TypeOf(id).ClrType);
-        if (string.Equals(attributeId, "EntityIdentity.unmappedMark", StringComparison.Ordinal))
-            return string.Empty;
-        if (string.Equals(attributeId, "EntityIdentity.claimedMark", StringComparison.Ordinal))
-            return "mark";
-        if (string.Equals(attributeId, "ChatComponent.lastMessagePersistOnly", StringComparison.Ordinal))
-            attributeId = "ChatComponent.lastMessageText";
-
-        int dot = attributeId.IndexOf('.');
-        if (dot <= 0) return null;
-        string componentId = attributeId.Substring(0, dot);
-        string fieldId = attributeId.Substring(dot + 1);
-        Component? component = _manager.World.NamedComponent(id, componentId);
-        return component is IGeneratedComponent generated ? generated.ReadField(fieldId) : null;
+        return BindingQueryResult.OkAttribute(id.ToHex(), request.RoomId ?? string.Empty, attributeId, field.BoxedValue!, _manager.World.Revision, _manager.World.Tick);
     }
 
     private ConnectionBinding BindingOf(string connection, NetEntityId id)
     {
-        _roomByConnection.TryGetValue(connection, out string? room);
-        Component? identity = FindIdentity(id);
-        string account = identity is null ? string.Empty : World.TryReadAccountId(identity) ?? string.Empty;
-        string entityType = _manager.World.Registry.WireName(_manager.World.TypeOf(id).ClrType);
-        return new ConnectionBinding(account, room ?? string.Empty, id.ToHex(), entityType, ReadGeneration(identity));
+        Component? identity = _manager.World.NamedComponent(id, "IdentityComponent");
+        string account = World.TryReadAccountId(identity!) ?? string.Empty;
+        ObserverComponent observer = _manager.World.Get<ObserverComponent>(id);
+        return new ConnectionBinding(account, _roomByConnection.TryGetValue(connection, out string? room) ? room : string.Empty, id.ToHex(), _manager.World.Registry.WireName(_manager.World.TypeOf(id).ClrType), observer.ConnectionGeneration);
     }
 
-    private Component? FindIdentity(NetEntityId id) =>
-        _manager.World.NamedComponent(id, "IdentityComponent");
-
-    private static Component FindIdentityOn(EntityOrder order) =>
-        order.NamedComponent("IdentityComponent") ??
-        throw new InvalidOperationException("IdentityComponent is missing.");
-
-    private static void WriteIdentity(Component? identity, string accountId, bool connected, ulong generation)
+    private void SynchronizePending()
     {
-        if (identity is not IGeneratedComponent generated) return;
-        generated.WriteField("accountId", accountId, silent: true);
-        generated.WriteField("connected", connected, silent: true);
-        generated.WriteField("connectionGeneration", generation, silent: true);
-    }
-
-    private static void WriteDisconnected(Component? identity)
-    {
-        if (identity is IGeneratedComponent generated)
-            generated.WriteField("connected", false, silent: true);
-    }
-
-    private static ulong ReadGeneration(Component? identity)
-    {
-        if (identity is not IGeneratedComponent generated) return 1UL;
-        object? value = generated.ReadField("connectionGeneration");
-        return value is ulong generation ? generation : 1UL;
-    }
-
-    private Type ResolveEntity(string entityType)
-    {
-        if (_manager.Registry.TryResolveEntityType(entityType, out Type type)) return type;
-        throw new InvalidOperationException("Unknown entity type " + entityType);
-    }
-
-    private static bool IsEntityType(string? entityType) =>
-        string.Equals(entityType, "player", StringComparison.Ordinal) ||
-        string.Equals(entityType, "bot", StringComparison.Ordinal);
-
-    private static bool TryParseLoose(string? value, out NetEntityId id)
-    {
-        id = default;
-        if (string.IsNullOrEmpty(value) || value.Length < 2) return false;
-        return false;
-    }
-
-    private static void CollectForbidden(
-        object? accountEntityRef,
-        object? storageHandle,
-        object? hostPointer,
-        object? hostHandle,
-        string? sessionId,
-        string? mintedBy,
-        List<string> hits)
-    {
-        if (accountEntityRef is not null || storageHandle is not null || hostPointer is not null || hostHandle is not null)
-            hits.Add("invalid_binding_shape");
-        if (!string.IsNullOrEmpty(sessionId)) hits.Add("invalid_binding_shape");
-        if (!string.IsNullOrEmpty(mintedBy)) hits.Add("invalid_binding_shape");
-    }
-
-    private static void CollectScopeHits(string? callerScope, string? origin, List<string> hits)
-    {
-        if (string.Equals(origin, "client-connection", StringComparison.Ordinal) &&
-            string.Equals(callerScope, "server-authoritative", StringComparison.Ordinal))
-            hits.Add("scope_violation");
-    }
-
-    private void ThrowIfDisposed()
-    {
-        if (_disposed) throw new ObjectDisposedException(nameof(EntityBindingQuery));
-    }
-
-    private static BindingQueryResult RankedError(List<string> hits, string? detail = null)
-    {
-        string primary = hits[0];
-        int primaryRank = Rank(primary);
-        for (int i = 1; i < hits.Count; i++)
+        var stale = new List<string>();
+        foreach (KeyValuePair<string, NetEntityId> pair in _connectionToEntity)
+            if (!_manager.World.IsLive(pair.Value)) stale.Add(pair.Key);
+        for (int i = 0; i < stale.Count; i++)
         {
-            int rank = Rank(hits[i]);
-            if (rank < primaryRank)
-            {
-                primary = hits[i];
-                primaryRank = rank;
-            }
+            _connectionToEntity.Remove(stale[i]);
+            _roomByConnection.Remove(stale[i]);
         }
 
-        return BindingQueryResult.RequestError(primary, detail ?? DetailFor(primary));
+        if (_pending.Count == 0) return;
+        var ready = new List<string>();
+        foreach (KeyValuePair<string, PendingAdmission> pair in _pending)
+        {
+            if (pair.Value.Order.AssignedId.IsDefault) continue;
+            NetEntityId id = pair.Value.Order.AssignedId;
+            if (!_manager.World.IsLive(id)) continue;
+            _connectionToEntity[pair.Key] = id;
+            _roomByConnection[pair.Key] = pair.Value.RoomId;
+            ready.Add(pair.Key);
+        }
+        for (int i = 0; i < ready.Count; i++) _pending.Remove(ready[i]);
     }
 
-    private static int Rank(string code) => code switch
-    {
-        "invalid_binding_shape" => 0,
-        "scope_violation" => 1,
-        "cross_room_reference" => 2,
-        "binding_not_found" => 3,
-        _ => 4,
-    };
+    private static bool ValidAdmission(AdmitRequest request) =>
+        !string.IsNullOrEmpty(request.Connection) && !string.IsNullOrEmpty(request.AccountId) && !string.IsNullOrEmpty(request.RoomId) && IsEntityType(request.EntityType) && request.AccountEntityRef is null && request.StorageHandle is null && request.HostPointer is null && request.HostHandle is null && string.IsNullOrEmpty(request.NetEntityId) && string.IsNullOrEmpty(request.SessionId);
 
-    private static string DetailFor(string code) => code switch
+    private Type ResolveEntity(string name)
     {
-        "invalid_binding_shape" => "binding record may only carry the five-tuple",
-        "scope_violation" => "caller scope does not match the operation",
-        "cross_room_reference" => "entity is not in the requested room",
-        "binding_not_found" => "no active binding",
-        "storage_access_forbidden" => "storage addressing is forbidden",
-        "invalid_attribute_id" => "attributeId is not a declared attribute id",
-        "undeclared_attribute" => "attributeId is undeclared",
-        _ => code,
-    };
+        if (_manager.Registry.TryResolveEntityType(name, out Type type)) return type;
+        throw new InvalidOperationException("Unknown entity type " + name);
+    }
+
+    private static bool IsEntityType(string? value) => value == "player" || value == "bot";
+    private static bool TryGetSyncField(Component component, string fieldId, out ISyncField field)
+    {
+        if (component is IGeneratedSyncMetadata metadata && metadata.TryGetSyncField(fieldId, out field)) return true;
+        field = null!;
+        return false;
+    }
+    private void ThrowIfDisposed() { if (_disposed) throw new ObjectDisposedException(nameof(EntityBindingQuery)); }
+
+    private readonly record struct PendingAdmission(string AccountId, string RoomId, string Connection, EntityOrder Order);
 }

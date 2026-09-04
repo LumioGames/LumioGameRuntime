@@ -19,11 +19,8 @@ public sealed class ChatCommandRuntime : IDisposable
         _ownsBindings = ownsBindings;
     }
 
-    public static ChatCommandRuntime Create(EntityBindingQuery? bindings = null, bool ownsBindings = false)
-    {
-        EntityBindingQuery resolved = bindings ?? EntityBindingQuery.Create();
-        return new ChatCommandRuntime(resolved, ownsBindings || bindings is null);
-    }
+    public static ChatCommandRuntime Create(EntityBindingQuery bindings, bool ownsBindings = false) =>
+        new(bindings ?? throw new ArgumentNullException(nameof(bindings)), ownsBindings);
 
     public WorldManager Manager => _bindings.Manager;
 
@@ -60,7 +57,7 @@ public sealed class ChatCommandRuntime : IDisposable
         if (input.Text is null) throw new ArgumentException("ChatInput.Text is required.", nameof(input));
         if (Encoding.UTF8.GetByteCount(input.Text) > ChatMapping.MaxTextUtf8Bytes)
             return ChatMappingResult.Reject("chat_text_too_long", "chat text exceeds 512 UTF-8 bytes", ChatMapping.InputMappingId);
-        if (!_bindings.Manager.TryGetSession(connectionId, out NetEntityId sender))
+        if (!_bindings.TryResolveConnection(connectionId, out NetEntityId sender))
             return ChatMappingResult.Reject("binding_not_found", "no active binding");
         Manager.Enqueue(new InputCommandMessage(ChatMapping.InputMappingId, sender, EncodeUtf8(input.Text), connectionId));
         return ChatMappingResult.Ok();
