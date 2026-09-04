@@ -495,7 +495,13 @@ public sealed class WorldManager : IDisposable
         {
             FieldChange value = change.Fields[i];
             Component? component = World.NamedComponent(value.NetEntityId, value.ComponentId);
-            if (component is null || !TryGetSyncField(component, value.FieldId, out ISyncField field)) continue;
+            if (component is null) continue;
+            if (!TryGetSyncField(component, value.FieldId, out ISyncField field))
+            {
+                if (EcsRegistry.Generated(component)?.ReadField(value.FieldId) is ISyncContainer container)
+                    container.AssignFromRemote(value.Value);
+                continue;
+            }
             object? old = field.BoxedValue;
             EcsRegistry.Generated(component)?.WriteField(value.FieldId, ConvertValue(field.ValueType, value.Value), true);
             if (value.Reason == ChangeReason.Correction || !Equals(old, value.Value)) hooks.Add(new HookEntry(component, field.Ordinal, old, value.Value, value.Reason));

@@ -122,6 +122,23 @@ public sealed class UsernameSevenStepTests
     }
 
     [Fact]
+    public void FriendsContainerDeltaReachesClient()
+    {
+        WorldManager server = ServerBootstrap.Boot(InstanceId);
+        WorldManager client = ClientBootstrap.Boot();
+        ServerBootstrap.AdmitPlayer(server, "acct-friends");
+        server.Tick();
+        NetEntityId player = server.World.Each<ServerIdentity>().Single(static item => item.AccountId == "acct-friends").Entity;
+        server.Bind(player);
+        Pump(server, client);
+
+        server.World.Get<ServerIdentity>(player).Friends.Add(player);
+        Pump(server, client);
+
+        Assert.Contains(player, client.World.Get<ClientIdentity>(player).Friends.Values);
+    }
+
+    [Fact]
     public void DeterministicChatOrderAcrossTwoRuns()
     {
         string first = RunChatRound();
