@@ -9,11 +9,6 @@ public sealed partial class IdentityComponent
     /// <summary>持久业务身份。服务器私有字段：客户端读不到、不上网；[Persist] 进快照。</summary>
     [Persist] public string AccountId = "";
 
-    // 连接态：不存档（重启即离线）。绑定 = 实体字段，没有独立绑定表。
-    public bool Connected;
-    public ulong ConnectionGeneration;
-    public ulong DisconnectedAtTick;
-
     /// <summary>
     /// owner 客户端的字段上行到达时（ApplyInputs 相，同 Tick 按发送者 NetEntityId 排序后）调用。
     /// accept 进来是 true；置 false = 拒绝，框架把权威值推回客户端（权威纠正）。不写这个钩子 = 直接接受。

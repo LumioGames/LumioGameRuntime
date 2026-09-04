@@ -20,7 +20,7 @@ public sealed class DeclareDefaultsCatalogTests
     [Fact]
     public void CreateLoadsDeclarationsFromGeneratedCatalog()
     {
-        using EntityBindingQuery sut = EntityBindingQuery.Create();
+        using EntityBindingQuery sut = TestBindingFactory.Create();
         FieldInfo field = typeof(EntityBindingQuery).GetField("_declarations", BindingFlags.Instance | BindingFlags.NonPublic)!;
         var loaded = Assert.IsAssignableFrom<IReadOnlyDictionary<string, AttributeDeclaration>>(field.GetValue(sut));
         IReadOnlyList<FieldAttributeDeclaration> catalog = sut.Manager.Registry.AttributeDeclarations;
@@ -46,17 +46,16 @@ public sealed class DeclareDefaultsCatalogTests
     [Fact]
     public void AccountIdQueryIsUndeclaredAttribute()
     {
-        using EntityBindingQuery sut = EntityBindingQuery.Create();
+        using EntityBindingQuery sut = TestBindingFactory.Create();
         BindingQueryResult admit = sut.Admit("C1", "acct-07", "room-01", "player");
-        Assert.Equal("ok", admit.Outcome);
-        Assert.True(admit.Binding.HasValue);
-
+        Assert.Equal("accepted", admit.Outcome);
+        sut.Manager.Tick();
         BindingQueryResult result = sut.QueryAttribute(
             new AttributeQueryRequest
             {
                 CallerScope = "server-authoritative",
                 RoomId = "room-01",
-                NetEntityId = admit.Binding.Value.NetEntityId,
+                NetEntityId = sut.ResolveByConnection("room-01", "C1").Binding!.Value.NetEntityId,
                 AttributeId = "EntityIdentity.accountId",
             });
         Assert.Equal("request_error", result.Outcome);

@@ -17,23 +17,25 @@ public sealed class EntityBindingQueryTests
     [Fact]
     public void AdmitIssues128BitIdAndSecondConnectionIsAlreadyOnline()
     {
-        using EntityBindingQuery sut = EntityBindingQuery.Create();
+        using EntityBindingQuery sut = TestBindingFactory.Create();
         BindingQueryResult first = sut.Admit("C1", "acct-07", "room-01", "player");
-        Assert.Equal("ok", first.Outcome);
-        Assert.True(first.Binding.HasValue);
-        Assert.True(NetEntityId.TryParse(first.Binding.Value.NetEntityId, out NetEntityId id));
+        Assert.Equal("accepted", first.Outcome);
+        sut.Manager.Tick();
+        BindingQueryResult resolved = sut.ResolveByConnection("room-01", "C1");
+        Assert.True(resolved.Binding.HasValue);
+        Assert.True(NetEntityId.TryParse(resolved.Binding.Value.NetEntityId, out NetEntityId id));
         Assert.Equal(0x1000000000000001UL, id.InstanceId);
         Assert.True(id.Counter >= 1UL);
 
         BindingQueryResult second = sut.Admit("C2", "acct-07", "room-01", "player");
         Assert.Equal("account_already_online", second.Outcome);
-        Assert.Equal(first.Binding.Value.NetEntityId, second.NetEntityId);
+        Assert.Null(second.Binding);
     }
 
     [Fact]
     public void ShapeErrorIsNotAccountAlreadyOnline()
     {
-        using EntityBindingQuery sut = EntityBindingQuery.Create();
+        using EntityBindingQuery sut = TestBindingFactory.Create();
         BindingQueryResult result = sut.Admit(new AdmitRequest
         {
             Connection = "C1",
@@ -47,11 +49,21 @@ public sealed class EntityBindingQueryTests
     }
 
     [Fact]
+    public void BotNamespaceCannotBeAdmittedThroughAccountBinding()
+    {
+        using EntityBindingQuery sut = TestBindingFactory.Create();
+        BindingQueryResult result = sut.Admit("C1", "acct-bot", "room-01", "bot");
+        Assert.Equal("bot_namespace_admission_forbidden", result.Outcome);
+        Assert.Null(result.Binding);
+    }
+
+    [Fact]
     public void QueryAttributeReadsChatTextAfterInput()
     {
-        using EntityBindingQuery sut = EntityBindingQuery.Create();
+        using EntityBindingQuery sut = TestBindingFactory.Create();
         BindingQueryResult admitted = sut.Admit("C1", "acct-07", "room-01", "player");
-        NetEntityId id = NetEntityId.Parse(admitted.Binding!.Value.NetEntityId);
+        sut.Manager.Tick();
+        NetEntityId id = NetEntityId.Parse(sut.ResolveByConnection("room-01", "C1").Binding!.Value.NetEntityId);
         sut.Manager.Enqueue(new InputCommandMessage("chat.input", id, Encode("hello"), "C1"));
         sut.Manager.Tick();
 
@@ -70,9 +82,10 @@ public sealed class EntityBindingQueryTests
     [Fact]
     public void InvalidAttributeIdAndUndeclaredAndPersistOnlyInvisible()
     {
-        using EntityBindingQuery sut = EntityBindingQuery.Create();
+        using EntityBindingQuery sut = TestBindingFactory.Create();
         BindingQueryResult admitted = sut.Admit("C1", "acct-07", "room-01", "player");
-        string net = admitted.Binding!.Value.NetEntityId;
+        sut.Manager.Tick();
+        string net = sut.ResolveByConnection("room-01", "C1").Binding!.Value.NetEntityId;
 
         BindingQueryResult sql = sut.QueryAttribute("client-replica", "room-01", net, "SELECT * FROM entities");
         Assert.Equal("invalid_attribute_id", sql.Code);
@@ -97,13 +110,15 @@ public sealed class EntityBindingQueryTests
     [Fact]
     public void RebindIncrementsGenerationAndExpireTombstones()
     {
-        using EntityBindingQuery sut = EntityBindingQuery.Create();
+        using EntityBindingQuery sut = TestBindingFactory.Create();
         BindingQueryResult admitted = sut.Admit("C1", "acct-07", "room-01", "player");
-        string net = admitted.Binding!.Value.NetEntityId;
+        sut.Manager.Tick();
+        string net = sut.ResolveByConnection("room-01", "C1").Binding!.Value.NetEntityId;
         BindingQueryResult rebound = sut.Rebind("C1", "C1-next");
-        Assert.Equal("ok", rebound.Outcome);
-        Assert.Equal(net, rebound.Binding!.Value.NetEntityId);
-        Assert.Equal(2UL, rebound.Binding.Value.ConnectionGeneration);
+        Assert.Equal("accepted", rebound.Outcome);
+        BindingQueryResult reboundBinding = sut.ResolveByConnection("room-01", "C1-next");
+        Assert.Equal(net, reboundBinding.Binding!.Value.NetEntityId);
+        Assert.Equal(2UL, reboundBinding.Binding.Value.ConnectionGeneration);
 
         BindingQueryResult stale = sut.QueryAttribute(new AttributeQueryRequest
         {
@@ -116,7 +131,8 @@ public sealed class EntityBindingQueryTests
         Assert.Equal("stale_generation", stale.Outcome);
 
         BindingQueryResult expired = sut.Expire(net);
-        Assert.Equal("tombstoned", expired.Outcome);
+        Assert.Equal("accepted", expired.Outcome);
+        sut.Manager.Tick();
         BindingQueryResult again = sut.QueryAttribute("server-authoritative", "room-01", net, "EntityIdentity.entityType");
         Assert.Equal("tombstoned", again.Outcome);
     }
@@ -124,10 +140,11 @@ public sealed class EntityBindingQueryTests
     [Fact]
     public void CreateFromSnapshotRebuildsAccountIndexAndAdmitRebinds()
     {
-        using EntityBindingQuery original = EntityBindingQuery.Create();
+        using EntityBindingQuery original = TestBindingFactory.Create();
         BindingQueryResult first = original.Admit("C1", "acct-07", "room-01", "player");
-        Assert.Equal("ok", first.Outcome);
-        NetEntityId id = NetEntityId.Parse(first.Binding!.Value.NetEntityId);
+        Assert.Equal("accepted", first.Outcome);
+        original.Manager.Tick();
+        NetEntityId id = NetEntityId.Parse(original.ResolveByConnection("room-01", "C1").Binding!.Value.NetEntityId);
         byte[] snapshot = original.Manager.CaptureSnapshot();
 
         EcsRegistry.Current = GeneratedRegistry.Instance;
@@ -135,8 +152,8 @@ public sealed class EntityBindingQueryTests
         restored.Start(Thread.CurrentThread);
         using EntityBindingQuery query = EntityBindingQuery.Create(restored);
         BindingQueryResult again = query.Admit("C2", "acct-07", "room-01", "player");
-        Assert.Equal("ok", again.Outcome);
-        Assert.Equal(id.ToHex(), again.Binding!.Value.NetEntityId);
+        Assert.Equal("accepted", again.Outcome);
+        Assert.Equal(id.ToHex(), query.ResolveByConnection("room-01", "C2").Binding!.Value.NetEntityId);
         Assert.True(restored.World.TryGetAccount("acct-07", out NetEntityId indexed));
         Assert.Equal(id, indexed);
     }

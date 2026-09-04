@@ -44,9 +44,16 @@ public sealed class WelcomeMessage : WorldMessage
 {
     /// <summary>Creates a welcome message.</summary>
     public WelcomeMessage(ulong instanceId, NetEntityId self, string? connection = null)
+        : this(instanceId, self, 1UL, connection)
+    {
+    }
+
+    /// <summary>Creates a welcome message with the current binding generation.</summary>
+    public WelcomeMessage(ulong instanceId, NetEntityId self, ulong connectionGeneration, string? connection = null)
     {
         InstanceId = instanceId;
         Self = self;
+        ConnectionGeneration = connectionGeneration;
         Connection = connection;
     }
 
@@ -55,6 +62,9 @@ public sealed class WelcomeMessage : WorldMessage
 
     /// <summary>This connection's bound entity. Applied to <see cref="World.Self"/> at commit.</summary>
     public NetEntityId Self { get; }
+
+    /// <summary>Binding generation delivered with this welcome.</summary>
+    public ulong ConnectionGeneration { get; }
 }
 
 /// <summary>One create record: entity type + net id + visible field values.</summary>
@@ -107,12 +117,19 @@ public readonly struct FieldChange
 {
     /// <summary>Creates a field change.</summary>
     public FieldChange(NetEntityId netEntityId, string componentId, string fieldId, object? value, ChangeReason reason)
+        : this(netEntityId, componentId, fieldId, value, reason, default)
+    {
+    }
+
+    /// <summary>Creates a field change optionally addressed to one observer.</summary>
+    public FieldChange(NetEntityId netEntityId, string componentId, string fieldId, object? value, ChangeReason reason, NetEntityId observerId)
     {
         NetEntityId = netEntityId;
         ComponentId = componentId;
         FieldId = fieldId;
         Value = value;
         Reason = reason;
+        ObserverId = observerId;
     }
 
     /// <summary>Target entity.</summary>
@@ -129,6 +146,9 @@ public readonly struct FieldChange
 
     /// <summary>Sync or Correction.</summary>
     public ChangeReason Reason { get; }
+
+    /// <summary>Observer that should receive a correction; zero means normal broadcast.</summary>
+    public NetEntityId ObserverId { get; }
 }
 
 /// <summary>One ClientRpc invocation in a world-change pack.</summary>
@@ -193,7 +213,8 @@ public sealed class WorldChangeMessage : WorldMessage
         IReadOnlyList<FieldChange> fields,
         IReadOnlyList<NetEntityId> destroys,
         IReadOnlyList<ClientRpcRecord> rpcs,
-        string? connection = null)
+        string? connection = null,
+        NetEntityId observerId = default)
     {
         Tick = tick;
         Creates = creates ?? Array.Empty<CreateRecord>();
@@ -201,6 +222,7 @@ public sealed class WorldChangeMessage : WorldMessage
         Destroys = destroys ?? Array.Empty<NetEntityId>();
         Rpcs = rpcs ?? Array.Empty<ClientRpcRecord>();
         Connection = connection;
+        ObserverId = observerId;
     }
 
     /// <summary>Authoritative tick of this pack.</summary>
@@ -217,4 +239,7 @@ public sealed class WorldChangeMessage : WorldMessage
 
     /// <summary>ClientRpcs stamped this tick.</summary>
     public IReadOnlyList<ClientRpcRecord> Rpcs { get; }
+
+    /// <summary>Observer identity addressed by this pack. Zero means broadcast/unaddressed.</summary>
+    public NetEntityId ObserverId { get; }
 }

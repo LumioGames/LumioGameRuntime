@@ -5,16 +5,19 @@ using Lumio.GameRuntime.Ecs;
 
 namespace Lumio.GameRuntime.Samples.Username.Components.Identity;
 
-public sealed partial class IdentityComponent : IGeneratedComponent
+public sealed partial class IdentityComponent : IGeneratedComponent, IGeneratedSyncMetadata
 {
     partial void OnNameChanging(string old, string @new, ChangeReason reason);
     partial void OnNameChanged(string old, string @new, ChangeReason reason);
+    partial void OnRealNameChanging(string old, string @new, ChangeReason reason);
+    partial void OnRealNameChanged(string old, string @new, ChangeReason reason);
     partial void OnClientWrite(in SyncWrite w, ref bool accept);
 
 
     void IGeneratedComponent.BindFields(ISyncHost host)
     {
         Name = Name.Bound(host, this, 0, "IdentityComponent.name");
+        RealName = RealName.Bound(host, this, 1, "IdentityComponent.realName");
     }
 
     void IGeneratedComponent.InvokePostAttribute() => PostAttribute();
@@ -23,11 +26,13 @@ public sealed partial class IdentityComponent : IGeneratedComponent
     void IGeneratedComponent.InvokeFieldChanging(int ordinal, object? oldValue, object? newValue, ChangeReason reason)
     {
         if (ordinal == 0) OnNameChanging((string)oldValue!, (string)newValue!, reason);
+        if (ordinal == 1) OnRealNameChanging((string)oldValue!, (string)newValue!, reason);
     }
 
     void IGeneratedComponent.InvokeFieldChanged(int ordinal, object? oldValue, object? newValue, ChangeReason reason)
     {
         if (ordinal == 0) OnNameChanged((string)oldValue!, (string)newValue!, reason);
+        if (ordinal == 1) OnRealNameChanged((string)oldValue!, (string)newValue!, reason);
     }
 
     bool IGeneratedComponent.DispatchClientWrite(in SyncWrite write)
@@ -49,11 +54,14 @@ public sealed partial class IdentityComponent : IGeneratedComponent
     {
         writer.WriteString("IdentityComponent.accountId", AccountId);
         writer.WriteString("IdentityComponent.name", Name.Value);
+        writer.WriteString("IdentityComponent.realName", RealName.Value);
     }
 
     void IGeneratedComponent.CaptureSync(IPersistWriter writer)
     {
         writer.WriteString("IdentityComponent.name", Name.Value);
+        writer.WriteString("IdentityComponent.realName", RealName.Value);
+        if (writer is IContainerFieldWriter containerWriter) containerWriter.WriteContainer("IdentityComponent.friends", Friends);
     }
 
     void IGeneratedComponent.RestorePersist(IPersistReader reader)
@@ -62,15 +70,16 @@ public sealed partial class IdentityComponent : IGeneratedComponent
             AccountId = accountIdRestore;
         if (reader.TryReadString("IdentityComponent.name", out string nameRestore))
             Name.SetSilent(nameRestore);
+        if (reader.TryReadString("IdentityComponent.realName", out string realNameRestore))
+            RealName.SetSilent(realNameRestore);
     }
 
     object? IGeneratedComponent.ReadField(string fieldId)
     {
         if (string.Equals(fieldId, "accountId", StringComparison.Ordinal) || string.Equals(fieldId, "AccountId", StringComparison.Ordinal)) return AccountId;
-        if (string.Equals(fieldId, "connected", StringComparison.Ordinal) || string.Equals(fieldId, "Connected", StringComparison.Ordinal)) return Connected;
-        if (string.Equals(fieldId, "connectionGeneration", StringComparison.Ordinal) || string.Equals(fieldId, "ConnectionGeneration", StringComparison.Ordinal)) return ConnectionGeneration;
-        if (string.Equals(fieldId, "disconnectedAtTick", StringComparison.Ordinal) || string.Equals(fieldId, "DisconnectedAtTick", StringComparison.Ordinal)) return DisconnectedAtTick;
         if (string.Equals(fieldId, "name", StringComparison.Ordinal) || string.Equals(fieldId, "Name", StringComparison.Ordinal)) return Name.Value;
+        if (string.Equals(fieldId, "realName", StringComparison.Ordinal) || string.Equals(fieldId, "RealName", StringComparison.Ordinal)) return RealName.Value;
+        if (string.Equals(fieldId, "friends", StringComparison.Ordinal) || string.Equals(fieldId, "Friends", StringComparison.Ordinal)) return Friends;
         return null;
     }
 
@@ -81,26 +90,30 @@ public sealed partial class IdentityComponent : IGeneratedComponent
             AccountId = (string)value!;
             return;
         }
-        if (string.Equals(fieldId, "connected", StringComparison.Ordinal) || string.Equals(fieldId, "Connected", StringComparison.Ordinal))
-        {
-            Connected = (bool)value!;
-            return;
-        }
-        if (string.Equals(fieldId, "connectionGeneration", StringComparison.Ordinal) || string.Equals(fieldId, "ConnectionGeneration", StringComparison.Ordinal))
-        {
-            ConnectionGeneration = (ulong)value!;
-            return;
-        }
-        if (string.Equals(fieldId, "disconnectedAtTick", StringComparison.Ordinal) || string.Equals(fieldId, "DisconnectedAtTick", StringComparison.Ordinal))
-        {
-            DisconnectedAtTick = (ulong)value!;
-            return;
-        }
         if (string.Equals(fieldId, "name", StringComparison.Ordinal) || string.Equals(fieldId, "Name", StringComparison.Ordinal))
         {
             if (silent) Name.SetSilent((string)value!);
             else Name.Value = (string)value!;
             return;
         }
+        if (string.Equals(fieldId, "realName", StringComparison.Ordinal) || string.Equals(fieldId, "RealName", StringComparison.Ordinal))
+        {
+            if (silent) RealName.SetSilent((string)value!);
+            else RealName.Value = (string)value!;
+            return;
+        }
+        if (string.Equals(fieldId, "friends", StringComparison.Ordinal) || string.Equals(fieldId, "Friends", StringComparison.Ordinal))
+        {
+            Friends = (SyncList<NetEntityId>)value!;
+            return;
+        }
+    }
+
+    bool IGeneratedSyncMetadata.TryGetSyncField(string fieldId, out ISyncField field)
+    {
+        if (string.Equals(fieldId, "name", StringComparison.Ordinal) || string.Equals(fieldId, "Name", StringComparison.OrdinalIgnoreCase)) { field = Name; return true; }
+        if (string.Equals(fieldId, "realName", StringComparison.Ordinal) || string.Equals(fieldId, "RealName", StringComparison.OrdinalIgnoreCase)) { field = RealName; return true; }
+        field = null!;
+        return false;
     }
 }

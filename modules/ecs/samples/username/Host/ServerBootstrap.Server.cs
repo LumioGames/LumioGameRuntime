@@ -24,7 +24,8 @@ public static class ServerBootstrap
         var order = manager.World.Commands.Create<PlayerEntity>();      // 模板拷贝；实体是什么由 EntityType 决定，不另设字段（声明类无成员，用泛型指类型）
         var identity = order.Get<IdentityComponent>();
         identity.AccountId = accountId;                                 // 出生初值（服务器私有字段）
-        identity.Connected = true;
+        order.Get<ObserverComponent>().Connected = true;
+        order.Get<ObserverComponent>().ConnectionGeneration = 1;
         // 提交相：发号 → 亮相 → Awake → Start；ReplicationProjection 打成「创建记录」（EntityType + NetEntityId + 可见字段当前值）下发；
         // 客户端 World Manager 收到后按同一 PlayerEntity 模板建 → Awake → PostAttribute → Start。
     }

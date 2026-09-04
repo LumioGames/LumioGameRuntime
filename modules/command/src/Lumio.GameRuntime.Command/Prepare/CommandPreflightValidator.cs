@@ -30,22 +30,6 @@ public sealed class CommandPreflightOptions
 
     public ICommandValidationContext? Context { get; init; }
 
-    internal static CommandPreflightOptions FromWorld(EcsWorld world)
-    {
-#if NET10_0_OR_GREATER
-        ArgumentNullException.ThrowIfNull(world);
-#else
-        if (world is null) throw new ArgumentNullException(nameof(world));
-#endif
-        int availableSlots = world.Budget.MaxEntities - world.ActiveEntityCount;
-        return new CommandPreflightOptions
-        {
-            SchemaEpoch = GeneratedContractManifest.SchemaEpoch,
-            AvailableEntitySlots = availableSlots <= 0 ? 0UL : (ulong)availableSlots,
-            AvailableChangeEntries = (ulong)world.Budget.MaxChangeEntries,
-            Context = new EcsWorldCommandValidationContext(world)
-        };
-    }
 }
 
 public readonly record struct CommandPrepareContext(
@@ -362,9 +346,7 @@ public sealed class CommandPreflightValidator
     }
 
     private static bool IsKnownCreateType(ICommandValidationContext context, string componentType) =>
-        context is EcsWorldCommandValidationContext worldContext
-            ? worldContext.IsKnownEntityType(componentType)
-            : context.IsKnownComponent(componentType);
+        context.IsKnownComponent(componentType);
 
     private static bool HasTarget(Command command) =>
         command.TargetEntityId is not null || command.DeferredTarget is not null;
@@ -427,50 +409,4 @@ internal sealed class FailClosedCommandValidationContext : ICommandValidationCon
     public bool EntityExists(string entityId) => false;
 
     public bool CanWrite(string processorId, Command command) => false;
-}
-
-internal sealed class EcsWorldCommandValidationContext : ICommandValidationContext
-{
-    private readonly EcsWorld _world;
-
-    internal EcsWorldCommandValidationContext(EcsWorld world) =>
-        _world = world ?? throw new ArgumentNullException(nameof(world));
-
-    public bool IsKnownComponent(string componentType) =>
-        _world.TryGetRegisteredComponent(componentType, out _);
-
-    public bool IsKnownField(string componentType, string fieldName) =>
-        _world.TryGetRegisteredField(componentType, fieldName, out _, out _);
-
-    public bool EntityExists(string entityId) =>
-        LocalEntityId.TryParse(entityId, out LocalEntityId id) && _world.EntityIsAlive(id);
-
-    public bool CanWrite(string processorId, Command command)
-    {
-        if (string.IsNullOrWhiteSpace(processorId) || command is null) return false;
-        switch (command.Kind)
-        {
-            case CommandKind.Create:
-                return IsKnownEntityType(command.ComponentType);
-            case CommandKind.Write:
-                if (string.IsNullOrWhiteSpace(command.ComponentType) ||
-                    string.IsNullOrWhiteSpace(command.FieldName) ||
-                    !IsKnownComponent(command.ComponentType) ||
-                    !IsKnownField(command.ComponentType, command.FieldName))
-                {
-                    return false;
-                }
-
-                if (command.DeferredTarget is not null) return true;
-                return command.TargetEntityId is string targetId && EntityExists(targetId);
-            case CommandKind.Destroy:
-                if (command.DeferredTarget is not null) return true;
-                return command.TargetEntityId is string destroyId && EntityExists(destroyId);
-            default:
-                return false;
-        }
-    }
-
-    internal bool IsKnownEntityType(string? name) =>
-        !string.IsNullOrWhiteSpace(name) && _world.TryGetRegisteredEntityType(name, out _, out _);
 }

@@ -72,18 +72,11 @@ public sealed class ContractSurfaceTests
     }
 
     [Fact]
-    public void PublicWorldDoesNotAcceptArbitrarySchemaRegistration()
+    public void WorldManagerIsTheOnlyPublicWorldOwner()
     {
-        MethodInfo[] publicMethods = typeof(EcsWorld).GetMethods(BindingFlags.Instance | BindingFlags.Public);
-
-        Assert.DoesNotContain(publicMethods,
-            static method => method.Name.StartsWith("Register", StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public void ReferenceStorageAdapterIsNotExportedAsProductionApi()
-    {
-        Assert.DoesNotContain(typeof(EcsModule).Assembly.GetExportedTypes(),
-            static type => type.Name == "ReferenceWorldStorageAdapter");
+        Type[] exported = typeof(EcsModule).Assembly.GetExportedTypes();
+        Assert.Contains(exported, static type => type == typeof(WorldManager));
+        Assert.DoesNotContain(exported, static type => type.Name == "ReferenceWorldStorageAdapter");
+        Assert.DoesNotContain(exported, static type => type.Name == "EcsWorld");
     }
 }

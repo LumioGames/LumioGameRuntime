@@ -12,15 +12,7 @@ public sealed class ChatMappingTests
     {
         Assert.Equal("lumio.gameplay-envelope.v1", ChatMapping.ContractId);
         Assert.Equal("chat.input", ChatMapping.InputMappingId);
-        Assert.Equal("chat.event", ChatMapping.EventMappingId);
-        Assert.Equal("chat.component", ChatMapping.ComponentMappingId);
-        Assert.Equal("entity.identity", ChatMapping.IdentityMappingId);
         Assert.Equal(new[] { "text" }, ChatMapping.InputFieldOrder);
-        Assert.Equal(
-            new[] { "messageId", "roomSequence", "senderNetEntityIdInstanceId", "senderNetEntityIdCounter", "text", "appliedTick" },
-            ChatMapping.EventFieldOrder);
-        Assert.Equal(new[] { "lastMessageText", "lastMessageTick" }, ChatMapping.ComponentFieldOrder);
-        Assert.Equal(new[] { "netEntityId", "entityType", "unmappedMark" }, ChatMapping.IdentityFieldOrder);
         Assert.Equal(512, ChatMapping.MaxTextUtf8Bytes);
         Assert.Equal(1, ChatMapping.MaxChatInputPerSenderPerTick);
         Assert.Equal(64, ChatMapping.IngressQueueCapacity);

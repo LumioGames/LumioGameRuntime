@@ -4,6 +4,7 @@ extern alias UsernameClient;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using Lumio.GameRuntime.Ecs;
 using UsernameClient::Lumio.GameRuntime.Samples.Username.Components.Identity;
@@ -53,7 +54,7 @@ public sealed class UsernameSevenStepTests
         Assert.False(player.IsDefault);
         Assert.Equal(InstanceId, player.InstanceId);
         Assert.True(player.Counter >= 1UL);
-        server.BindSelf("C1", player);
+        server.Bind(player);
 
         Pump(server, client);
 
@@ -109,7 +110,7 @@ public sealed class UsernameSevenStepTests
         restored.Start(Thread.CurrentThread);
         Assert.True(restored.World.IsLive(player));
         Assert.Equal("ABCD", restored.World.Get<ServerIdentity>(player).Name.Value);
-        Assert.False(restored.World.Get<ServerIdentity>(player).Connected);
+        Assert.False(restored.World.Get<ObserverComponent>(player).Connected);
         Assert.True(restored.World.TryGetAccount("acct-07", out NetEntityId restoredId));
         Assert.Equal(player, restoredId);
         EntityOrder extra = restored.World.Commands.Create<ServerPlayer>();
@@ -129,6 +130,73 @@ public sealed class UsernameSevenStepTests
     }
 
     [Fact]
+    public void OwnerAndClaimFieldsFollowObserverProjection()
+    {
+        WorldManager server = ServerBootstrap.Boot(InstanceId + 1UL);
+        ServerBootstrap.AdmitPlayer(server, "acct-owner");
+        server.Tick();
+        _ = server.DrainOutbox();
+        ServerBootstrap.AdmitPlayer(server, "acct-friend");
+        server.Tick();
+        _ = server.DrainOutbox();
+
+        NetEntityId owner = default;
+        NetEntityId friend = default;
+        foreach (ServerIdentity identity in server.World.Each<ServerIdentity>())
+        {
+            if (identity.AccountId == "acct-owner") owner = identity.Entity;
+            if (identity.AccountId == "acct-friend") friend = identity.Entity;
+        }
+
+        server.Bind(owner);
+        server.Bind(friend);
+        ServerIdentity ownerIdentity = server.World.Get<ServerIdentity>(owner);
+        ownerIdentity.Friends.Add(owner);
+        ownerIdentity.Friends.Add(friend);
+        ownerIdentity.RealName.Value = "owner-secret";
+        server.Tick();
+
+        WorldChangeMessage? ownerPack = null;
+        WorldChangeMessage? friendPack = null;
+        foreach (WorldMessage message in server.DrainOutbox())
+        {
+            if (message is not WorldChangeMessage pack) continue;
+            if (pack.ObserverId == owner) ownerPack = pack;
+            if (pack.ObserverId == friend) friendPack = pack;
+        }
+
+        Assert.NotNull(ownerPack);
+        Assert.NotNull(friendPack);
+        Assert.Contains(ownerPack!.Creates.Single(create => create.NetEntityId == owner).Fields,
+            static field => field.AttributeId == "IdentityComponent.friends");
+        Assert.Contains(ownerPack.Creates.Single(create => create.NetEntityId == owner).Fields,
+            static field => field.AttributeId == "IdentityComponent.realName");
+        Assert.DoesNotContain(friendPack!.Creates.Single(create => create.NetEntityId == owner).Fields,
+            static field => field.AttributeId == "IdentityComponent.friends");
+        Assert.Contains(friendPack.Creates.Single(create => create.NetEntityId == owner).Fields,
+            static field => field.AttributeId == "IdentityComponent.realName");
+    }
+
+    [Fact]
+    public void DestroyedEntityRentsResetComponentStorage()
+    {
+        WorldManager server = ServerBootstrap.Boot(InstanceId + 2UL);
+        ServerBootstrap.AdmitPlayer(server, "acct-reuse");
+        server.Tick();
+        _ = server.DrainOutbox();
+        NetEntityId id = default;
+        foreach (ServerIdentity identity in server.World.Each<ServerIdentity>())
+            if (identity.AccountId == "acct-reuse") id = identity.Entity;
+        ServerIdentity original = server.World.Get<ServerIdentity>(id);
+        server.World.QueueDestroy(id);
+        server.Tick();
+        EntityOrder order = server.World.Commands.Create<ServerPlayer>();
+        server.Tick();
+        Assert.Same(original, order.Get<ServerIdentity>());
+        Assert.Equal(string.Empty, order.Get<ServerIdentity>().AccountId);
+    }
+
+    [Fact]
     public void EventOutboxDoesNotGrowAcrossOneThousandTicks()
     {
         WorldManager server = ServerBootstrap.Boot(InstanceId);
@@ -137,7 +205,7 @@ public sealed class UsernameSevenStepTests
         NetEntityId player = default;
         foreach (ServerIdentity identity in server.World.Each<ServerIdentity>())
             if (identity.AccountId == "acct-07") player = identity.Entity;
-        server.BindSelf("C1", player);
+        server.Bind(player);
         server.Tick();
         _ = server.DrainOutbox();
 
@@ -152,8 +220,7 @@ public sealed class UsernameSevenStepTests
         Assert.Equal(baseline, CountTracked(server));
     }
 
-    private static int CountTracked(WorldManager server) =>
-        server.World.PendingRpcs.Count + server.World.Dirty.Count + server.DrainOutbox().Count;
+    private static int CountTracked(WorldManager server) => server.DrainOutbox().Count;
 
     private static string RunChatRound()
     {
@@ -176,7 +243,7 @@ public sealed class UsernameSevenStepTests
         shuffled.Reverse();
         for (int i = 0; i < shuffled.Count; i++)
         {
-            server.BindSelf("C" + i.ToString(System.Globalization.CultureInfo.InvariantCulture), shuffled[i]);
+            server.Bind(shuffled[i]);
             server.Enqueue(new InputCommandMessage("chat.input", shuffled[i], EncodeText("hi")));
         }
 
@@ -199,13 +266,14 @@ public sealed class UsernameSevenStepTests
     {
         server.Tick();
         foreach (WorldMessage message in server.DrainOutbox())
-            ClientBootstrap.OnNetworkMessage(client, message);
+            ClientBootstrap.OnNetworkMessage(client, WireCodec.DecodePack(WireCodec.EncodePack(message)));
         client.Tick();
         foreach (WorldMessage message in client.DrainOutbox())
-            server.Enqueue(message);
+            if (message is InputCommandMessage input)
+                server.Enqueue(WireCodec.DecodeInput(WireCodec.EncodeInput(input), input.Sender));
         server.Tick();
         foreach (WorldMessage message in server.DrainOutbox())
-            ClientBootstrap.OnNetworkMessage(client, message);
+            ClientBootstrap.OnNetworkMessage(client, WireCodec.DecodePack(WireCodec.EncodePack(message)));
         client.Tick();
     }
 

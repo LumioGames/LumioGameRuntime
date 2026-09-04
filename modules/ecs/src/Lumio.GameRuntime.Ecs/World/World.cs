@@ -3,7 +3,7 @@ using System.Collections.Generic;
 
 namespace Lumio.GameRuntime.Ecs;
 
-/// <summary>The unique GameWorld held by a <see cref="WorldManager"/>.</summary>
+/// <summary>The single dense-array GameWorld owned by a WorldManager.</summary>
 public sealed class World : ISyncHost
 {
     internal World(WorldManager manager, EcsRegistry registry, ulong instanceId, bool isServer)
@@ -13,59 +13,44 @@ public sealed class World : ISyncHost
         InstanceId = instanceId;
         IsServer = isServer;
         Commands = new CommandBuffer(this);
-        Entities = new Dictionary<NetEntityId, EntityRecord>();
+        Entities = new List<EntityRecord?> { null };
         PendingCreates = new List<EntityOrder>();
         PendingDestroys = new List<NetEntityId>();
-        Tombstones = new HashSet<NetEntityId>();
         Dirty = new List<DirtyEntry>();
         PendingRpcs = new List<ClientRpcRecord>();
         PendingCorrections = new List<FieldChange>();
         PendingHooks = new List<HookEntry>();
+        DestroyedThisTick = new List<NetEntityId>();
         AccountIndex = new Dictionary<string, NetEntityId>(StringComparer.Ordinal);
         CreationOrder = new List<NetEntityId>();
+        ComponentPools = new Dictionary<Type, Stack<Component[]>>();
     }
 
-    /// <summary>Owning manager.</summary>
     public WorldManager Manager { get; internal set; }
-
-    /// <summary>Generated registry that described this world.</summary>
     public EcsRegistry Registry { get; }
-
-    /// <summary>World instance id. Zero on a client until the welcome message is applied.</summary>
     public ulong InstanceId { get; internal set; }
-
-    /// <summary>True when this world issues identities and is authoritative.</summary>
     public bool IsServer { get; }
-
-    /// <summary>Current logic tick. Incremented at the end of <see cref="WorldManager.Tick"/>.</summary>
     public ulong Tick { get; internal set; }
-
-    /// <summary>Revision incremented on every committed mutation.</summary>
     public ulong Revision { get; internal set; } = 1;
 
     private Entity? _self;
-
-    /// <summary>This connection's bound entity. Set from the welcome message on the client; set at Admit on the server.</summary>
     public Entity Self => _self ?? throw new InvalidOperationException("World.Self is not bound.");
-
     internal void BindSelf(Entity entity) => _self = entity;
 
-    /// <summary>Structural command buffer.</summary>
     public CommandBuffer Commands { get; }
-
-    /// <summary>Identities in create order, including tombstoned slots that remain in the census.</summary>
     public IReadOnlyList<NetEntityId> IssuedIds => CreationOrder;
 
-    internal Dictionary<NetEntityId, EntityRecord> Entities { get; }
+    internal List<EntityRecord?> Entities { get; }
     internal List<EntityOrder> PendingCreates { get; }
     internal List<NetEntityId> PendingDestroys { get; }
-    internal HashSet<NetEntityId> Tombstones { get; }
     internal List<DirtyEntry> Dirty { get; }
     internal List<ClientRpcRecord> PendingRpcs { get; }
     internal List<FieldChange> PendingCorrections { get; }
     internal List<HookEntry> PendingHooks { get; }
+    internal List<NetEntityId> DestroyedThisTick { get; }
     internal Dictionary<string, NetEntityId> AccountIndex { get; }
     internal List<NetEntityId> CreationOrder { get; }
+    private Dictionary<Type, Stack<Component[]>> ComponentPools { get; }
     internal ulong NextCounter = 1;
     internal ulong NextMessageId = 1;
     internal ulong NextRoomSequence = 1;
@@ -77,114 +62,82 @@ public sealed class World : ISyncHost
     WorldManager ISyncHost.Manager => Manager;
     World ISyncHost.World => this;
 
-    /// <summary>Reads a component on <paramref name="id"/>.</summary>
-    public T Get<T>(NetEntityId id) where T : Component
+    internal EntityRecord? Record(NetEntityId id)
     {
-        if (!Entities.TryGetValue(id, out EntityRecord? record) || record.Presence != Presence.Live)
-            throw new InvalidOperationException("Entity " + id.ToHex() + " is not live.");
-        return record.Get<T>();
+        if (id.InstanceId != InstanceId || id.Counter == 0 || id.Counter >= (ulong)Entities.Count) return null;
+        return Entities[(int)id.Counter];
     }
 
-    /// <summary>Returns a live entity handle.</summary>
-    public Entity Get(NetEntityId id)
-    {
-        if (!Entities.TryGetValue(id, out EntityRecord? record) || record.Presence != Presence.Live)
-            throw new InvalidOperationException("Entity " + id.ToHex() + " is not live.");
-        return new Entity(this, id);
-    }
+    public T Get<T>(NetEntityId id) where T : Component => Record(id)?.Get<T>() ??
+        throw new InvalidOperationException("Entity " + id.ToHex() + " is not live.");
 
-    /// <summary>True when <paramref name="id"/> is live.</summary>
-    public bool IsLive(NetEntityId id) =>
-        Entities.TryGetValue(id, out EntityRecord? record) && record.Presence == Presence.Live;
+    public Entity Get(NetEntityId id) => Record(id) is not null
+        ? new Entity(this, id)
+        : throw new InvalidOperationException("Entity " + id.ToHex() + " is not live.");
 
-    /// <summary>True when <paramref name="id"/> is a tombstone.</summary>
-    public bool IsTombstoned(NetEntityId id) => Tombstones.Contains(id);
+    public bool IsLive(NetEntityId id) => Record(id) is not null;
 
-    /// <summary>Looks up the live entity bound to <paramref name="accountId"/>.</summary>
+    /// <summary>Tombstones are derived from the issuer counter and dense live slots.</summary>
+    public bool IsTombstoned(NetEntityId id) =>
+        id.InstanceId == InstanceId && id.Counter > 0 && id.Counter < NextCounter && Record(id) is null;
+
     public bool TryGetAccount(string accountId, out NetEntityId id)
     {
-        if (string.IsNullOrEmpty(accountId))
-        {
-            id = default;
-            return false;
-        }
-
-        return AccountIndex.TryGetValue(accountId, out id);
+        if (string.IsNullOrEmpty(accountId)) { id = default; return false; }
+        return AccountIndex.TryGetValue(accountId, out id) && IsLive(id);
     }
 
-    /// <summary>Finds a live component by CLR type name (for AttributeId adapters).</summary>
-    public Component? NamedComponent(NetEntityId id, string typeName)
-    {
-        if (!Entities.TryGetValue(id, out EntityRecord? record) || record.Presence != Presence.Live)
-            return null;
-        for (int i = 0; i < record.Components.Length; i++)
-        {
-            if (string.Equals(record.Components[i].GetType().Name, typeName, StringComparison.Ordinal))
-                return record.Components[i];
-        }
+    public Component? NamedComponent(NetEntityId id, string typeName) => Record(id)?.Find(typeName);
 
-        return null;
-    }
-
-    /// <summary>Iterates live components of type <typeparamref name="T"/> in create order.</summary>
     public IEnumerable<T> Each<T>() where T : Component
     {
         for (int i = 0; i < CreationOrder.Count; i++)
         {
-            if (!Entities.TryGetValue(CreationOrder[i], out EntityRecord? record)) continue;
-            if (record.Presence != Presence.Live) continue;
-            foreach (T component in record.OfType<T>())
-                yield return component;
+            EntityRecord? record = Record(CreationOrder[i]);
+            if (record is null) continue;
+            foreach (T component in record.OfType<T>()) yield return component;
         }
     }
 
-    /// <summary>The unique live component of type <typeparamref name="T"/> (WorldEntity components).</summary>
     public T Single<T>() where T : Component
     {
         T? found = null;
         foreach (T item in Each<T>())
         {
-            if (found is not null)
-                throw new InvalidOperationException("More than one " + typeof(T).Name + " is live.");
+            if (found is not null) throw new InvalidOperationException("More than one " + typeof(T).Name + " is live.");
             found = item;
         }
-
-        if (found is null)
-            throw new InvalidOperationException("No live " + typeof(T).Name + " exists.");
-        return found;
+        return found ?? throw new InvalidOperationException("No live " + typeof(T).Name + " exists.");
     }
 
-    /// <summary>Lifecycle probe used by appearance-order tests (Awake → PostAttribute → Start).</summary>
     public IReadOnlyList<string> LifecycleOf(NetEntityId id)
     {
-        if (!Entities.TryGetValue(id, out EntityRecord? record))
-            return Array.Empty<string>();
-        return record.Lifecycle;
+        EntityRecord? record = Record(id);
+        if (record is null) return Array.Empty<string>();
+        var result = new List<string>(3);
+        if (record.AwakeCalled) result.Add("Awake");
+        if (record.PostAttributeCalled) result.Add("PostAttribute");
+        if (record.Started) result.Add("Start");
+        return result;
     }
 
-    /// <summary>Type handle for <paramref name="id"/>. Subtypes return true from <see cref="EntityTypeRef.Is{T}"/>.</summary>
-    public EntityTypeRef TypeOf(NetEntityId id)
-    {
-        if (!Entities.TryGetValue(id, out EntityRecord? record) || record.Presence != Presence.Live)
-            throw new InvalidOperationException("Entity " + id.ToHex() + " is not live.");
-        return new EntityTypeRef(record.EntityType, Registry);
-    }
+    public EntityTypeRef TypeOf(NetEntityId id) => Record(id) is EntityRecord record
+        ? new EntityTypeRef(record.EntityType, Registry)
+        : throw new InvalidOperationException("Entity " + id.ToHex() + " is not live.");
 
-    /// <summary>Queues <paramref name="id"/> for destruction at the next commit.</summary>
     public void QueueDestroy(NetEntityId id) => PendingDestroys.Add(id);
-
     internal void RequestSave(string slot) => PendingSaveSlot = slot;
 
     internal NetEntityId IssueId()
     {
-        if (!IsServer)
-            throw new InvalidOperationException("Client worlds do not issue NetEntityId.");
-        ulong counter = NextCounter++;
-        return new NetEntityId(InstanceId, counter);
+        if (!IsServer) throw new InvalidOperationException("Client worlds do not issue NetEntityId.");
+        return new NetEntityId(InstanceId, NextCounter++);
     }
 
     internal EntityRecord Attach(NetEntityId id, Type entityType, Component[] components, bool bind)
     {
+        if (id.Counter > int.MaxValue) throw new InvalidOperationException("Entity counter exceeds dense storage capacity.");
+        while (Entities.Count <= (int)id.Counter) Entities.Add(null);
         var record = new EntityRecord(id, entityType, components);
         for (int i = 0; i < components.Length; i++)
         {
@@ -194,11 +147,69 @@ public sealed class World : ISyncHost
             component.Record = record;
             if (bind) Registry.BindComponent(component, this);
         }
-
-        Entities[id] = record;
-        CreationOrder.Add(id);
+        Entities[(int)id.Counter] = record;
+        if (!CreationOrder.Contains(id)) CreationOrder.Add(id);
+        if (id.Counter >= NextCounter && id.Counter < ulong.MaxValue) NextCounter = id.Counter + 1UL;
         IndexAccount(record);
         return record;
+    }
+
+    internal void Detach(NetEntityId id)
+    {
+        EntityRecord? record = id.Counter < (ulong)Entities.Count ? Entities[(int)id.Counter] : null;
+        if (record is not null)
+        {
+            Entities[(int)id.Counter] = null;
+            ResetAndPool(record.EntityType, record.Components);
+        }
+        foreach (KeyValuePair<string, NetEntityId> pair in new List<KeyValuePair<string, NetEntityId>>(AccountIndex))
+            if (pair.Value == id) AccountIndex.Remove(pair.Key);
+    }
+
+    internal Component[] RentComponents(Type entityType)
+    {
+        if (ComponentPools.TryGetValue(entityType, out Stack<Component[]>? pool) && pool.Count > 0)
+            return pool.Pop();
+        return Registry.CreateComponents(entityType);
+    }
+
+    private void ResetAndPool(Type entityType, Component[] components)
+    {
+        for (int i = 0; i < components.Length; i++)
+        {
+            Component component = components[i];
+            if (component is ObserverComponent observer)
+            {
+                observer.Connected = false;
+                observer.ConnectionGeneration = 0;
+                observer.DisconnectedAtTick = 0;
+                observer.ProjectedTick = 0;
+            }
+            IGeneratedComponent? generated = EcsRegistry.Generated(component);
+            if (generated is null) continue;
+            string prefix = component.GetType().Name + ".";
+            for (int r = 0; r < Registry.AttributeDeclarations.Count; r++)
+            {
+                string id = Registry.AttributeDeclarations[r].AttributeId;
+                if (!id.StartsWith(prefix, StringComparison.Ordinal)) continue;
+                string fieldName = id.Substring(prefix.Length);
+                object? current = generated.ReadField(fieldName);
+                if (current is ISyncContainer container) { container.ResetForReuse(); continue; }
+                generated.WriteField(fieldName, current switch
+                {
+                    string => string.Empty,
+                    bool => false,
+                    ulong => 0UL,
+                    uint => 0U,
+                    int => 0,
+                    _ => null
+                }, silent: true);
+            }
+        }
+
+        if (!ComponentPools.TryGetValue(entityType, out Stack<Component[]>? pool))
+            ComponentPools[entityType] = pool = new Stack<Component[]>();
+        pool.Push(components);
     }
 
     internal void RebuildAccountIndex()
@@ -206,9 +217,8 @@ public sealed class World : ISyncHost
         AccountIndex.Clear();
         for (int i = 0; i < CreationOrder.Count; i++)
         {
-            if (!Entities.TryGetValue(CreationOrder[i], out EntityRecord? record)) continue;
-            if (record.Presence != Presence.Live) continue;
-            IndexAccount(record);
+            EntityRecord? record = Record(CreationOrder[i]);
+            if (record is not null) IndexAccount(record);
         }
     }
 
@@ -216,51 +226,14 @@ public sealed class World : ISyncHost
     {
         for (int i = 0; i < record.Components.Length; i++)
         {
-            Component component = record.Components[i];
-            string? accountId = TryReadAccountId(component);
-            if (!string.IsNullOrEmpty(accountId))
-                AccountIndex[accountId] = record.Id;
+            IGeneratedComponent? generated = EcsRegistry.Generated(record.Components[i]);
+            if (generated?.ReadField("accountId") is string account && account.Length > 0)
+                AccountIndex[account] = record.Id;
         }
     }
 
-    /// <summary>Reads IdentityComponent.AccountId when present.</summary>
-    public static string? TryReadAccountId(Component component)
-    {
-        IGeneratedComponent? generated = EcsRegistry.Generated(component);
-        if (generated is not null)
-        {
-            object? value = generated.ReadField("accountId");
-            return value as string;
-        }
-
-        System.Reflection.FieldInfo? field = component.GetType().GetField("AccountId");
-        return field?.GetValue(component) as string;
-    }
-
-    /// <summary>Reads IdentityComponent.Connected when present.</summary>
-    public static bool TryReadConnected(Component component, out bool connected)
-    {
-        IGeneratedComponent? generated = EcsRegistry.Generated(component);
-        if (generated is not null)
-        {
-            object? value = generated.ReadField("connected");
-            if (value is bool flag)
-            {
-                connected = flag;
-                return true;
-            }
-        }
-
-        System.Reflection.FieldInfo? field = component.GetType().GetField("Connected");
-        if (field is not null && field.FieldType == typeof(bool))
-        {
-            connected = (bool)(field.GetValue(component) ?? false);
-            return true;
-        }
-
-        connected = false;
-        return false;
-    }
+    public static string? TryReadAccountId(Component component) =>
+        EcsRegistry.Generated(component)?.ReadField("accountId") as string;
 
     void ISyncHost.OnLocalWrite(Component owner, ISyncField field, object? oldValue, object? newValue)
     {
@@ -268,49 +241,23 @@ public sealed class World : ISyncHost
         Dirty.Add(new DirtyEntry(owner.EntityId, field, oldValue, newValue, ChangeReason.Local));
         if (field.Notify == Notify.All)
             PendingHooks.Add(new HookEntry(owner, field.Ordinal, oldValue, newValue, ChangeReason.Local));
-
         if (!IsServer && field.Authority == Authority.Owner)
             Manager.EnqueueOwnerWrite(owner.EntityId, field, newValue);
     }
 
-    internal void EnqueueClientRpc(Component owner, string method, object?[] args)
-    {
-        var record = new ClientRpcRecord(
-            owner.EntityId,
-            owner.GetType().Name,
-            method,
-            args,
-            0,
-            0,
-            owner.EntityId,
-            Tick);
-        PendingRpcs.Add(record);
-    }
+    internal void EnqueueClientRpc(Component owner, string method, object?[] args) =>
+        PendingRpcs.Add(new ClientRpcRecord(owner.EntityId, owner.GetType().Name, method, args, 0, 0, owner.EntityId, Tick));
 
-    internal void EnqueueServerRpc(Component owner, string method, object?[] args)
-    {
+    internal void EnqueueServerRpc(Component owner, string method, object?[] args) =>
         Manager.EnqueueServerRpc(owner.EntityId, owner.GetType().Name, method, args);
-    }
 }
 
 internal readonly struct DirtyEntry
 {
-    internal DirtyEntry(
-        NetEntityId entity,
-        ISyncField field,
-        object? oldValue,
-        object? newValue,
-        ChangeReason reason,
-        bool suppressWriterEcho = false)
+    internal DirtyEntry(NetEntityId entity, ISyncField field, object? oldValue, object? newValue, ChangeReason reason, bool suppressWriterEcho = false)
     {
-        Entity = entity;
-        Field = field;
-        OldValue = oldValue;
-        NewValue = newValue;
-        Reason = reason;
-        SuppressWriterEcho = suppressWriterEcho;
+        Entity = entity; Field = field; OldValue = oldValue; NewValue = newValue; Reason = reason; SuppressWriterEcho = suppressWriterEcho;
     }
-
     internal readonly NetEntityId Entity;
     internal readonly ISyncField Field;
     internal readonly object? OldValue;
@@ -323,13 +270,8 @@ internal readonly struct HookEntry
 {
     internal HookEntry(Component owner, int ordinal, object? oldValue, object? newValue, ChangeReason reason)
     {
-        Owner = owner;
-        Ordinal = ordinal;
-        OldValue = oldValue;
-        NewValue = newValue;
-        Reason = reason;
+        Owner = owner; Ordinal = ordinal; OldValue = oldValue; NewValue = newValue; Reason = reason;
     }
-
     internal readonly Component Owner;
     internal readonly int Ordinal;
     internal readonly object? OldValue;

@@ -43,7 +43,9 @@ public static class FieldAnnotationRules
     {
         Scope.Room => VisibilityRoomPublic,
         Scope.Aoi => VisibilityAoiScoped,
-        Scope.Owner => VisibilityServerOnly,
+        // Owner scope is replicated to exactly one observer; the manager applies
+        // the owner restriction from generated Sync metadata during projection.
+        Scope.Owner => VisibilityRoomPublic,
         Scope.Claim => VisibilityClaimScoped,
         _ => throw new ArgumentOutOfRangeException(nameof(scope)),
     };

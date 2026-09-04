@@ -1,30 +1,9 @@
 [
   {
-    "attributeId": "ChatComponent.lastMessagePersistOnly",
+    "attributeId": "IdentityComponent.friends",
     "persistence": "persistent",
-    "replication": "not-replicated",
-    "valueType": "utf8-string",
-    "visibility": "server-only"
-  },
-  {
-    "attributeId": "EntityIdentity.claimedMark",
-    "persistence": "ephemeral",
     "replication": "replicated",
-    "valueType": "utf8-string",
-    "visibility": "claim-scoped"
-  },
-  {
-    "attributeId": "EntityIdentity.entityType",
-    "persistence": "ephemeral",
-    "replication": "replicated",
-    "valueType": "enum:entityType",
-    "visibility": "room-public"
-  },
-  {
-    "attributeId": "EntityIdentity.unmappedMark",
-    "persistence": "ephemeral",
-    "replication": "replicated",
-    "valueType": "utf8-string",
+    "valueType": "list",
     "visibility": "room-public"
   },
   {
@@ -33,5 +12,12 @@
     "replication": "replicated",
     "valueType": "utf8-string",
     "visibility": "room-public"
+  },
+  {
+    "attributeId": "IdentityComponent.realName",
+    "persistence": "persistent",
+    "replication": "replicated",
+    "valueType": "utf8-string",
+    "visibility": "claim-scoped"
   }
 ]

@@ -124,12 +124,24 @@ public interface IGeneratedComponent
     void WriteField(string fieldId, object? value, bool silent);
 }
 
+/// <summary>Generated metadata bridge used by the World Manager without reflection.</summary>
+public interface IGeneratedSyncMetadata
+{
+    bool TryGetSyncField(string fieldId, out ISyncField field);
+}
+
 /// <summary>Writes persistable members into a snapshot.</summary>
 public interface IPersistWriter
 {
     void WriteString(string attributeId, string? value);
     void WriteUInt64(string attributeId, ulong value);
     void WriteBoolean(string attributeId, bool value);
+}
+
+/// <summary>Optional generated bridge for replicated container snapshots.</summary>
+public interface IContainerFieldWriter
+{
+    void WriteContainer(string attributeId, object value);
 }
 
 /// <summary>Reads persistable members from a snapshot.</summary>

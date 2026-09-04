@@ -5,5 +5,5 @@ namespace Lumio.GameRuntime.Samples.Username;
 internal static class GeneratedSyncTable
 {
     internal static readonly string Side = "Client";
-    internal static readonly int FieldCount = 1;
+    internal static readonly int FieldCount = 3;
 }

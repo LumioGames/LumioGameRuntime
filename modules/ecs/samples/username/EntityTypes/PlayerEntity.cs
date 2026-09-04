@@ -9,6 +9,7 @@ using Lumio.GameRuntime.Samples.Username.Components.Identity;
 namespace Lumio.GameRuntime.Samples.Username.EntityTypes;
 
 [EntityType(Mode.CS)]
+[Has(typeof(ObserverComponent))]
 [Has(typeof(IdentityComponent))]
 [Has(typeof(ChatComponent))]
 public abstract class PlayerEntity { }

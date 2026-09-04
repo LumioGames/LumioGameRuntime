@@ -6,7 +6,7 @@ namespace Lumio.GameRuntime.Command;
 /// <summary>Tick-scoped map from deferred tokens to committed local entity IDs.</summary>
 public sealed class DeferredEntityMap
 {
-    private readonly Dictionary<DeferredEntityToken, string> _values;
+    private readonly Dictionary<DeferredEntityToken, string> _entries;
 
     public DeferredEntityMap(ulong tickId)
         : this(tickId, "default")
@@ -20,7 +20,7 @@ public sealed class DeferredEntityMap
         TickId = tickId;
         WorldId = worldId;
         BufferGeneration = bufferGeneration;
-        _values = new Dictionary<DeferredEntityToken, string>();
+        _entries = new Dictionary<DeferredEntityToken, string>();
     }
 
     private DeferredEntityMap(ulong tickId, string worldId, ulong bufferGeneration, IDictionary<DeferredEntityToken, string> values)
@@ -28,7 +28,7 @@ public sealed class DeferredEntityMap
         TickId = tickId;
         WorldId = worldId;
         BufferGeneration = bufferGeneration;
-        _values = new Dictionary<DeferredEntityToken, string>(values);
+        _entries = new Dictionary<DeferredEntityToken, string>(values);
     }
 
     public ulong TickId { get; }
@@ -37,7 +37,7 @@ public sealed class DeferredEntityMap
 
     public ulong BufferGeneration { get; }
 
-    public IReadOnlyDictionary<DeferredEntityToken, string> Values => _values;
+    public IReadOnlyDictionary<DeferredEntityToken, string> Values => _entries;
 
     public bool TryAdd(DeferredEntityToken token, string entityId, out string? generatedErrorId)
     {
@@ -50,13 +50,13 @@ public sealed class DeferredEntityMap
             return false;
         }
 
-        if (_values.ContainsKey(token))
+        if (_entries.ContainsKey(token))
         {
             generatedErrorId = "InvalidArgument";
             return false;
         }
 
-        _values.Add(token, entityId);
+        _entries.Add(token, entityId);
         return true;
     }
 
@@ -71,14 +71,14 @@ public sealed class DeferredEntityMap
             return false;
         }
 
-        if (_values.TryGetValue(token, out string? existing))
+        if (_entries.TryGetValue(token, out string? existing))
         {
             if (string.Equals(existing, entityId, StringComparison.Ordinal)) return true;
             generatedErrorId = "InvalidArgument";
             return false;
         }
 
-        _values.Add(token, entityId);
+        _entries.Add(token, entityId);
         return true;
     }
 
@@ -87,8 +87,8 @@ public sealed class DeferredEntityMap
         entityId = null;
         if (currentTick != TickId || token.TickId != TickId || !string.Equals(token.WorldId, WorldId, StringComparison.Ordinal) ||
             (BufferGeneration != 0UL && token.BufferGeneration != 0UL && token.BufferGeneration != BufferGeneration)) return false;
-        return _values.TryGetValue(token, out entityId);
+        return _entries.TryGetValue(token, out entityId);
     }
 
-    public DeferredEntityMap Snapshot() => new(TickId, WorldId, BufferGeneration, _values);
+    public DeferredEntityMap Snapshot() => new(TickId, WorldId, BufferGeneration, _entries);
 }

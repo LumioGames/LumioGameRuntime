@@ -5,7 +5,7 @@ using Lumio.GameRuntime.Ecs;
 
 namespace Lumio.GameRuntime.Samples.Username.Components.Chat;
 
-public sealed partial class ChatComponent : IGeneratedComponent
+public sealed partial class ChatComponent : IGeneratedComponent, IGeneratedSyncMetadata
 {
     partial void OnClientWrite(in SyncWrite w, ref bool accept);
 
@@ -83,5 +83,11 @@ public sealed partial class ChatComponent : IGeneratedComponent
             LastMessageTick = (ulong)value!;
             return;
         }
+    }
+
+    bool IGeneratedSyncMetadata.TryGetSyncField(string fieldId, out ISyncField field)
+    {
+        field = null!;
+        return false;
     }
 }

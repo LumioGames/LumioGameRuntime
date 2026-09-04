@@ -18,10 +18,11 @@ public sealed class ChatCommandRuntimeTests
     [Fact]
     public void ChatInputWritesLastMessageAndEmitsClientRpc()
     {
-        using EntityBindingQuery bindings = EntityBindingQuery.Create();
+        using EntityBindingQuery bindings = TestBindingFactory.Create();
         using ChatCommandRuntime runtime = ChatCommandRuntime.Create(bindings);
         BindingQueryResult admitted = bindings.Admit("C1", "acct-07", "room-01", "player");
-        NetEntityId id = NetEntityId.Parse(admitted.Binding!.Value.NetEntityId);
+        bindings.Manager.Tick();
+        NetEntityId id = NetEntityId.Parse(bindings.ResolveByConnection("room-01", "C1").Binding!.Value.NetEntityId);
         ChatMappingResult admittedInput = runtime.AdmitInput("room-01", "C1", 1, new ChatInput("gg"));
         Assert.True(admittedInput.Succeeded);
         ChatTickResult tick = runtime.RunTick(1);
