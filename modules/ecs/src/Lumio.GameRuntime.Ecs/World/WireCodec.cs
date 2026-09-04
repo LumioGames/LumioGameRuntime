@@ -18,6 +18,8 @@ public static class WireCodec
     public static byte[] EncodePack(WorldMessage message)
     {
         if (message is null) throw new ArgumentNullException(nameof(message));
+        if (message is AdmitConnectionMessage or DisconnectConnectionMessage or RebindConnectionMessage)
+            throw new ArgumentException("Runtime Manager control messages are in-process and not wire messages.", nameof(message));
         var json = new StringBuilder(256);
         if (message is WelcomeMessage welcome)
         {

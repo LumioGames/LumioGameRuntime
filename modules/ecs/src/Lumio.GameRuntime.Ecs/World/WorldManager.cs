@@ -16,6 +16,7 @@ public sealed class WorldManager : IDisposable
     private bool _disposed;
     private NetEntityId _pendingWelcomeSelf;
     private ulong _pendingWelcomeGeneration;
+    private IWorldControlAdapter? _controlAdapter;
 
     private WorldManager(EcsRegistry registry, ulong instanceId, bool isServer)
     {
@@ -32,6 +33,22 @@ public sealed class WorldManager : IDisposable
 
     /// <summary>Maximum number of initial create records per observer pack; zero means unlimited.</summary>
     public int CreatesPerPack { get; set; }
+
+    public void AttachControlAdapter(IWorldControlAdapter adapter)
+    {
+        ThrowIfDisposed();
+        if (adapter is null) throw new ArgumentNullException(nameof(adapter));
+        if (_controlAdapter is not null) throw new InvalidOperationException("WorldManager already has a control adapter.");
+        _controlAdapter = adapter;
+    }
+
+    public IWorldControlAdapter? DetachControlAdapter()
+    {
+        ThrowIfDisposed();
+        IWorldControlAdapter? adapter = _controlAdapter;
+        _controlAdapter = null;
+        return adapter;
+    }
 
     public static WorldManager Create(EcsRegistry registry, ulong? instanceId = null)
     {
@@ -191,6 +208,15 @@ public sealed class WorldManager : IDisposable
 
     private void ApplyInputs(List<WorldMessage> batch)
     {
+        for (int i = 0; i < batch.Count; i++)
+        {
+            if (batch[i] is not (AdmitConnectionMessage or DisconnectConnectionMessage or RebindConnectionMessage)) continue;
+            if (_controlAdapter is null) continue;
+            if (!_controlAdapter.TryHandle(batch[i], out ErrorMessage? error))
+            {
+                if (error is not null) _outbox.Add(error);
+            }
+        }
         var inputs = new List<InputCommandMessage>();
         for (int i = 0; i < batch.Count; i++) if (batch[i] is InputCommandMessage input) inputs.Add(input);
         inputs.Sort(static (a, b) => a.Sender.CompareTo(b.Sender));
@@ -367,8 +393,10 @@ public sealed class WorldManager : IDisposable
             }
 
             var destroys = new List<NetEntityId>(World.DestroyedThisTick);
-            if (initial) _outbox.Add(new WelcomeMessage(World.InstanceId, observerId, observer.ConnectionGeneration, observerId.ToHex()));
-            _outbox.Add(new WorldChangeMessage(World.Tick, creates, fields, destroys, rpcs, observerId: observerId));
+            string? connection = null;
+            if (_controlAdapter is not null && _controlAdapter.TryResolveConnection(observerId, out string resolved)) connection = resolved;
+            if (initial) _outbox.Add(new WelcomeMessage(World.InstanceId, observerId, observer.ConnectionGeneration, connection));
+            _outbox.Add(new WorldChangeMessage(World.Tick, creates, fields, destroys, rpcs, connection, observerId));
             if (fullComplete) observer.ProjectedTick = World.Tick;
         }
         FireLocalHooks();

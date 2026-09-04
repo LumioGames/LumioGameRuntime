@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Threading;
+using System.Threading.Tasks;
 using Xunit;
 
 namespace Lumio.GameRuntime.Ecs.Tests;
@@ -91,6 +92,55 @@ public sealed class R5RuntimeContractTests
         Assert.Throws<InvalidOperationException>(() => manager.Tick());
     }
 
+    [Fact]
+    public void RuntimeControlsAreWorldMessagesAndNotWireMessages()
+    {
+        WorldMessage[] controls =
+        {
+            new AdmitConnectionMessage("conn-a", "acct-a", "room-a", "player"),
+            new DisconnectConnectionMessage("conn-a"),
+            new RebindConnectionMessage("conn-a", "acct-a", "room-a", "reconnect"),
+        };
+
+        Assert.All(controls, control =>
+        {
+            Assert.IsAssignableFrom<WorldMessage>(control);
+            Assert.Throws<ArgumentException>(() => WireCodec.EncodePack(control));
+        });
+    }
+
+    [Fact]
+    public async Task RuntimeControlRunsOnOwnerTickAndPreservesReturnedErrorConnection()
+    {
+        var registry = new TestRegistry();
+        using WorldManager manager = WorldManager.Create(registry, 7UL);
+        var adapter = new RecordingControlAdapter();
+        manager.AttachControlAdapter(adapter);
+
+        await Task.Run(() => manager.Enqueue(new AdmitConnectionMessage("conn-a", "acct-a", "room-a", "player")), TestContext.Current.CancellationToken);
+        Assert.Empty(adapter.Handled);
+        manager.Start(Thread.CurrentThread);
+        manager.Tick();
+
+        Assert.Single(adapter.Handled);
+        Assert.Equal("conn-a", adapter.Handled[0].Connection);
+        IReadOnlyList<WorldMessage> output = manager.DrainOutbox();
+        ErrorMessage error = Assert.IsType<ErrorMessage>(Assert.Single(output, item => item is ErrorMessage));
+        Assert.Equal("conn-a", error.Connection);
+    }
+
+    [Fact]
+    public void RuntimeControlAdapterCanResolveProjectionConnection()
+    {
+        var registry = new TestRegistry();
+        using WorldManager manager = WorldManager.Create(registry, 7UL);
+        manager.Start(Thread.CurrentThread);
+        var adapter = new RecordingControlAdapter();
+        manager.AttachControlAdapter(adapter);
+        Assert.Same(adapter, manager.DetachControlAdapter());
+        Assert.Null(manager.DetachControlAdapter());
+    }
+
     private abstract class SamplePlayerEntity { }
 
     private sealed class TestRegistry : EcsRegistry
@@ -122,6 +172,24 @@ public sealed class R5RuntimeContractTests
         {
             ContainerWrites++;
             LastContainer = container;
+        }
+    }
+
+    private sealed class RecordingControlAdapter : IWorldControlAdapter
+    {
+        public List<WorldMessage> Handled { get; } = new();
+
+        public bool TryHandle(WorldMessage message, out ErrorMessage? error)
+        {
+            Handled.Add(message);
+            error = new ErrorMessage("runtime_failure", "rejected") { Connection = message.Connection };
+            return false;
+        }
+
+        public bool TryResolveConnection(NetEntityId observerId, out string connection)
+        {
+            connection = "resolved-" + observerId.ToHex();
+            return true;
         }
     }
 }

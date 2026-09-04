@@ -17,6 +17,44 @@ public abstract class WorldMessage
     public string? Connection { get; init; }
 }
 
+public sealed class AdmitConnectionMessage : WorldMessage
+{
+    public AdmitConnectionMessage(string connection, string accountId, string roomId, string entityType)
+    {
+        Connection = connection ?? throw new ArgumentNullException(nameof(connection));
+        AccountId = accountId ?? throw new ArgumentNullException(nameof(accountId));
+        RoomId = roomId ?? throw new ArgumentNullException(nameof(roomId));
+        EntityType = entityType ?? throw new ArgumentNullException(nameof(entityType));
+    }
+
+    public string AccountId { get; }
+    public string RoomId { get; }
+    public string EntityType { get; }
+}
+
+public sealed class DisconnectConnectionMessage : WorldMessage
+{
+    public DisconnectConnectionMessage(string connection)
+    {
+        Connection = connection ?? throw new ArgumentNullException(nameof(connection));
+    }
+}
+
+public sealed class RebindConnectionMessage : WorldMessage
+{
+    public RebindConnectionMessage(string connection, string accountId, string roomId, string mode)
+    {
+        Connection = connection ?? throw new ArgumentNullException(nameof(connection));
+        AccountId = accountId ?? throw new ArgumentNullException(nameof(accountId));
+        RoomId = roomId ?? throw new ArgumentNullException(nameof(roomId));
+        Mode = mode ?? throw new ArgumentNullException(nameof(mode));
+    }
+
+    public string AccountId { get; }
+    public string RoomId { get; }
+    public string Mode { get; }
+}
+
 /// <summary>Client-to-server input: <c>chat.input</c>, <c>field.write</c>, or a ServerRpc envelope.</summary>
 public sealed class InputCommandMessage : WorldMessage
 {
