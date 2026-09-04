@@ -34,4 +34,16 @@ public sealed class ChatCommandRuntimeTests
             "ChatComponent.lastMessageText");
         Assert.Equal("gg", query.Value);
     }
+
+    [Fact]
+    public void ChatInputRejectsWrongRoomAndStaleGeneration()
+    {
+        using EntityBindingQuery bindings = TestBindingFactory.Create();
+        Assert.Equal("accepted", bindings.Admit("C1", "acct-chat-boundary", "room-01", "player").Outcome);
+        bindings.Manager.Tick();
+        using ChatCommandRuntime runtime = ChatCommandRuntime.Create(bindings);
+
+        Assert.Equal("cross_room_reference", runtime.AdmitInput("room-02", "C1", 1, new ChatInput("x")).Code);
+        Assert.Equal("stale_generation", runtime.AdmitInput("room-01", "C1", 2, new ChatInput("x")).Code);
+    }
 }

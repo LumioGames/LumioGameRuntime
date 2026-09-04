@@ -150,6 +150,21 @@ public sealed class EntityBindingQueryTests
     }
 
     [Fact]
+    public void TakeoverSupersedesThePreviousConnection()
+    {
+        using EntityBindingQuery sut = TestBindingFactory.Create();
+        Assert.Equal("accepted", sut.Admit("C1", "acct-takeover", "room-01", "player").Outcome);
+        sut.Manager.Tick();
+
+        BindingQueryResult takeover = sut.Rebind("C2", "acct-takeover", "room-01", RebindMode.Takeover);
+
+        Assert.Equal("accepted", takeover.Outcome);
+        Assert.Equal("binding_not_found", sut.ResolveByConnection("room-01", "C1").Code);
+        Assert.Equal("ok", sut.ResolveByConnection("room-01", "C2").Outcome);
+        Assert.Contains(sut.Manager.DrainOutbox(), static message => message is ConnectionSupersededMessage);
+    }
+
+    [Fact]
     public void CreateFromSnapshotRebuildsAccountIndexAndAdmitRebinds()
     {
         using EntityBindingQuery original = TestBindingFactory.Create();

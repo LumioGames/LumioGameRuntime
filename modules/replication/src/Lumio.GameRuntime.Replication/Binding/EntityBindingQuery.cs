@@ -106,8 +106,23 @@ public sealed class EntityBindingQuery : IDisposable
             if (!_manager.IsOwnerThread) return BindingQueryResult.RequestError("owner_thread_required", "world mutation must run on the WorldManager owner thread");
             SynchronizePending();
             if (!_manager.World.TryGetAccount(accountId, out NetEntityId id) || !_manager.World.IsLive(id)) return BindingQueryResult.RequestError("binding_not_found", "no retained binding");
-            _ = mode;
+            if (mode is not (RebindMode.Reconnect or RebindMode.Takeover)) return BindingQueryResult.RequestError("invalid_rebind_mode", "unsupported rebind mode");
+            if (_connectionToEntity.TryGetValue(connection, out NetEntityId occupied) && occupied != id)
+                return BindingQueryResult.OutcomeFailure("account_already_online", occupied.ToHex());
+            var previous = new List<string>();
+            foreach (KeyValuePair<string, NetEntityId> pair in _connectionToEntity)
+                if (pair.Value == id && !string.Equals(pair.Key, connection, StringComparison.Ordinal)) previous.Add(pair.Key);
+            ObserverComponent observer = _manager.World.Get<ObserverComponent>(id);
+            if (mode == RebindMode.Reconnect && observer.Connected)
+                return BindingQueryResult.OutcomeFailure("account_already_online", id.ToHex());
             _manager.Bind(id);
+            for (int i = 0; i < previous.Count; i++)
+            {
+                _connectionToEntity.Remove(previous[i]);
+                _roomByConnection.Remove(previous[i]);
+                if (mode == RebindMode.Takeover)
+                    _manager.NotifyConnectionSuperseded(id, previous[i], observer.ConnectionGeneration);
+            }
             _connectionToEntity[connection] = id;
             _roomByConnection[connection] = roomId;
             return BindingQueryResult.OutcomeFailure("accepted");
@@ -124,6 +139,7 @@ public sealed class EntityBindingQuery : IDisposable
             if (!_connectionToEntity.TryGetValue(fromConnection, out NetEntityId id)) return BindingQueryResult.RequestError("binding_not_found", "no active binding");
             _roomByConnection.TryGetValue(fromConnection, out string? room);
             _manager.Bind(id);
+            _manager.NotifyConnectionSuperseded(id, fromConnection, _manager.World.Get<ObserverComponent>(id).ConnectionGeneration);
             _connectionToEntity.Remove(fromConnection);
             _connectionToEntity[toConnection] = id;
             _roomByConnection.Remove(fromConnection);
@@ -152,6 +168,7 @@ public sealed class EntityBindingQuery : IDisposable
         lock (_gate)
         {
             ThrowIfDisposed();
+            if (!_manager.IsOwnerThread) return BindingQueryResult.RequestError("owner_thread_required", "world reads must run on the WorldManager owner thread");
             SynchronizePending();
             if (callerScope != "client-replica") return BindingQueryResult.RequestError("scope_violation", "caller scope does not match operation");
             if (!_connectionToEntity.TryGetValue(connection, out NetEntityId id)) return BindingQueryResult.RequestError("binding_not_found", "no active binding");
@@ -164,6 +181,7 @@ public sealed class EntityBindingQuery : IDisposable
         lock (_gate)
         {
             ThrowIfDisposed();
+            if (!_manager.IsOwnerThread) return BindingQueryResult.RequestError("owner_thread_required", "world reads must run on the WorldManager owner thread");
             SynchronizePending();
             if (!_connectionToEntity.TryGetValue(connection, out NetEntityId id)) return BindingQueryResult.RequestError("binding_not_found", "no active binding");
             if (_roomByConnection.TryGetValue(connection, out string? room) && room != roomId) return BindingQueryResult.RequestError("cross_room_reference", "entity is not in requested room");
@@ -176,6 +194,7 @@ public sealed class EntityBindingQuery : IDisposable
         lock (_gate)
         {
             ThrowIfDisposed();
+            if (!_manager.IsOwnerThread) return BindingQueryResult.RequestError("owner_thread_required", "world reads must run on the WorldManager owner thread");
             return QueryCore(new AttributeQueryRequest { CallerScope = callerScope, RoomId = roomId, NetEntityId = netEntityId, AttributeId = "EntityIdentity.entityType", ConnectionGeneration = generation }, null, true);
         }
     }
@@ -185,7 +204,13 @@ public sealed class EntityBindingQuery : IDisposable
     public BindingQueryResult QueryAttribute(AttributeQueryRequest request, string? callerConnection = null)
     {
         if (request is null) throw new ArgumentNullException(nameof(request));
-        lock (_gate) { ThrowIfDisposed(); SynchronizePending(); return QueryCore(request, callerConnection, false); }
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            if (!_manager.IsOwnerThread) return BindingQueryResult.RequestError("owner_thread_required", "world reads must run on the WorldManager owner thread");
+            SynchronizePending();
+            return QueryCore(request, callerConnection, false);
+        }
     }
 
     public BindingQueryResult Spawn(string roomId, string entityType, bool replicateToReplica = true)
@@ -203,7 +228,12 @@ public sealed class EntityBindingQuery : IDisposable
 
     internal bool TryResolveConnection(string connection, out NetEntityId id)
     {
-        lock (_gate) { SynchronizePending(); return _connectionToEntity.TryGetValue(connection, out id); }
+        lock (_gate)
+        {
+            if (!_manager.IsOwnerThread) { id = default; return false; }
+            SynchronizePending();
+            return _connectionToEntity.TryGetValue(connection, out id);
+        }
     }
 
     public void Dispose()

@@ -72,6 +72,7 @@ public static class WireCodec
             {
                 if (i > 0) json.Append(',');
                 ClientRpcRecord rpc = change.Rpcs[i];
+                if (rpc.Args.Count > 64) throw new ArgumentException("RPC argument count exceeds the C-1 limit.", nameof(message));
                 json.Append("{\"appliedTick\":").Append(rpc.AppliedTick.ToString(CultureInfo.InvariantCulture));
                 json.Append(",\"args\":[");
                 for (int a = 0; a < rpc.Args.Count; a++)
@@ -128,6 +129,7 @@ public static class WireCodec
 
     public static byte[] EncodeInput(InputCommandMessage input)
     {
+        if (input.Commands.Count > 16) throw new ArgumentException("command count exceeds the C-1 limit.", nameof(input));
         var json = new StringBuilder("{\"commands\":[");
         for (int i = 0; i < input.Commands.Count; i++)
         {
@@ -201,6 +203,7 @@ public static class WireCodec
         {
             item.EnsureKeys("appliedTick", "args", "componentId", "messageId", "method", "roomSequence", "scope", "sender", "target");
             List<JsonValue> args = item.RequiredArray("args");
+            if (args.Count > 64) throw new FormatException("too many RPC arguments");
             var decodedArgs = new object?[args.Count];
             for (int a = 0; a < args.Count; a++) decodedArgs[a] = DecodeUtf8(ParseHex(args[a].AsString()));
             rpcs.Add(new ClientRpcRecord(NetEntityId.Parse(item.RequiredString("target")), item.RequiredString("componentId"), item.RequiredString("method"), decodedArgs, item.RequiredU64("messageId"), item.RequiredU64("roomSequence"), NetEntityId.Parse(item.RequiredString("sender")), item.RequiredU64("appliedTick"), ParseScope(item.RequiredString("scope"))));

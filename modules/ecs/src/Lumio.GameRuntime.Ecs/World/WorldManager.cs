@@ -152,6 +152,12 @@ public sealed class WorldManager : IDisposable
         _initialCreateCursors.Remove(observerId);
     }
 
+    public void NotifyConnectionSuperseded(NetEntityId observerId, string connection, ulong newGeneration)
+    {
+        EnsureOwner();
+        _outbox.Add(new ConnectionSupersededMessage(observerId, newGeneration) { Connection = connection });
+    }
+
     internal void EnqueueOwnerWrite(NetEntityId entity, ISyncField field, object? value)
     {
         string text = value as string ?? value?.ToString() ?? string.Empty;

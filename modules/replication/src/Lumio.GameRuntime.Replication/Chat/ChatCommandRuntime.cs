@@ -52,12 +52,15 @@ public sealed class ChatCommandRuntime : IDisposable
 
     public ChatMappingResult AdmitInput(string roomId, string connectionId, ulong connectionGeneration, ChatInput input)
     {
-        _ = roomId;
-        _ = connectionGeneration;
         if (input.Text is null) throw new ArgumentException("ChatInput.Text is required.", nameof(input));
         if (Encoding.UTF8.GetByteCount(input.Text) > ChatMapping.MaxTextUtf8Bytes)
             return ChatMappingResult.Reject("chat_text_too_long", "chat text exceeds 512 UTF-8 bytes", ChatMapping.InputMappingId);
-        if (!_bindings.TryResolveConnection(connectionId, out NetEntityId sender))
+        BindingQueryResult binding = _bindings.ResolveByConnection(roomId, connectionId);
+        if (binding.Outcome != "ok" || !binding.Binding.HasValue)
+            return ChatMappingResult.Reject(binding.Code ?? binding.Outcome, binding.Detail ?? "no active binding");
+        if (binding.Binding.Value.ConnectionGeneration != connectionGeneration)
+            return ChatMappingResult.Reject("stale_generation", "connection generation is stale");
+        if (!NetEntityId.TryParse(binding.Binding.Value.NetEntityId, out NetEntityId sender))
             return ChatMappingResult.Reject("binding_not_found", "no active binding");
         Manager.Enqueue(new InputCommandMessage(ChatMapping.InputMappingId, sender, EncodeUtf8(input.Text), connectionId));
         return ChatMappingResult.Ok();
