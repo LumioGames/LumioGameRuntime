@@ -18,6 +18,7 @@ public sealed partial class IdentityComponent : IGeneratedComponent, IGeneratedS
     {
         Name = Name.Bound(host, this, 0, "IdentityComponent.name");
         RealName = RealName.Bound(host, this, 1, "IdentityComponent.realName");
+        Friends.Bound(host, this, "IdentityComponent.friends");
     }
 
     void IGeneratedComponent.InvokePostAttribute() => PostAttribute();
@@ -55,6 +56,7 @@ public sealed partial class IdentityComponent : IGeneratedComponent, IGeneratedS
         writer.WriteString("IdentityComponent.accountId", AccountId);
         writer.WriteString("IdentityComponent.name", Name.Value);
         writer.WriteString("IdentityComponent.realName", RealName.Value);
+        writer.WriteContainer("IdentityComponent.friends", Friends);
     }
 
     void IGeneratedComponent.CaptureSync(IPersistWriter writer)
@@ -72,6 +74,8 @@ public sealed partial class IdentityComponent : IGeneratedComponent, IGeneratedS
             Name.SetSilent(nameRestore);
         if (reader.TryReadString("IdentityComponent.realName", out string realNameRestore))
             RealName.SetSilent(realNameRestore);
+        if (reader.TryReadContainer("IdentityComponent.friends", out object friendsRestore))
+            ((ISyncContainer)Friends).AssignFromRemote(friendsRestore);
     }
 
     object? IGeneratedComponent.ReadField(string fieldId)
@@ -104,7 +108,7 @@ public sealed partial class IdentityComponent : IGeneratedComponent, IGeneratedS
         }
         if (string.Equals(fieldId, "friends", StringComparison.Ordinal) || string.Equals(fieldId, "Friends", StringComparison.Ordinal))
         {
-            Friends = (SyncList<NetEntityId>)value!;
+            ((ISyncContainer)Friends).AssignFromRemote(value);
             return;
         }
     }

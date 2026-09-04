@@ -16,9 +16,14 @@ public sealed class ChatTypedMapping
             if (WireCodec.DecodePack(Encoding.UTF8.GetBytes(messageJson ?? string.Empty)) is not WorldChangeMessage change)
                 return ChatMappingResult.Reject("bad_envelope", "expected a WorldChange packet");
             if (change.Rpcs.Count == 0) return ChatMappingResult.Ok();
-            ClientRpcRecord rpc = change.Rpcs[0];
-            string text = rpc.Args.Count == 0 ? string.Empty : rpc.Args[0]?.ToString() ?? string.Empty;
-            return ChatMappingResult.Ok(new ChatMessageEvent(rpc.MessageId, rpc.RoomSequence, rpc.Sender.ToHex(), text, rpc.AppliedTick));
+            var events = new List<ChatMessageEvent>(change.Rpcs.Count);
+            for (int i = 0; i < change.Rpcs.Count; i++)
+            {
+                ClientRpcRecord rpc = change.Rpcs[i];
+                string text = rpc.Args.Count == 0 ? string.Empty : rpc.Args[0]?.ToString() ?? string.Empty;
+                events.Add(new ChatMessageEvent(rpc.MessageId, rpc.RoomSequence, rpc.Sender.ToHex(), text, rpc.AppliedTick));
+            }
+            return ChatMappingResult.Ok(events);
         }
         catch (FormatException ex)
         {

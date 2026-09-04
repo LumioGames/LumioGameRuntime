@@ -46,6 +46,7 @@ public sealed class EntityBindingQuery : IDisposable
         lock (_gate)
         {
             ThrowIfDisposed();
+            if (!_manager.IsOwnerThread) return BindingQueryResult.RequestError("owner_thread_required", "world mutation must run on the WorldManager owner thread");
             if (!ValidAdmission(request)) return BindingQueryResult.RequestError("invalid_binding_shape", "admission requires connection, account, room and entity type");
             if (string.Equals(request.EntityType, "bot", StringComparison.Ordinal))
                 return BindingQueryResult.OutcomeFailure("bot_namespace_admission_forbidden");
@@ -87,6 +88,7 @@ public sealed class EntityBindingQuery : IDisposable
         lock (_gate)
         {
             ThrowIfDisposed();
+            if (!_manager.IsOwnerThread) return BindingQueryResult.RequestError("owner_thread_required", "world mutation must run on the WorldManager owner thread");
             SynchronizePending();
             if (!_connectionToEntity.TryGetValue(connection, out NetEntityId id)) return BindingQueryResult.RequestError("binding_not_found", "no active binding");
             _manager.Unbind(id);
@@ -101,6 +103,7 @@ public sealed class EntityBindingQuery : IDisposable
         lock (_gate)
         {
             ThrowIfDisposed();
+            if (!_manager.IsOwnerThread) return BindingQueryResult.RequestError("owner_thread_required", "world mutation must run on the WorldManager owner thread");
             SynchronizePending();
             if (!_manager.World.TryGetAccount(accountId, out NetEntityId id) || !_manager.World.IsLive(id)) return BindingQueryResult.RequestError("binding_not_found", "no retained binding");
             _ = mode;
@@ -116,6 +119,7 @@ public sealed class EntityBindingQuery : IDisposable
         lock (_gate)
         {
             ThrowIfDisposed();
+            if (!_manager.IsOwnerThread) return BindingQueryResult.RequestError("owner_thread_required", "world mutation must run on the WorldManager owner thread");
             SynchronizePending();
             if (!_connectionToEntity.TryGetValue(fromConnection, out NetEntityId id)) return BindingQueryResult.RequestError("binding_not_found", "no active binding");
             _roomByConnection.TryGetValue(fromConnection, out string? room);
@@ -133,6 +137,7 @@ public sealed class EntityBindingQuery : IDisposable
         lock (_gate)
         {
             ThrowIfDisposed();
+            if (!_manager.IsOwnerThread) return BindingQueryResult.RequestError("owner_thread_required", "world mutation must run on the WorldManager owner thread");
             SynchronizePending();
             if (!NetEntityId.TryParse(netEntityId, out NetEntityId id)) return BindingQueryResult.RequestError("invalid_binding_shape", "netEntityId is required");
             if (_manager.World.IsTombstoned(id)) return BindingQueryResult.OutcomeFailure("tombstoned");
@@ -188,6 +193,7 @@ public sealed class EntityBindingQuery : IDisposable
         lock (_gate)
         {
             ThrowIfDisposed();
+            if (!_manager.IsOwnerThread) return BindingQueryResult.RequestError("owner_thread_required", "world mutation must run on the WorldManager owner thread");
             Type type = ResolveEntity(entityType);
             EntityOrder order = _manager.World.Commands.CreateFor(type);
             _ = replicateToReplica;

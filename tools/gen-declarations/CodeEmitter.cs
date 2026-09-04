@@ -30,7 +30,7 @@ internal static class CodeEmitter
         for (int i = 0; i < model.EntityTypes.Count; i++)
         {
             EntityTypeModel entity = model.EntityTypes[i];
-            WriteIfChanged(Path.Combine(outputDir, entity.Name + ".Template.g.cs"), EmitTemplate(entity, model.EntityTypes), encoding);
+            WriteIfChanged(Path.Combine(outputDir, entity.Name + ".Template.g.cs"), EmitTemplate(entity, model.EntityTypes, model.Components), encoding);
         }
 
         if (!string.IsNullOrEmpty(jsonPath))
@@ -150,11 +150,7 @@ internal static class CodeEmitter
             sb.AppendLine("        {");
             var components = new List<string>();
             CollectEntityComponents(entity, model.EntityTypes, components);
-            sb.AppendLine("            return new Component[]");
-            sb.AppendLine("            {");
-            for (int h = 0; h < components.Count; h++)
-                sb.AppendLine("                new " + components[h] + "()" + (h + 1 == components.Count ? "" : ","));
-            sb.AppendLine("            };");
+            sb.AppendLine("            return " + entity.Name + "Template.CreateComponents();");
             sb.AppendLine("        }");
         }
 
@@ -283,6 +279,7 @@ internal static class CodeEmitter
             if (!generateStub) continue;
             string emit = rpc.Kind == "ServerRpc" ? "EmitServerRpc" : "EmitClientRpc";
             sb.Append("    public partial void " + rpc.Name + "(" + rpc.Signature + ") => " + emit + "(\"" + rpc.Name + "\"");
+            if (rpc.Kind == "ClientRpc") sb.Append(", Scope." + rpc.Scope);
             for (int p = 0; p < rpc.ParamNames.Length; p++)
             {
                 sb.Append(", ");
@@ -299,9 +296,14 @@ internal static class CodeEmitter
         for (int i = 0; i < component.Fields.Count; i++)
         {
             FieldModel field = component.Fields[i];
-            if (!field.IsSync || field.IsContainer) continue;
-            sb.AppendLine("        " + field.Name + " = " + field.Name + ".Bound(host, this, " + ordinal.ToString(CultureInfo.InvariantCulture) + ", \"" + component.Name + "." + Camel(field.Name) + "\");");
-            ordinal++;
+            if (!field.IsSync) continue;
+            if (field.IsContainer)
+                sb.AppendLine("        " + field.Name + ".Bound(host, this, \"" + component.Name + "." + Camel(field.Name) + "\");");
+            else
+            {
+                sb.AppendLine("        " + field.Name + " = " + field.Name + ".Bound(host, this, " + ordinal.ToString(CultureInfo.InvariantCulture) + ", \"" + component.Name + "." + Camel(field.Name) + "\");");
+                ordinal++;
+            }
         }
 
         sb.AppendLine("    }");
@@ -396,7 +398,11 @@ internal static class CodeEmitter
             if (!field.Persist) continue;
             string id = component.Name + "." + Camel(field.Name);
             string read = field.IsSync && !field.IsContainer ? field.Name + ".Value" : field.Name;
-            if (field.IsContainer) continue;
+            if (field.IsContainer)
+            {
+                sb.AppendLine("        writer.WriteContainer(\"" + id + "\", " + field.Name + ");");
+                continue;
+            }
             if (field.ClrType == "string")
                 sb.AppendLine("        writer.WriteString(\"" + id + "\", " + read + ");");
             else if (field.ClrType == "ulong")
@@ -437,6 +443,12 @@ internal static class CodeEmitter
             FieldModel field = component.Fields[i];
             if (!field.Persist) continue;
             string id = component.Name + "." + Camel(field.Name);
+            if (field.IsContainer)
+            {
+                sb.AppendLine("        if (reader.TryReadContainer(\"" + id + "\", out object " + Camel(field.Name) + "Restore))");
+                sb.AppendLine("            ((ISyncContainer)" + field.Name + ").AssignFromRemote(" + Camel(field.Name) + "Restore);");
+                continue;
+            }
             if (field.ClrType == "string")
             {
                 sb.AppendLine("        if (reader.TryReadString(\"" + id + "\", out string " + Camel(field.Name) + "Restore))");
@@ -484,7 +496,10 @@ internal static class CodeEmitter
             }
             else
             {
-                sb.AppendLine("            " + field.Name + " = (" + field.ClrType + ")value!;");
+                if (field.IsContainer)
+                    sb.AppendLine("            ((ISyncContainer)" + field.Name + ").AssignFromRemote(value);");
+                else
+                    sb.AppendLine("            " + field.Name + " = (" + field.ClrType + ")value!;");
             }
 
             sb.AppendLine("            return;");
@@ -515,7 +530,7 @@ internal static class CodeEmitter
         return char.ToLowerInvariant(name[0]) + name.Substring(1);
     }
 
-    private static string EmitTemplate(EntityTypeModel entity, IReadOnlyList<EntityTypeModel> all)
+    private static string EmitTemplate(EntityTypeModel entity, List<EntityTypeModel> all, List<ComponentModel> components)
     {
         var names = new List<string>();
         CollectEntityComponents(entity, all, names);
@@ -523,12 +538,21 @@ internal static class CodeEmitter
         sb.AppendLine("// <auto-generated/>");
         sb.AppendLine("#nullable enable");
         sb.AppendLine("using Lumio.GameRuntime.Ecs;");
+        var namespaces = new HashSet<string>(StringComparer.Ordinal);
+        for (int i = 0; i < components.Count; i++) namespaces.Add(components[i].Namespace);
+        for (int i = 0; i < all.Count; i++) namespaces.Add(all[i].Namespace);
+        foreach (string ns in namespaces) sb.AppendLine("using " + ns + ";");
         sb.AppendLine("namespace " + entity.Namespace + ";");
         sb.AppendLine();
         sb.AppendLine("internal sealed class " + entity.Name + "Template");
         sb.AppendLine("{");
         sb.AppendLine("    internal static readonly int ComponentCount = " + names.Count.ToString(CultureInfo.InvariantCulture) + ";");
         sb.AppendLine("    internal static readonly int ObserverIndex = " + names.IndexOf("ObserverComponent").ToString(CultureInfo.InvariantCulture) + ";");
+        sb.AppendLine("    internal static Component[] CreateComponents() => new Component[]");
+        sb.AppendLine("    {");
+        for (int i = 0; i < names.Count; i++)
+            sb.AppendLine("        new " + names[i] + "()" + (i + 1 == names.Count ? "" : ","));
+        sb.AppendLine("    };");
         sb.AppendLine("}");
         return sb.ToString();
     }

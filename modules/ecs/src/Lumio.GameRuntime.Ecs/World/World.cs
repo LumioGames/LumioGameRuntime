@@ -131,6 +131,8 @@ public sealed class World : ISyncHost
     internal NetEntityId IssueId()
     {
         if (!IsServer) throw new InvalidOperationException("Client worlds do not issue NetEntityId.");
+        if (NextCounter == 0 || NextCounter == ulong.MaxValue)
+            throw new InvalidOperationException("NetEntityId counter is exhausted.");
         return new NetEntityId(InstanceId, NextCounter++);
     }
 
@@ -245,8 +247,16 @@ public sealed class World : ISyncHost
             Manager.EnqueueOwnerWrite(owner.EntityId, field, newValue);
     }
 
-    internal void EnqueueClientRpc(Component owner, string method, object?[] args) =>
-        PendingRpcs.Add(new ClientRpcRecord(owner.EntityId, owner.GetType().Name, method, args, 0, 0, owner.EntityId, Tick));
+    void ISyncHost.OnContainerWrite(Component owner, ISyncContainer container, object? oldValue, object? newValue)
+    {
+        if (ApplyingRemote) return;
+        Dirty.Add(new DirtyEntry(owner.EntityId, container, oldValue, newValue, ChangeReason.Local));
+        if (!IsServer && container.Authority == Authority.Owner)
+            Manager.EnqueueOwnerWrite(owner.EntityId, container, newValue);
+    }
+
+    internal void EnqueueClientRpc(Component owner, string method, Scope scope, object?[] args) =>
+        PendingRpcs.Add(new ClientRpcRecord(owner.EntityId, owner.GetType().Name, method, args, 0, 0, owner.EntityId, Tick, scope));
 
     internal void EnqueueServerRpc(Component owner, string method, object?[] args) =>
         Manager.EnqueueServerRpc(owner.EntityId, owner.GetType().Name, method, args);
@@ -255,11 +265,12 @@ public sealed class World : ISyncHost
 internal readonly struct DirtyEntry
 {
     internal DirtyEntry(NetEntityId entity, ISyncField field, object? oldValue, object? newValue, ChangeReason reason, bool suppressWriterEcho = false)
-    {
-        Entity = entity; Field = field; OldValue = oldValue; NewValue = newValue; Reason = reason; SuppressWriterEcho = suppressWriterEcho;
-    }
+    { Entity = entity; Field = field; Container = null; OldValue = oldValue; NewValue = newValue; Reason = reason; SuppressWriterEcho = suppressWriterEcho; }
+    internal DirtyEntry(NetEntityId entity, ISyncContainer container, object? oldValue, object? newValue, ChangeReason reason, bool suppressWriterEcho = false)
+    { Entity = entity; Field = null; Container = container; OldValue = oldValue; NewValue = newValue; Reason = reason; SuppressWriterEcho = suppressWriterEcho; }
     internal readonly NetEntityId Entity;
-    internal readonly ISyncField Field;
+    internal readonly ISyncField? Field;
+    internal readonly ISyncContainer? Container;
     internal readonly object? OldValue;
     internal readonly object? NewValue;
     internal readonly ChangeReason Reason;

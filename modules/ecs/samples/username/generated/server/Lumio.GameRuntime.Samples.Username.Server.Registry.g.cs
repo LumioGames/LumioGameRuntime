@@ -35,28 +35,15 @@ public sealed class GeneratedRegistry : EcsRegistry
     {
         if (entityType == typeof(BotEntity))
         {
-            return new Component[]
-            {
-                new ObserverComponent(),
-                new IdentityComponent(),
-                new ChatComponent()
-            };
+            return BotEntityTemplate.CreateComponents();
         }
         if (entityType == typeof(PlayerEntity))
         {
-            return new Component[]
-            {
-                new ObserverComponent(),
-                new IdentityComponent(),
-                new ChatComponent()
-            };
+            return PlayerEntityTemplate.CreateComponents();
         }
         if (entityType == typeof(WorldEntity))
         {
-            return new Component[]
-            {
-                new WorldSaveComponent()
-            };
+            return WorldEntityTemplate.CreateComponents();
         }
         throw new InvalidOperationException("Unknown entity type " + entityType.Name);
     }

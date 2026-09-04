@@ -20,9 +20,10 @@ public readonly record struct ChatInput(string Text);
 /// <summary>UI-facing projection of a ClientRpc chat invocation.</summary>
 public readonly record struct ChatMessageEvent(ulong MessageId, ulong RoomSequence, string SenderNetEntityId, string Text, ulong AppliedTick);
 
-public readonly record struct ChatMappingResult(bool Succeeded, string? Code = null, string? Detail = null, string? MappingId = null, ChatMessageEvent? Event = null)
+public readonly record struct ChatMappingResult(bool Succeeded, string? Code = null, string? Detail = null, string? MappingId = null, ChatMessageEvent? Event = null, IReadOnlyList<ChatMessageEvent>? Events = null)
 {
-    public static ChatMappingResult Ok(ChatMessageEvent? mapped = null) => new(true, Event: mapped);
+    public static ChatMappingResult Ok(ChatMessageEvent? mapped = null) => new(true, Event: mapped, Events: mapped.HasValue ? new[] { mapped.Value } : Array.Empty<ChatMessageEvent>());
+    public static ChatMappingResult Ok(IReadOnlyList<ChatMessageEvent> mapped) => new(true, Event: mapped.Count == 0 ? null : mapped[0], Events: mapped);
     public static ChatMappingResult Reject(string code, string detail, string? mappingId = null) => new(false, code, detail, mappingId);
 }
 

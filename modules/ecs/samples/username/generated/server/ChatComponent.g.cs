@@ -9,7 +9,7 @@ public sealed partial class ChatComponent : IGeneratedComponent, IGeneratedSyncM
 {
     partial void OnClientWrite(in SyncWrite w, ref bool accept);
 
-    public partial void OnChatMessage(string line) => EmitClientRpc("OnChatMessage", line);
+    public partial void OnChatMessage(string line) => EmitClientRpc("OnChatMessage", Scope.Room, line);
 
     void IGeneratedComponent.BindFields(ISyncHost host)
     {

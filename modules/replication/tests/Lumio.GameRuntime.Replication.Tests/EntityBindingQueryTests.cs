@@ -1,5 +1,6 @@
 using System;
 using System.Threading;
+using System.Threading.Tasks;
 using Lumio.GameRuntime.Ecs;
 using Lumio.GameRuntime.Replication.Binding;
 using Lumio.GameRuntime.Samples.Username;
@@ -55,6 +56,17 @@ public sealed class EntityBindingQueryTests
         BindingQueryResult result = sut.Admit("C1", "acct-bot", "room-01", "bot");
         Assert.Equal("bot_namespace_admission_forbidden", result.Outcome);
         Assert.Null(result.Binding);
+    }
+
+    [Fact]
+    public async Task AdmissionFromNonOwnerThreadIsRejectedBeforeWorldMutation()
+    {
+        using EntityBindingQuery sut = TestBindingFactory.Create();
+        BindingQueryResult result = await Task.Run(() => sut.Admit("C1", "acct-thread", "room-01", "player"));
+
+        Assert.Equal("request_error", result.Outcome);
+        Assert.Equal("owner_thread_required", result.Code);
+        Assert.False(sut.Manager.World.TryGetAccount("acct-thread", out _));
     }
 
     [Fact]

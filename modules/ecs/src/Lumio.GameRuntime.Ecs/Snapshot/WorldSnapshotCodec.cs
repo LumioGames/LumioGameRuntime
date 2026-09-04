@@ -89,11 +89,11 @@ internal static class WorldSnapshotCodec
     private static string ReadStr(ReadOnlySpan<byte> span, ref int offset) { int len = checked((int)ReadU32(span, ref offset)); if (offset + len > span.Length) throw new InvalidOperationException("Snapshot string is truncated."); string value = Encoding.UTF8.GetString(span.Slice(offset, len)); offset += len; return value; }
     private static byte[] ReadBlob(ReadOnlySpan<byte> span, ref int offset, byte tag)
     {
-        int len = tag == 1 ? checked((int)ReadU32(span, ref offset)) : tag == 2 ? 8 : tag == 3 ? 1 : 0;
-        if (tag is not (1 or 2 or 3)) throw new InvalidOperationException("Unknown persist tag.");
+        int len = tag is 1 or 4 ? checked((int)ReadU32(span, ref offset)) : tag == 2 ? 8 : tag == 3 ? 1 : 0;
+        if (tag is not (1 or 2 or 3 or 4)) throw new InvalidOperationException("Unknown persist tag.");
         if (offset + len > span.Length) throw new InvalidOperationException("Snapshot field is truncated.");
-        int start = tag == 1 ? offset - 4 : offset;
-        byte[] bytes = span.Slice(start, len + (tag == 1 ? 4 : 0)).ToArray(); offset += len; return bytes;
+        int start = tag is 1 or 4 ? offset - 4 : offset;
+        byte[] bytes = span.Slice(start, len + (tag is 1 or 4 ? 4 : 0)).ToArray(); offset += len; return bytes;
     }
 
     internal readonly struct SnapshotHeader
@@ -116,6 +116,7 @@ internal static class WorldSnapshotCodec
         private readonly List<KeyValuePair<string, FieldBlob>> _fields;
         internal SnapshotWriter(List<KeyValuePair<string, FieldBlob>> fields) => _fields = fields;
         public void WriteString(string id, string? value) { byte[] utf8 = Encoding.UTF8.GetBytes(value ?? string.Empty); var payload = new byte[4 + utf8.Length]; BinaryPrimitives.WriteUInt32LittleEndian(payload, (uint)utf8.Length); Buffer.BlockCopy(utf8, 0, payload, 4, utf8.Length); _fields.Add(new KeyValuePair<string, FieldBlob>(id, new FieldBlob(1, payload))); }
+        public void WriteContainer(string id, object value) { byte[] utf8 = Encoding.UTF8.GetBytes(value is ISyncContainer container ? WireCodec.ContainerText(container) : value?.ToString() ?? string.Empty); var payload = new byte[4 + utf8.Length]; BinaryPrimitives.WriteUInt32LittleEndian(payload, (uint)utf8.Length); Buffer.BlockCopy(utf8, 0, payload, 4, utf8.Length); _fields.Add(new KeyValuePair<string, FieldBlob>(id, new FieldBlob(4, payload))); }
         public void WriteUInt64(string id, ulong value) { var payload = new byte[8]; BinaryPrimitives.WriteUInt64LittleEndian(payload, value); _fields.Add(new KeyValuePair<string, FieldBlob>(id, new FieldBlob(2, payload))); }
         public void WriteBoolean(string id, bool value) => _fields.Add(new KeyValuePair<string, FieldBlob>(id, new FieldBlob(3, new[] { value ? (byte)1 : (byte)0 })));
     }
@@ -124,6 +125,7 @@ internal static class WorldSnapshotCodec
         private readonly Dictionary<string, FieldBlob> _fields;
         internal SnapshotReader(Dictionary<string, FieldBlob> fields) => _fields = fields;
         public bool TryReadString(string id, out string value) { value = string.Empty; if (!_fields.TryGetValue(id, out FieldBlob blob) || blob.Tag != 1) return false; int len = BinaryPrimitives.ReadInt32LittleEndian(blob.Bytes); value = Encoding.UTF8.GetString(blob.Bytes, 4, len); return true; }
+        public bool TryReadContainer(string id, out object value) { value = string.Empty; if (!_fields.TryGetValue(id, out FieldBlob blob) || blob.Tag != 4) return false; int len = BinaryPrimitives.ReadInt32LittleEndian(blob.Bytes); value = Encoding.UTF8.GetString(blob.Bytes, 4, len); return true; }
         public bool TryReadUInt64(string id, out ulong value) { value = 0; if (!_fields.TryGetValue(id, out FieldBlob blob) || blob.Tag != 2) return false; value = BinaryPrimitives.ReadUInt64LittleEndian(blob.Bytes); return true; }
         public bool TryReadBoolean(string id, out bool value) { value = false; if (!_fields.TryGetValue(id, out FieldBlob blob) || blob.Tag != 3) return false; value = blob.Bytes[0] != 0; return true; }
     }

@@ -114,7 +114,25 @@ public static class AttributeDeclarationScanner
 
     private static string VisibilityFromSync(MemberInfo member, Type clrType)
     {
-        _ = member;
+        try
+        {
+            if (member.DeclaringType is not null && Activator.CreateInstance(member.DeclaringType) is object instance)
+            {
+                object? value = member switch
+                {
+                    FieldInfo field => field.GetValue(instance),
+                    PropertyInfo property => property.GetValue(instance),
+                    _ => null,
+                };
+                if (value is ISyncField fieldMetadata) return FieldAnnotationRules.Token(fieldMetadata.Scope);
+                if (value is ISyncContainer containerMetadata) return FieldAnnotationRules.Token(containerMetadata.Scope);
+            }
+        }
+        catch (Exception)
+        {
+            // Declarations remain valid for components without a public parameterless constructor.
+        }
+
         _ = clrType;
         return FieldAnnotationRules.VisibilityRoomPublic;
     }

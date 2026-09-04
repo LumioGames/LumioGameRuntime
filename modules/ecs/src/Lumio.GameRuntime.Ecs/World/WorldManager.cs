@@ -27,6 +27,7 @@ public sealed class WorldManager : IDisposable
     public EcsRegistry Registry { get; }
     public World World { get; private set; }
     public Thread? OwnerThread => _ownerThread;
+    public bool IsOwnerThread => _started && _ownerThread is not null && Environment.CurrentManagedThreadId == _ownerThread.ManagedThreadId;
     public ISnapshotSink? SnapshotSink { get; set; }
 
     /// <summary>Maximum number of initial create records per observer pack; zero means unlimited.</summary>
@@ -157,12 +158,19 @@ public sealed class WorldManager : IDisposable
         PostOutbound(new InputCommandMessage(WireCodec.FieldWrite, entity, WireCodec.EncodeFieldWrite(entity, ComponentName(field), FieldName(field), text)));
     }
 
+    internal void EnqueueOwnerWrite(NetEntityId entity, ISyncContainer container, object? value)
+    {
+        string text = WireCodec.ContainerText(container);
+        PostOutbound(new InputCommandMessage(WireCodec.FieldWrite, entity, WireCodec.EncodeFieldWrite(entity, ComponentName(container), FieldName(container), text)));
+    }
+
     internal void EnqueueServerRpc(NetEntityId entity, string componentId, string method, object?[] args)
     {
-        string argument = args.Length == 0 ? string.Empty : args[0]?.ToString() ?? string.Empty;
         string mapping = string.Equals(componentId, "ChatComponent", StringComparison.Ordinal) && string.Equals(method, "SendMessage", StringComparison.Ordinal)
             ? WireCodec.ChatInput : WireCodec.ServerRpc;
-        byte[] payload = mapping == WireCodec.ChatInput ? WireCodec.EncodeUtf8(argument) : WireCodec.EncodeServerRpc(componentId, method, argument);
+        byte[] payload = mapping == WireCodec.ChatInput
+            ? WireCodec.EncodeUtf8(args.Length == 0 ? string.Empty : args[0]?.ToString() ?? string.Empty)
+            : WireCodec.EncodeServerRpc(componentId, method, args);
         PostOutbound(new InputCommandMessage(mapping, entity, payload));
     }
 
@@ -180,7 +188,12 @@ public sealed class WorldManager : IDisposable
         var inputs = new List<InputCommandMessage>();
         for (int i = 0; i < batch.Count; i++) if (batch[i] is InputCommandMessage input) inputs.Add(input);
         inputs.Sort(static (a, b) => a.Sender.CompareTo(b.Sender));
-        for (int i = 0; i < inputs.Count; i++) ApplyInput(inputs[i]);
+        for (int i = 0; i < inputs.Count; i++)
+        {
+            InputCommandMessage input = inputs[i];
+            for (int c = 0; c < input.Commands.Count; c++)
+                ApplyInput(new InputCommandMessage(input.Commands[c].MappingId, input.Sender, input.Commands[c].Payload, input.Connection));
+        }
     }
 
     private void ApplyInput(InputCommandMessage input)
@@ -195,12 +208,12 @@ public sealed class WorldManager : IDisposable
             EcsRegistry.Generated(chat)?.DispatchServerRpc("SendMessage", new object[] { text });
             return;
         }
-        if (input.MappingId == WireCodec.ServerRpc && WireCodec.TryDecodeServerRpc(input.Payload.Span, out string componentId, out string method, out string argument))
+        if (input.MappingId == WireCodec.ServerRpc && WireCodec.TryDecodeServerRpc(input.Payload.Span, out string componentId, out string method, out string[] arguments))
         {
             Component? component = World.NamedComponent(input.Sender, componentId);
             if (component is null) return;
             component.Rpc = new RpcContext(input.Sender, World.Tick);
-            EcsRegistry.Generated(component)?.DispatchServerRpc(method, new object[] { argument });
+            EcsRegistry.Generated(component)?.DispatchServerRpc(method, arguments);
         }
     }
 
@@ -209,7 +222,22 @@ public sealed class WorldManager : IDisposable
         if (!WireCodec.TryDecodeFieldWrite(input.Payload.Span, out NetEntityId target, out string componentId, out string fieldId, out string value)) return;
         if (target != input.Sender) { QueueCorrection(input.Sender, target, componentId, fieldId); return; }
         Component? component = World.NamedComponent(target, componentId);
-        if (component is null || !TryGetSyncField(component, fieldId, out ISyncField field)) return;
+        if (component is null) return;
+        if (!TryGetSyncField(component, fieldId, out ISyncField field))
+        {
+            object? containerValue = EcsRegistry.Generated(component)?.ReadField(fieldId);
+            if (containerValue is not ISyncContainer container || container.Authority != Authority.Owner)
+            {
+                if (containerValue is ISyncContainer) QueueCorrection(input.Sender, target, componentId, fieldId);
+                return;
+            }
+            object? oldContainer = container.BoxedValue;
+            try { container.AssignFromRemote(WireCodec.ParseContainerText(container, value)); }
+            catch (FormatException) { QueueCorrection(input.Sender, target, componentId, fieldId); return; }
+            World.Dirty.Add(new DirtyEntry(target, container, oldContainer, container.BoxedValue, ChangeReason.Sync, true));
+            World.Revision++;
+            return;
+        }
         if (field.Authority != Authority.Owner) { QueueCorrection(input.Sender, target, componentId, fieldId); return; }
         IGeneratedComponent? generated = EcsRegistry.Generated(component);
         bool accepted = generated is null || generated.DispatchClientWrite(new SyncWrite(field, value));
@@ -273,17 +301,20 @@ public sealed class WorldManager : IDisposable
 
     private void Project()
     {
-        var rpcs = new List<ClientRpcRecord>(World.PendingRpcs.Count);
+        var stampedRpcs = new List<ClientRpcRecord>(World.PendingRpcs.Count);
         for (int i = 0; i < World.PendingRpcs.Count; i++)
         {
             ClientRpcRecord rpc = World.PendingRpcs[i];
-            rpcs.Add(new ClientRpcRecord(rpc.Target, rpc.ComponentId, rpc.Method, rpc.Args, World.NextMessageId++, World.NextRoomSequence++, rpc.Sender, World.Tick));
+            stampedRpcs.Add(new ClientRpcRecord(rpc.Target, rpc.ComponentId, rpc.Method, rpc.Args, World.NextMessageId++, World.NextRoomSequence++, rpc.Sender, World.Tick, rpc.Scope));
         }
 
         foreach (ObserverComponent observer in World.Each<ObserverComponent>())
         {
             if (!observer.Connected) continue;
             NetEntityId observerId = observer.Entity;
+            var rpcs = new List<ClientRpcRecord>(stampedRpcs.Count);
+            for (int r = 0; r < stampedRpcs.Count; r++)
+                if (Visible(stampedRpcs[r].Scope, null, null, stampedRpcs[r].Target, observerId)) rpcs.Add(stampedRpcs[r]);
             bool initial = !_initialCreateCursors.TryGetValue(observerId, out int marker) || marker >= 0;
             var creates = new List<CreateRecord>();
             int cursor = initial && marker >= 0 ? marker : 0;
@@ -310,8 +341,17 @@ public sealed class WorldManager : IDisposable
                 {
                     DirtyEntry dirty = World.Dirty[i];
                     if (dirty.SuppressWriterEcho && dirty.Entity == observerId) continue;
-                    if (!World.IsLive(dirty.Entity) || !Visible(dirty.Field, dirty.Entity, observerId)) continue;
-                    fields.Add(new FieldChange(dirty.Entity, ComponentName(dirty.Field), FieldName(dirty.Field), dirty.NewValue, ChangeReason.Sync));
+                    if (!World.IsLive(dirty.Entity)) continue;
+                    if (dirty.Field is not null)
+                    {
+                        if (!Visible(dirty.Field, dirty.Entity, observerId)) continue;
+                        fields.Add(new FieldChange(dirty.Entity, ComponentName(dirty.Field), FieldName(dirty.Field), dirty.NewValue, ChangeReason.Sync));
+                    }
+                    else if (dirty.Container is not null)
+                    {
+                        if (!Visible(dirty.Container, dirty.Container.Owner, dirty.Entity, observerId)) continue;
+                        fields.Add(new FieldChange(dirty.Entity, ComponentName(dirty.Container), FieldName(dirty.Container), dirty.NewValue, ChangeReason.Sync));
+                    }
                 }
                 for (int i = 0; i < World.PendingCorrections.Count; i++)
                 {
@@ -352,11 +392,12 @@ public sealed class WorldManager : IDisposable
         return Visible(container.Scope, container.ClaimBy, owner, entityId, observerId);
     }
 
-    private bool Visible(Scope scope, string? claimBy, Component owner, NetEntityId entityId, NetEntityId observerId)
+    private bool Visible(Scope scope, string? claimBy, Component? owner, NetEntityId entityId, NetEntityId observerId)
     {
         if (scope == Scope.Room || scope == Scope.Aoi) return true;
         if (scope == Scope.Owner) return entityId == observerId;
         if (scope != Scope.Claim || string.IsNullOrEmpty(claimBy)) return false;
+        if (owner is null) return false;
         Component? component = World.NamedComponent(entityId, owner.GetType().Name);
         object? claims = component is null ? null : EcsRegistry.Generated(component)?.ReadField(claimBy);
         return claims is SyncList<NetEntityId> list && list.Contains(observerId);
@@ -374,31 +415,36 @@ public sealed class WorldManager : IDisposable
 
     private void ApplyClientBatch(List<WorldMessage> batch)
     {
-        var changes = new List<WorldChangeMessage>();
-        for (int i = 0; i < batch.Count; i++)
-        {
-            if (batch[i] is WelcomeMessage welcome)
-            {
-                World.InstanceId = welcome.InstanceId;
-                World.BindSelf(new Entity(World, welcome.Self));
-                _pendingWelcomeSelf = welcome.Self;
-                _pendingWelcomeGeneration = welcome.ConnectionGeneration;
-                continue;
-            }
-            if (batch[i] is ConnectionSupersededMessage superseded &&
-                World.NamedComponent(superseded.NetEntityId, nameof(ObserverComponent)) is ObserverComponent supersededObserver)
-            {
-                supersededObserver.Connected = false;
-                supersededObserver.ConnectionGeneration = superseded.NewConnectionGeneration;
-                supersededObserver.DisconnectedAtTick = World.Tick;
-                continue;
-            }
-            if (batch[i] is WorldChangeMessage change) changes.Add(change);
-        }
-        if (World.InstanceId == 0 && changes.Count > 0)
-            throw new InvalidOperationException("Welcome must be applied before WorldChange.");
+        bool welcomeSeen = false;
         World.ApplyingRemote = true;
-        try { for (int i = 0; i < changes.Count; i++) ApplyWorldChange(changes[i]); }
+        try
+        {
+            for (int i = 0; i < batch.Count; i++)
+            {
+                if (batch[i] is WelcomeMessage welcome)
+                {
+                    welcomeSeen = true;
+                    World.InstanceId = welcome.InstanceId;
+                    World.BindSelf(new Entity(World, welcome.Self));
+                    _pendingWelcomeSelf = welcome.Self;
+                    _pendingWelcomeGeneration = welcome.ConnectionGeneration;
+                    continue;
+                }
+                if (batch[i] is ConnectionSupersededMessage superseded &&
+                    World.NamedComponent(superseded.NetEntityId, nameof(ObserverComponent)) is ObserverComponent supersededObserver)
+                {
+                    supersededObserver.Connected = false;
+                    supersededObserver.ConnectionGeneration = superseded.NewConnectionGeneration;
+                    supersededObserver.DisconnectedAtTick = World.Tick;
+                    continue;
+                }
+                if (batch[i] is WorldChangeMessage change)
+                {
+                    if (!welcomeSeen && World.InstanceId == 0) throw new InvalidOperationException("Welcome must be applied before WorldChange.");
+                    ApplyWorldChange(change);
+                }
+            }
+        }
         finally { World.ApplyingRemote = false; }
         if (!_pendingWelcomeSelf.IsDefault && World.IsLive(_pendingWelcomeSelf) &&
             World.NamedComponent(_pendingWelcomeSelf, nameof(ObserverComponent)) is ObserverComponent observer)
@@ -429,18 +475,9 @@ public sealed class WorldManager : IDisposable
                     object? decoded = value.Value;
                     if (TryGetSyncField(component, value.FieldId, out ISyncField sync))
                         decoded = ConvertValue(sync.ValueType, value.Value);
-                    else if (EcsRegistry.Generated(component)?.ReadField(value.FieldId) is SyncList<NetEntityId> list)
+                    else if (EcsRegistry.Generated(component)?.ReadField(value.FieldId) is ISyncContainer container)
                     {
-                        list.Clear();
-                        if (value.Value is SyncList<NetEntityId> source)
-                        {
-                            for (int n = 0; n < source.Values.Count; n++) list.Add(source.Values[n]);
-                        }
-                        else if (value.Value is string encodedIds)
-                        {
-                            foreach (string token in encodedIds.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
-                                if (NetEntityId.TryParse(token, out NetEntityId listId)) list.Add(listId);
-                        }
+                        container.AssignFromRemote(value.Value);
                         continue;
                     }
                     EcsRegistry.Generated(component)?.WriteField(value.FieldId, decoded, true);
@@ -526,6 +563,18 @@ public sealed class WorldManager : IDisposable
     {
         int dot = field.AttributeId.IndexOf('.');
         return dot >= 0 ? field.AttributeId.Substring(dot + 1) : field.AttributeId;
+    }
+
+    private static string ComponentName(ISyncContainer container)
+    {
+        int dot = container.AttributeId.IndexOf('.');
+        return dot > 0 ? container.AttributeId.Substring(0, dot) : container.Owner.GetType().Name;
+    }
+
+    private static string FieldName(ISyncContainer container)
+    {
+        int dot = container.AttributeId.IndexOf('.');
+        return dot >= 0 ? container.AttributeId.Substring(dot + 1) : container.AttributeId;
     }
 
     private void PostOutbound(WorldMessage message)

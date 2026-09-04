@@ -26,7 +26,17 @@ public sealed class InputCommandMessage : WorldMessage
         MappingId = mappingId ?? throw new ArgumentNullException(nameof(mappingId));
         Sender = sender;
         Payload = payload;
+        Commands = new[] { new InputCommandPart(MappingId, Payload) };
         Connection = connection;
+    }
+
+    public InputCommandMessage(NetEntityId sender, IReadOnlyList<InputCommandPart> commands, string? connection = null)
+    {
+        Sender = sender;
+        Commands = commands ?? throw new ArgumentNullException(nameof(commands));
+        Connection = connection;
+        MappingId = Commands.Count == 0 ? string.Empty : Commands[0].MappingId;
+        Payload = Commands.Count == 0 ? ReadOnlyMemory<byte>.Empty : Commands[0].Payload;
     }
 
     /// <summary>C-1 mapping id (<c>chat.input</c>, <c>field.write</c>, or a generated rpc id).</summary>
@@ -36,6 +46,20 @@ public sealed class InputCommandMessage : WorldMessage
     public NetEntityId Sender { get; }
 
     /// <summary>LumioBinV1 payload.</summary>
+    public ReadOnlyMemory<byte> Payload { get; }
+
+    public IReadOnlyList<InputCommandPart> Commands { get; }
+}
+
+public readonly struct InputCommandPart
+{
+    public InputCommandPart(string mappingId, ReadOnlyMemory<byte> payload)
+    {
+        MappingId = mappingId ?? throw new ArgumentNullException(nameof(mappingId));
+        Payload = payload;
+    }
+
+    public string MappingId { get; }
     public ReadOnlyMemory<byte> Payload { get; }
 }
 
@@ -163,7 +187,8 @@ public readonly struct ClientRpcRecord
         ulong messageId,
         ulong roomSequence,
         NetEntityId sender,
-        ulong appliedTick)
+        ulong appliedTick,
+        Scope scope = Scope.Room)
     {
         Target = target;
         ComponentId = componentId;
@@ -173,6 +198,7 @@ public readonly struct ClientRpcRecord
         RoomSequence = roomSequence;
         Sender = sender;
         AppliedTick = appliedTick;
+        Scope = scope;
     }
 
     /// <summary>Entity whose component receives the RPC.</summary>
@@ -198,6 +224,7 @@ public readonly struct ClientRpcRecord
 
     /// <summary>Tick the event was committed on.</summary>
     public ulong AppliedTick { get; }
+    public Scope Scope { get; }
 }
 
 /// <summary>

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Threading;
@@ -49,11 +50,53 @@ public sealed class R5RuntimeContractTests
         Assert.True(manager.World.Get<ObserverComponent>(observer).Connected);
     }
 
+    [Fact]
+    public void SyncListMutationNotifiesItsBoundHost()
+    {
+        var host = new RecordingHost();
+        var list = new SyncList<NetEntityId>(Scope.Owner, Authority.Owner);
+        var owner = new ObserverComponent();
+        list = list.Bound(host, owner, "IdentityComponent.friends");
+
+        list.Add(new NetEntityId(7, 1));
+
+        Assert.Equal(1, host.ContainerWrites);
+        Assert.Equal("IdentityComponent.friends", host.LastContainer?.AttributeId);
+    }
+
+    [Fact]
+    public void ClientRejectsWorldChangeBeforeWelcomeInSameBatch()
+    {
+        var registry = new TestRegistry { SideOverride = RegistrySide.Client };
+        EcsRegistry.Current = registry;
+        using WorldManager manager = WorldManager.Create(registry);
+        manager.Start(Thread.CurrentThread);
+        var id = new NetEntityId(9, 1);
+        manager.Enqueue(new WorldChangeMessage(1, Array.Empty<CreateRecord>(), Array.Empty<FieldChange>(), Array.Empty<NetEntityId>(), Array.Empty<ClientRpcRecord>()));
+        manager.Enqueue(new WelcomeMessage(9, id));
+
+        Assert.Throws<InvalidOperationException>(() => manager.Tick());
+    }
+
+    [Fact]
+    public void EntityIdIssuanceRejectsCounterExhaustion()
+    {
+        var registry = new TestRegistry();
+        EcsRegistry.Current = registry;
+        using WorldManager manager = WorldManager.Create(registry, 7UL);
+        manager.Start(Thread.CurrentThread);
+        typeof(World).GetField("NextCounter", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(manager.World, ulong.MaxValue);
+        manager.World.Commands.Create<SamplePlayerEntity>();
+
+        Assert.Throws<InvalidOperationException>(() => manager.Tick());
+    }
+
     private abstract class SamplePlayerEntity { }
 
     private sealed class TestRegistry : EcsRegistry
     {
-        public override RegistrySide Side => RegistrySide.Server;
+        public RegistrySide SideOverride { get; init; } = RegistrySide.Server;
+        public override RegistrySide Side => SideOverride;
         public override Type WorldEntityType => typeof(SamplePlayerEntity);
         public override System.Collections.Generic.IReadOnlyList<Lumio.GameRuntime.Ecs.Annotations.FieldAttributeDeclaration> AttributeDeclarations => Array.Empty<Lumio.GameRuntime.Ecs.Annotations.FieldAttributeDeclaration>();
         public override Component[] CreateComponents(Type entityType) => new Component[] { new ObserverComponent() };
@@ -64,5 +107,21 @@ public sealed class R5RuntimeContractTests
             return string.Equals(name, nameof(SamplePlayerEntity), StringComparison.Ordinal);
         }
         public override bool IsEntityType(Type concrete, Type query) => concrete == query;
+    }
+
+    private sealed class RecordingHost : ISyncHost
+    {
+        public bool IsServer => false;
+        public bool IsApplyingRemote => false;
+        public WorldManager Manager => throw new NotSupportedException();
+        public World World => throw new NotSupportedException();
+        public int ContainerWrites { get; private set; }
+        public ISyncContainer? LastContainer { get; private set; }
+        public void OnLocalWrite(Component owner, ISyncField field, object? oldValue, object? newValue) { }
+        public void OnContainerWrite(Component owner, ISyncContainer container, object? oldValue, object? newValue)
+        {
+            ContainerWrites++;
+            LastContainer = container;
+        }
     }
 }

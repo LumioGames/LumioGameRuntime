@@ -14,7 +14,7 @@ public sealed partial class IdentityComponent : Component
     [Persist] public Sync<string> Name = new(Scope.Room, Authority.Owner);
 
     /// <summary>Owner-maintained observer allow-list used by claim-scoped fields.</summary>
-    [Persist] public SyncList<NetEntityId> Friends = new(Scope.Owner);
+    [Persist] public SyncList<NetEntityId> Friends = new(Scope.Owner, Authority.Owner);
 
     /// <summary>Claim-scoped identity data; the generator validates the same-component source.</summary>
     [Persist] public Sync<string> RealName = new(Scope.Claim, claimBy: nameof(Friends));

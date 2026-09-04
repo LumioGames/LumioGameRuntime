@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using Lumio.GameRuntime.Ecs;
 using Xunit;
 
@@ -30,5 +31,29 @@ public sealed class R5CodecContractTests
     {
         Assert.Throws<FormatException>(() => WireCodec.DecodePack(System.Text.Encoding.UTF8.GetBytes(
             "{\"messageType\":\"FullSnapshot\",\"tickId\":1,\"revision\":1,\"stateBlocks\":[]}")));
+    }
+
+    [Fact]
+    public void WorldChangeRoundTripsAllRpcArguments()
+    {
+        var rpc = new ClientRpcRecord(
+            new NetEntityId(7, 101), "ChatComponent", "OnChatMessage",
+            new object?[] { "first", "second" }, 4, 5, new NetEntityId(7, 99), 6, Scope.Owner);
+        byte[] bytes = WireCodec.EncodePack(new WorldChangeMessage(6, Array.Empty<CreateRecord>(), Array.Empty<FieldChange>(), Array.Empty<NetEntityId>(), new[] { rpc }));
+
+        WorldChangeMessage decoded = Assert.IsType<WorldChangeMessage>(WireCodec.DecodePack(bytes));
+        Assert.Equal(new[] { "first", "second" }, decoded.Rpcs[0].Args.Cast<string>().ToArray());
+        Assert.Equal(Scope.Owner, decoded.Rpcs[0].Scope);
+    }
+
+    [Fact]
+    public void InputEnvelopeDecodesEveryCommandBlock()
+    {
+        const string json = "{\"commands\":[{\"mappingId\":\"chat.input\",\"payload\":\"00000000\",\"payloadSha256\":\"" +
+            "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119\"},{\"mappingId\":\"chat.input\",\"payload\":\"00000000\",\"payloadSha256\":\"" +
+            "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119\"}],\"messageType\":\"InputCommand\"}";
+
+        InputCommandMessage decoded = WireCodec.DecodeInput(System.Text.Encoding.UTF8.GetBytes(json), new NetEntityId(7, 1));
+        Assert.Equal(2, decoded.Commands.Count);
     }
 }

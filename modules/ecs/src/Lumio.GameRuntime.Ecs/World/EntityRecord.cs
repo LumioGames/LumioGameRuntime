@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace Lumio.GameRuntime.Ecs;
 
@@ -9,11 +10,21 @@ internal sealed class EntityRecord
         Id = id;
         EntityType = entityType;
         Components = components;
+        _byType = new Dictionary<Type, Component>();
+        _byName = new Dictionary<string, Component>(StringComparer.Ordinal);
+        for (int i = 0; i < components.Length; i++)
+        {
+            Component component = components[i];
+            _byType[component.GetType()] = component;
+            _byName[component.GetType().Name] = component;
+        }
     }
 
     internal NetEntityId Id;
     internal Type EntityType;
     internal Component[] Components;
+    private readonly Dictionary<Type, Component> _byType;
+    private readonly Dictionary<string, Component> _byName;
     internal bool Appeared;
     internal bool Hydrated;
     internal ulong Revision = 1;
@@ -24,6 +35,7 @@ internal sealed class EntityRecord
 
     internal T Get<T>() where T : Component
     {
+        if (_byType.TryGetValue(typeof(T), out Component? exact)) return (T)exact;
         for (int i = 0; i < Components.Length; i++)
             if (Components[i] is T match) return match;
         throw new InvalidOperationException("Component " + typeof(T).Name + " is not on entity " + Id.ToHex());
@@ -31,9 +43,7 @@ internal sealed class EntityRecord
 
     internal Component? Find(string componentName)
     {
-        for (int i = 0; i < Components.Length; i++)
-            if (string.Equals(Components[i].GetType().Name, componentName, StringComparison.Ordinal)) return Components[i];
-        return null;
+        return _byName.TryGetValue(componentName, out Component? component) ? component : null;
     }
 
     internal System.Collections.Generic.IEnumerable<T> OfType<T>() where T : Component
