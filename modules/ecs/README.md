@@ -8,7 +8,13 @@
 
 ## 模块定位与目标
 
-`ecs` 是 Runtime 的 World-local 状态基础。它让 Server `GameWorld`、Client `ReplicaWorld` 和 Replay World 各自拥有独立的实体命名空间、组件存储和查询视图，并为上层模块提供不暴露内部地址的稳定读写边界。
+`ecs` 是 Runtime 的 World-local 状态基础。服务器一份权威 `GameWorld`、客户端一份 World（同一套 ECS，不叫 ReplicaWorld）、Replay 各一份，各自拥有独立的实体命名空间、组件存储和查询视图，并为上层模块提供不暴露内部地址的稳定读写边界。
+
+当前结构（ADR-058 第二轮，细节以架构仓 `ecs.md` M1a / M4 为准）：
+
+- **客户端建世界**：`WorldManager.Create(GeneratedRegistry.Instance)`，不传 `instanceId`；欢迎消息经 `Enqueue(WorldMessage)` 绑 `World.Self`；第一条创建记录是游戏声明的 WorldEntity。
+- **同进程双端**：两个 Manager（服务器程序集一个、客户端程序集一个）+ 内存环回（`server.outbox → client.Enqueue`），语义与联网相同；不共用一个 World。
+- **变化钩子**：每个 `Sync` 字段一对可选 `OnXChanging` / `OnXChanged`；默认 `Notify.Remote` 只收对端；自己写自己不收。代码写法看 [`samples/username/`](samples/username/README.md)。
 
 ## 负责什么
 
