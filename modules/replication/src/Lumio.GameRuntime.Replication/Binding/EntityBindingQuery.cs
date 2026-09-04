@@ -8,7 +8,7 @@ using MappingRegistry = Lumio.GameRuntime.Replication.Mapping.MappingRegistry;
 namespace Lumio.GameRuntime.Replication.Binding;
 
 /// <summary>Admission and typed AttributeId queries over the single World Manager.</summary>
-public sealed class EntityBindingQuery : IDisposable
+public sealed class EntityBindingQuery : IDisposable, IWorldControlAdapter
 {
     public const int MaxBindingsPerRoom = 4096;
     public const int MaxQueryDetailBytes = 256;
@@ -31,12 +31,74 @@ public sealed class EntityBindingQuery : IDisposable
             FieldAttributeDeclaration row = rows[i];
             _declarations[row.AttributeId] = new AttributeDeclaration(row.AttributeId, row.ValueType, row.Persistence, row.Replication, row.Visibility);
         }
+        manager.AttachControlAdapter(this);
     }
 
     public MappingRegistry Mappings { get; }
     public WorldManager Manager => _manager;
 
     public static EntityBindingQuery Create(WorldManager manager) => new(manager ?? throw new ArgumentNullException(nameof(manager)));
+
+    public bool TryHandle(WorldMessage message, out ErrorMessage? failure)
+    {
+        if (message is null) throw new ArgumentNullException(nameof(message));
+
+        BindingQueryResult result;
+        switch (message)
+        {
+            case AdmitConnectionMessage admit:
+                result = Admit(admit.Connection!, admit.AccountId, admit.RoomId, admit.EntityType);
+                break;
+            case DisconnectConnectionMessage disconnect:
+                result = Disconnect(disconnect.Connection!);
+                break;
+            case RebindConnectionMessage rebind:
+                if (!TryParseRebindMode(rebind.Mode, out RebindMode mode))
+                {
+                    result = BindingQueryResult.RequestError("invalid_rebind_mode", "unsupported rebind mode");
+                    break;
+                }
+                result = Rebind(rebind.Connection!, rebind.AccountId, rebind.RoomId, mode);
+                break;
+            default:
+                failure = null;
+                return true;
+        }
+
+        if (result.Outcome == "accepted")
+        {
+            failure = null;
+            return true;
+        }
+
+        string reason = result.Code ?? result.Outcome;
+        failure = new ErrorMessage("runtime_failure", reason) { Connection = message.Connection };
+        return false;
+    }
+
+    public bool TryResolveConnection(NetEntityId observerId, out string connection)
+    {
+        lock (_gate)
+        {
+            if (_disposed || !_manager.IsOwnerThread)
+            {
+                connection = string.Empty;
+                return false;
+            }
+
+            SynchronizePending();
+            foreach (KeyValuePair<string, NetEntityId> pair in _connectionToEntity)
+            {
+                if (pair.Value == observerId)
+                {
+                    connection = pair.Key;
+                    return true;
+                }
+            }
+            connection = string.Empty;
+            return false;
+        }
+    }
 
     public BindingQueryResult Admit(string connection, string accountId, string roomId, string entityType) => Admit(new AdmitRequest { Connection = connection, AccountId = accountId, RoomId = roomId, EntityType = entityType });
 
@@ -243,6 +305,24 @@ public sealed class EntityBindingQuery : IDisposable
             if (_disposed) return;
             _disposed = true;
         }
+        try { _manager.DetachControlAdapter(); }
+        catch (ObjectDisposedException) { }
+    }
+
+    private static bool TryParseRebindMode(string value, out RebindMode mode)
+    {
+        if (string.Equals(value, "reconnect", StringComparison.Ordinal))
+        {
+            mode = RebindMode.Reconnect;
+            return true;
+        }
+        if (string.Equals(value, "takeover", StringComparison.Ordinal))
+        {
+            mode = RebindMode.Takeover;
+            return true;
+        }
+        mode = default;
+        return false;
     }
 
     private BindingQueryResult QueryCore(AttributeQueryRequest request, string? callerConnection, bool resolveOnly)

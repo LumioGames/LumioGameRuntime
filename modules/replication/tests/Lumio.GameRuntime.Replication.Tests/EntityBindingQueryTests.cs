@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Lumio.GameRuntime.Ecs;
@@ -67,6 +68,98 @@ public sealed class EntityBindingQueryTests
         Assert.Equal("request_error", result.Outcome);
         Assert.Equal("owner_thread_required", result.Code);
         Assert.False(sut.Manager.World.TryGetAccount("acct-thread", out _));
+    }
+
+    [Fact]
+    public void EnqueuedAdmissionRunsOnOwnerTickAndAddressesWelcomeToConnection()
+    {
+        using EntityBindingQuery sut = TestBindingFactory.Create();
+
+        Exception? enqueueError = null;
+        Thread worker = new(() =>
+        {
+            try { sut.Manager.Enqueue(new AdmitConnectionMessage("C1", "acct-queued", "room-01", "player")); }
+            catch (Exception error) { enqueueError = error; }
+        });
+        worker.Start();
+        worker.Join();
+        Assert.Null(enqueueError);
+
+        sut.Manager.Tick();
+
+        IReadOnlyList<WorldMessage> outbox = sut.Manager.DrainOutbox();
+        WelcomeMessage welcome = Assert.IsType<WelcomeMessage>(Assert.Single(outbox, static message => message is WelcomeMessage));
+        Assert.Equal("C1", welcome.Connection);
+        Assert.Contains(outbox, static message => message is WorldChangeMessage);
+        Assert.Equal("ok", sut.ResolveByConnection("room-01", "C1").Outcome);
+    }
+
+    [Fact]
+    public void EnqueuedDuplicateAdmissionProducesConnectionScopedError()
+    {
+        using EntityBindingQuery sut = TestBindingFactory.Create();
+        sut.Manager.Enqueue(new AdmitConnectionMessage("C1", "acct-duplicate", "room-01", "player"));
+        sut.Manager.Tick();
+        WelcomeMessage firstWelcome = Assert.IsType<WelcomeMessage>(Assert.Single(sut.Manager.DrainOutbox(), static message => message is WelcomeMessage));
+
+        sut.Manager.Enqueue(new AdmitConnectionMessage("C2", "acct-duplicate", "room-01", "player"));
+        sut.Manager.Tick();
+
+        ErrorMessage error = Assert.IsType<ErrorMessage>(Assert.Single(sut.Manager.DrainOutbox(), static message => message is ErrorMessage));
+        Assert.Equal("C2", error.Connection);
+        Assert.Equal("runtime_failure", error.Code);
+        Assert.Contains("account_already_online", error.Detail, StringComparison.Ordinal);
+        Assert.DoesNotContain(firstWelcome.Self.ToHex(), error.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EnqueuedDisconnectRemovesBindingOnNextOwnerTick()
+    {
+        using EntityBindingQuery sut = TestBindingFactory.Create();
+        sut.Manager.Enqueue(new AdmitConnectionMessage("C1", "acct-disconnect", "room-01", "player"));
+        sut.Manager.Tick();
+        sut.Manager.DrainOutbox();
+
+        sut.Manager.Enqueue(new DisconnectConnectionMessage("C1"));
+        sut.Manager.Tick();
+
+        BindingQueryResult resolved = sut.ResolveByConnection("room-01", "C1");
+        Assert.Equal("binding_not_found", resolved.Code);
+    }
+
+    [Fact]
+    public void EnqueuedTakeoverPreservesEntityAndWelcomesNewGeneration()
+    {
+        using EntityBindingQuery sut = TestBindingFactory.Create();
+        sut.Manager.Enqueue(new AdmitConnectionMessage("C1", "acct-takeover-queued", "room-01", "player"));
+        sut.Manager.Tick();
+        IReadOnlyList<WorldMessage> firstOutbox = sut.Manager.DrainOutbox();
+        string netEntityId = Assert.Single(firstOutbox, static message => message is WelcomeMessage) is WelcomeMessage firstWelcome
+            ? firstWelcome.Self.ToHex()
+            : throw new Xunit.Sdk.XunitException("admission did not produce Welcome");
+
+        sut.Manager.Enqueue(new RebindConnectionMessage("C2", "acct-takeover-queued", "room-01", "takeover"));
+        sut.Manager.Tick();
+
+        IReadOnlyList<WorldMessage> outbox = sut.Manager.DrainOutbox();
+        ConnectionSupersededMessage superseded = Assert.IsType<ConnectionSupersededMessage>(Assert.Single(outbox, static message => message is ConnectionSupersededMessage));
+        Assert.Equal("C1", superseded.Connection);
+        Assert.Equal(2UL, superseded.NewConnectionGeneration);
+        WelcomeMessage welcome = Assert.IsType<WelcomeMessage>(Assert.Single(outbox, static message => message is WelcomeMessage));
+        Assert.Equal("C2", welcome.Connection);
+        Assert.Equal(netEntityId, welcome.Self.ToHex());
+        Assert.Equal(2UL, welcome.ConnectionGeneration);
+        Assert.Equal("binding_not_found", sut.ResolveByConnection("room-01", "C1").Code);
+        Assert.Equal("ok", sut.ResolveByConnection("room-01", "C2").Outcome);
+    }
+
+    [Fact]
+    public void DisposingQueryDetachesManagerControlAdapter()
+    {
+        EntityBindingQuery sut = TestBindingFactory.Create();
+        sut.Dispose();
+
+        Assert.Null(sut.Manager.DetachControlAdapter());
     }
 
     [Fact]
