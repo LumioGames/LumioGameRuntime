@@ -138,6 +138,7 @@ public sealed class ExpireEntityResult : WorldMessage
     {
         RequestId = requestId ?? throw new ArgumentNullException(nameof(requestId));
         Outcome = outcome ?? throw new ArgumentNullException(nameof(outcome));
+        ValidateOutcome(outcome, code, detail);
         Code = code;
         Detail = detail;
     }
@@ -146,6 +147,17 @@ public sealed class ExpireEntityResult : WorldMessage
     public string Outcome { get; }
     public string? Code { get; }
     public string? Detail { get; }
+
+    private static void ValidateOutcome(string outcome, string? code, string? detail)
+    {
+        if (outcome == "request_error")
+        {
+            if (string.IsNullOrEmpty(code) || string.IsNullOrEmpty(detail)) throw new ArgumentException("request_error requires code and detail.", nameof(outcome));
+            return;
+        }
+        if (outcome is not ("accepted" or "tombstoned" or "non_existent") || code is not null || detail is not null)
+            throw new ArgumentException("Invalid expiry result outcome shape.", nameof(outcome));
+    }
 }
 
 /// <summary>Internal result for an owner-thread binding resolution request.</summary>
@@ -161,6 +173,7 @@ public sealed class ResolveBindingResult : WorldMessage
     {
         RequestId = requestId ?? throw new ArgumentNullException(nameof(requestId));
         Outcome = outcome ?? throw new ArgumentNullException(nameof(outcome));
+        ValidateOutcome(outcome, binding, observedRevision, code, detail);
         Binding = binding;
         ObservedRevision = observedRevision;
         Code = code;
@@ -173,6 +186,22 @@ public sealed class ResolveBindingResult : WorldMessage
     public ulong? ObservedRevision { get; }
     public string? Code { get; }
     public string? Detail { get; }
+
+    private static void ValidateOutcome(string outcome, ConnectionBinding? binding, ulong? observedRevision, string? code, string? detail)
+    {
+        if (outcome == "ok")
+        {
+            if (!binding.HasValue || !observedRevision.HasValue || code is not null || detail is not null) throw new ArgumentException("ok resolve result requires binding and observedRevision.", nameof(outcome));
+            return;
+        }
+        if (outcome == "request_error")
+        {
+            if (binding.HasValue || observedRevision.HasValue || string.IsNullOrEmpty(code) || string.IsNullOrEmpty(detail)) throw new ArgumentException("request_error resolve result requires code and detail only.", nameof(outcome));
+            return;
+        }
+        if (outcome is not ("non_existent" or "stale_generation" or "invisible" or "unauthorized" or "tombstoned") || binding.HasValue || observedRevision.HasValue || code is not null || detail is not null)
+            throw new ArgumentException("Invalid resolve result outcome shape.", nameof(outcome));
+    }
 }
 
 /// <summary>Internal result for an owner-thread attribute query request.</summary>
@@ -192,6 +221,7 @@ public sealed class AttributeQueryResult : WorldMessage
     {
         RequestId = requestId ?? throw new ArgumentNullException(nameof(requestId));
         Outcome = outcome ?? throw new ArgumentNullException(nameof(outcome));
+        ValidateOutcome(outcome, netEntityId, roomId, attributeId, value, observedRevision, observedTick, code, detail);
         NetEntityId = netEntityId;
         RoomId = roomId;
         AttributeId = attributeId;
@@ -212,4 +242,32 @@ public sealed class AttributeQueryResult : WorldMessage
     public ulong? ObservedTick { get; }
     public string? Code { get; }
     public string? Detail { get; }
+
+    private static void ValidateOutcome(
+        string outcome,
+        string? netEntityId,
+        string? roomId,
+        string? attributeId,
+        object? value,
+        ulong? observedRevision,
+        ulong? observedTick,
+        string? code,
+        string? detail)
+    {
+        if (outcome == "ok")
+        {
+            if (string.IsNullOrEmpty(netEntityId) || string.IsNullOrEmpty(roomId) || string.IsNullOrEmpty(attributeId) || !observedRevision.HasValue || !observedTick.HasValue || code is not null || detail is not null)
+                throw new ArgumentException("ok attribute result requires identity, value, observedRevision, and observedTick.", nameof(outcome));
+            _ = value;
+            return;
+        }
+        if (outcome == "request_error")
+        {
+            if (netEntityId is not null || roomId is not null || attributeId is not null || value is not null || observedRevision.HasValue || observedTick.HasValue || string.IsNullOrEmpty(code) || string.IsNullOrEmpty(detail))
+                throw new ArgumentException("request_error attribute result requires code and detail only.", nameof(outcome));
+            return;
+        }
+        if (outcome is not ("non_existent" or "stale_generation" or "invisible" or "unauthorized" or "tombstoned") || netEntityId is not null || roomId is not null || attributeId is not null || value is not null || observedRevision.HasValue || observedTick.HasValue || code is not null || detail is not null)
+            throw new ArgumentException("Invalid attribute result outcome shape.", nameof(outcome));
+    }
 }

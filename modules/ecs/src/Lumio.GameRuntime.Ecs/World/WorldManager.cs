@@ -126,30 +126,13 @@ public sealed class WorldManager : IDisposable
             return;
         }
 
+        ApplyClientControls(batch);
         ApplyClientBatch(batch);
         World.Tick++;
         ClearTickEphemera();
     }
 
-    public IReadOnlyList<WorldMessage> DrainOutbox()
-    {
-        EnsureOwner();
-        WorldMessage[] copy = _outbox.ToArray();
-        _outbox.Clear();
-        return copy;
-    }
-
-    /// <summary>Drains internal owner-thread query results without consuming C-1 frames.</summary>
-    public IReadOnlyList<WorldMessage> DrainQueries()
-    {
-        EnsureOwner();
-        WorldMessage[] copy = _queries.ToArray();
-        _queries.Clear();
-        return copy;
-    }
-
-    /// <summary>Drains C-1 frames and internal query results as one bridge response.</summary>
-    public WorldDrainResponse Drain()
+    public WorldDrainResponse DrainOutbox()
     {
         EnsureOwner();
         WorldMessage[] frames = _outbox.ToArray();
@@ -158,12 +141,6 @@ public sealed class WorldManager : IDisposable
         _queries.Clear();
         return new WorldDrainResponse(frames, queries);
     }
-
-    /// <summary>Alias for hosts that name the bridge operation explicitly.</summary>
-    public WorldDrainResponse DrainResponse() => Drain();
-
-    /// <summary>Explicitly named alias for the bridge drain response.</summary>
-    public WorldDrainResponse DrainOutboxResponse() => Drain();
 
     public byte[] CaptureSnapshot()
     {
@@ -239,11 +216,14 @@ public sealed class WorldManager : IDisposable
         {
             if (batch[i] is not (AdmitConnectionMessage or DisconnectConnectionMessage or RebindConnectionMessage or ExpireEntityMessage or ResolveBindingMessage or AttributeQueryMessage)) continue;
             if (_controlAdapter is null) continue;
-            if (!_controlAdapter.TryHandle(batch[i], out ErrorMessage? error, out WorldMessage? queryResult))
+            bool handled = _controlAdapter.TryHandle(batch[i], out ErrorMessage? error, out WorldMessage? queryResult);
+            if (!handled)
             {
                 if (error is not null) _outbox.Add(error);
             }
             if (queryResult is not null) _queries.Add(queryResult);
+            else if (IsA2Control(batch[i]))
+                _queries.Add(new WorldControlRequestErrorResult(RequestIdOf(batch[i]), batch[i].GetType().Name, "scope_violation", "A2 control adapter did not return a result."));
         }
         var inputs = new List<InputCommandMessage>();
         for (int i = 0; i < batch.Count; i++) if (batch[i] is InputCommandMessage input) inputs.Add(input);
@@ -520,6 +500,42 @@ public sealed class WorldManager : IDisposable
             observer.DisconnectedAtTick = 0;
         }
     }
+
+    private void ApplyClientControls(List<WorldMessage> batch)
+    {
+        for (int i = 0; i < batch.Count; i++)
+        {
+            WorldMessage message = batch[i];
+            if (message is not (ExpireEntityMessage or ResolveBindingMessage or AttributeQueryMessage)) continue;
+            if (_controlAdapter is null)
+            {
+                _queries.Add(new WorldControlRequestErrorResult(
+                    RequestIdOf(message),
+                    message.GetType().Name,
+                    "scope_violation",
+                    "A2 controls require an attached world control adapter."));
+                continue;
+            }
+
+            bool handled = _controlAdapter.TryHandle(message, out ErrorMessage? error, out WorldMessage? queryResult);
+            if (queryResult is not null)
+                _queries.Add(queryResult);
+            else if (!handled && error is not null)
+                _queries.Add(new WorldControlRequestErrorResult(RequestIdOf(message), message.GetType().Name, error.Code, error.Detail));
+            else
+                _queries.Add(new WorldControlRequestErrorResult(RequestIdOf(message), message.GetType().Name, "scope_violation", "A2 control adapter did not return a result."));
+        }
+    }
+
+    private static bool IsA2Control(WorldMessage message) => message is ExpireEntityMessage or ResolveBindingMessage or AttributeQueryMessage;
+
+    private static string RequestIdOf(WorldMessage message) => message switch
+    {
+        ExpireEntityMessage expire => expire.RequestId,
+        ResolveBindingMessage resolve => resolve.RequestId,
+        AttributeQueryMessage attribute => attribute.RequestId,
+        _ => string.Empty,
+    };
 
     private void ApplyWorldChange(WorldChangeMessage change)
     {

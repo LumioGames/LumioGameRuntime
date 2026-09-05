@@ -403,14 +403,38 @@ public sealed class WorldChangeMessage : WorldMessage
 }
 
 /// <summary>Frames and internal owner-thread query records returned by one drain.</summary>
-public sealed class WorldDrainResponse
+public sealed class WorldDrainResponse : IReadOnlyList<WorldMessage>
 {
     public WorldDrainResponse(IReadOnlyList<WorldMessage> frames, IReadOnlyList<WorldMessage> queries)
     {
-        Frames = frames ?? throw new ArgumentNullException(nameof(frames));
-        Queries = queries ?? throw new ArgumentNullException(nameof(queries));
+        if (frames is null) throw new ArgumentNullException(nameof(frames));
+        if (queries is null) throw new ArgumentNullException(nameof(queries));
+        Frames = new List<WorldMessage>(frames).ToArray();
+        Queries = new List<WorldMessage>(queries).ToArray();
     }
 
     public IReadOnlyList<WorldMessage> Frames { get; }
     public IReadOnlyList<WorldMessage> Queries { get; }
+    public int Count => Frames.Count;
+    public WorldMessage this[int index] => Frames[index];
+    public IEnumerator<WorldMessage> GetEnumerator() => Frames.GetEnumerator();
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+}
+
+/// <summary>Explicit request error used when a client has no control adapter.</summary>
+public sealed class WorldControlRequestErrorResult : WorldMessage
+{
+    public WorldControlRequestErrorResult(string requestId, string controlType, string code, string detail)
+    {
+        RequestId = requestId ?? throw new ArgumentNullException(nameof(requestId));
+        ControlType = controlType ?? throw new ArgumentNullException(nameof(controlType));
+        Code = code ?? throw new ArgumentNullException(nameof(code));
+        Detail = detail ?? throw new ArgumentNullException(nameof(detail));
+    }
+
+    public string RequestId { get; }
+    public string ControlType { get; }
+    public string Outcome => "request_error";
+    public string Code { get; }
+    public string Detail { get; }
 }

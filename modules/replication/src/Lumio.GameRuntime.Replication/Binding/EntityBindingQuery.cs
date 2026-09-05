@@ -18,7 +18,9 @@ public sealed class EntityBindingQuery : IDisposable, IWorldControlAdapter
     private readonly Dictionary<string, AttributeDeclaration> _declarations = new(StringComparer.Ordinal);
     private readonly Dictionary<string, NetEntityId> _connectionToEntity = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _roomByConnection = new(StringComparer.Ordinal);
+    private readonly Dictionary<NetEntityId, string> _roomByEntity = new();
     private readonly Dictionary<string, PendingAdmission> _pending = new(StringComparer.Ordinal);
+    private readonly HashSet<NetEntityId> _pendingExpiry = new();
     private bool _disposed;
 
     private EntityBindingQuery(WorldManager manager)
@@ -66,7 +68,7 @@ public sealed class EntityBindingQuery : IDisposable, IWorldControlAdapter
                 break;
             case ExpireEntityMessage expire:
                 result = string.IsNullOrEmpty(expire.RequestId)
-                    ? BindingQueryResult.RequestError("invalid_request_id", "requestId is required")
+                    ? BindingQueryResult.RequestError("invalid_binding_shape", "requestId is required")
                     : Expire(expire.NetEntityId);
                 queryResult = ToExpireResult(expire, result);
                 failure = null;
@@ -147,6 +149,7 @@ public sealed class EntityBindingQuery : IDisposable, IWorldControlAdapter
                 _manager.Bind(existing);
                 _connectionToEntity[request.Connection!] = existing;
                 _roomByConnection[request.Connection!] = request.RoomId!;
+                _roomByEntity[existing] = request.RoomId!;
                 return new BindingQueryResult("accepted");
             }
 
@@ -208,6 +211,7 @@ public sealed class EntityBindingQuery : IDisposable, IWorldControlAdapter
             }
             _connectionToEntity[connection] = id;
             _roomByConnection[connection] = roomId;
+            _roomByEntity[id] = roomId;
             return BindingQueryResult.OutcomeFailure("accepted");
         }
     }
@@ -227,6 +231,7 @@ public sealed class EntityBindingQuery : IDisposable, IWorldControlAdapter
             _connectionToEntity[toConnection] = id;
             _roomByConnection.Remove(fromConnection);
             _roomByConnection[toConnection] = room ?? string.Empty;
+            _roomByEntity[id] = room ?? string.Empty;
             return BindingQueryResult.OutcomeFailure("accepted");
         }
     }
@@ -237,11 +242,14 @@ public sealed class EntityBindingQuery : IDisposable, IWorldControlAdapter
         {
             ThrowIfDisposed();
             if (!_manager.IsOwnerThread) return BindingQueryResult.RequestError("owner_thread_required", "world mutation must run on the WorldManager owner thread");
+            if (!_manager.World.IsServer) return BindingQueryResult.RequestError("scope_violation", "entity expiry is only supported by an authoritative world");
             SynchronizePending();
             if (!NetEntityId.TryParse(netEntityId, out NetEntityId id)) return BindingQueryResult.RequestError("invalid_binding_shape", "netEntityId is required");
             if (_manager.World.IsTombstoned(id)) return BindingQueryResult.OutcomeFailure("tombstoned");
             if (!_manager.World.IsLive(id)) return BindingQueryResult.OutcomeFailure("non_existent");
+            if (_pendingExpiry.Contains(id)) return BindingQueryResult.OutcomeFailure("tombstoned");
             _manager.World.QueueDestroy(id);
+            _pendingExpiry.Add(id);
             return BindingQueryResult.OutcomeFailure("accepted");
         }
     }
@@ -321,7 +329,7 @@ public sealed class EntityBindingQuery : IDisposable, IWorldControlAdapter
 
     private BindingQueryResult Query(AttributeQueryMessage message)
     {
-        if (string.IsNullOrEmpty(message.RequestId)) return BindingQueryResult.RequestError("invalid_request_id", "requestId is required");
+        if (string.IsNullOrEmpty(message.RequestId)) return BindingQueryResult.RequestError("invalid_binding_shape", "requestId is required");
         if (message.CallerScope is not ("server-authoritative" or "client-replica"))
             return BindingQueryResult.RequestError("scope_violation", "callerScope must be server-authoritative or client-replica");
         if (string.IsNullOrEmpty(message.RoomId)) return BindingQueryResult.RequestError("invalid_binding_shape", "roomId is required");
@@ -340,7 +348,7 @@ public sealed class EntityBindingQuery : IDisposable, IWorldControlAdapter
 
     private BindingQueryResult Resolve(ResolveBindingMessage message)
     {
-        if (string.IsNullOrEmpty(message.RequestId)) return BindingQueryResult.RequestError("invalid_request_id", "requestId is required");
+        if (string.IsNullOrEmpty(message.RequestId)) return BindingQueryResult.RequestError("invalid_binding_shape", "requestId is required");
         if (string.IsNullOrEmpty(message.RoomId)) return BindingQueryResult.RequestError("invalid_binding_shape", "roomId is required");
         if (!NetEntityId.TryParse(message.NetEntityId, out NetEntityId id))
             return BindingQueryResult.RequestError("invalid_binding_shape", "netEntityId must be 128-bit hex");
@@ -418,17 +426,15 @@ public sealed class EntityBindingQuery : IDisposable, IWorldControlAdapter
         if (!NetEntityId.TryParse(request.NetEntityId, out NetEntityId id)) return BindingQueryResult.RequestError("invalid_binding_shape", "netEntityId must be 128-bit hex");
         if (_manager.World.IsTombstoned(id)) return BindingQueryResult.OutcomeFailure("tombstoned");
         if (!_manager.World.IsLive(id)) return BindingQueryResult.OutcomeFailure("non_existent");
-        if (!string.IsNullOrEmpty(request.RoomId))
-        {
-            foreach (KeyValuePair<string, string> pair in _roomByConnection)
-            {
-                if (_connectionToEntity.TryGetValue(pair.Key, out NetEntityId bound) && bound == id &&
-                    !string.Equals(pair.Value, request.RoomId, StringComparison.Ordinal))
-                    return BindingQueryResult.RequestError("cross_room_reference", "entity is not in the requested room");
-            }
-        }
+        if (!string.IsNullOrEmpty(request.RoomId) && _roomByEntity.TryGetValue(id, out string? boundRoom) &&
+            !string.Equals(boundRoom, request.RoomId, StringComparison.Ordinal))
+            return BindingQueryResult.RequestError("cross_room_reference", "entity is not in the requested room");
         if (request.ConnectionGeneration.HasValue && _manager.World.NamedComponent(id, nameof(ObserverComponent)) is ObserverComponent observer && observer.ConnectionGeneration != request.ConnectionGeneration.Value) return BindingQueryResult.OutcomeFailure("stale_generation");
-        if (resolveOnly) return BindingQueryResult.OkEntity(id.ToHex(), request.RoomId ?? string.Empty, _manager.World.Registry.WireName(_manager.World.TypeOf(id).ClrType), _manager.World.Revision);
+        if (resolveOnly)
+        {
+            if (!TryBinding(id, out ConnectionBinding binding, out string room)) return BindingQueryResult.OutcomeFailure("invisible");
+            return BindingQueryResult.OkBinding(binding, _manager.World.Revision);
+        }
         string attributeId = request.AttributeId ?? string.Empty;
         if (attributeId.StartsWith("Storage.", StringComparison.OrdinalIgnoreCase) || attributeId.Contains('/') || attributeId.Contains('\\'))
             return BindingQueryResult.RequestError("storage_access_forbidden", "storage paths are not valid attribute ids");
@@ -462,7 +468,7 @@ public sealed class EntityBindingQuery : IDisposable, IWorldControlAdapter
         Component? identity = _manager.World.NamedComponent(id, "IdentityComponent");
         string account = World.TryReadAccountId(identity!) ?? string.Empty;
         ObserverComponent observer = _manager.World.Get<ObserverComponent>(id);
-        return new ConnectionBinding(account, _roomByConnection.TryGetValue(connection, out string? room) ? room : string.Empty, id.ToHex(), _manager.World.Registry.WireName(_manager.World.TypeOf(id).ClrType), observer.ConnectionGeneration);
+        return new ConnectionBinding(account, _roomByConnection.TryGetValue(connection, out string? room) ? room : _roomByEntity.GetValueOrDefault(id, string.Empty), id.ToHex(), _manager.World.Registry.WireName(_manager.World.TypeOf(id).ClrType), observer.ConnectionGeneration);
     }
 
     private bool TryBinding(NetEntityId id, out ConnectionBinding binding, out string room)
@@ -470,7 +476,7 @@ public sealed class EntityBindingQuery : IDisposable, IWorldControlAdapter
         foreach (KeyValuePair<string, NetEntityId> pair in _connectionToEntity)
         {
             if (pair.Value != id) continue;
-            room = _roomByConnection.TryGetValue(pair.Key, out string? mappedRoom) ? mappedRoom : string.Empty;
+            room = _roomByConnection.TryGetValue(pair.Key, out string? mappedRoom) ? mappedRoom : _roomByEntity.GetValueOrDefault(id, string.Empty);
             binding = BindingOf(pair.Key, id);
             return true;
         }
@@ -484,7 +490,13 @@ public sealed class EntityBindingQuery : IDisposable, IWorldControlAdapter
         }
 
         ObserverComponent observer = _manager.World.Get<ObserverComponent>(id);
-        room = string.Empty;
+        if (!_roomByEntity.TryGetValue(id, out string? retainedRoom))
+        {
+            binding = default;
+            room = string.Empty;
+            return false;
+        }
+        room = retainedRoom;
         binding = new ConnectionBinding(
             World.TryReadAccountId(identity) ?? string.Empty,
             room,
@@ -501,9 +513,15 @@ public sealed class EntityBindingQuery : IDisposable, IWorldControlAdapter
             if (!_manager.World.IsLive(pair.Value)) stale.Add(pair.Key);
         for (int i = 0; i < stale.Count; i++)
         {
+            _roomByEntity.Remove(_connectionToEntity[stale[i]]);
             _connectionToEntity.Remove(stale[i]);
             _roomByConnection.Remove(stale[i]);
         }
+
+        var expired = new List<NetEntityId>();
+        foreach (NetEntityId id in _pendingExpiry)
+            if (!_manager.World.IsLive(id)) expired.Add(id);
+        for (int i = 0; i < expired.Count; i++) _pendingExpiry.Remove(expired[i]);
 
         if (_pending.Count == 0) return;
         var ready = new List<string>();
@@ -514,6 +532,7 @@ public sealed class EntityBindingQuery : IDisposable, IWorldControlAdapter
             if (!_manager.World.IsLive(id)) continue;
             _connectionToEntity[pair.Key] = id;
             _roomByConnection[pair.Key] = pair.Value.RoomId;
+            _roomByEntity[id] = pair.Value.RoomId;
             ready.Add(pair.Key);
         }
         for (int i = 0; i < ready.Count; i++) _pending.Remove(ready[i]);
