@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Lumio.GameRuntime.Ecs;
@@ -276,6 +277,112 @@ public sealed class EntityBindingQueryTests
         Assert.Equal(id.ToHex(), query.ResolveByConnection("room-01", "C2").Binding!.Value.NetEntityId);
         Assert.True(restored.World.TryGetAccount("acct-07", out NetEntityId indexed));
         Assert.Equal(id, indexed);
+    }
+
+    [Fact]
+    public void OwnerThreadControlsAreImmutableInternalWorldMessagesAndNotWireFrames()
+    {
+        WorldMessage[] controls =
+        {
+            new ExpireEntityMessage("expire-1", "00000000000000010000000000000001"),
+            new ResolveBindingMessage("resolve-1", "room-01", "00000000000000010000000000000001"),
+            new AttributeQueryMessage("attribute-1", "server-authoritative", "room-01", "00000000000000010000000000000001", "IdentityComponent.name"),
+        };
+
+        Assert.All(controls, control => Assert.Throws<ArgumentException>(() => WireCodec.EncodePack(control)));
+        Assert.All(controls, control => Assert.All(control.GetType().GetProperties(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.DeclaredOnly), property => Assert.False(property.CanWrite)));
+    }
+
+    [Fact]
+    public void EnqueuedQueriesRunOnOwnerTickAndDrainSeparatelyFromC1Frames()
+    {
+        using EntityBindingQuery sut = TestBindingFactory.Create();
+        Assert.Equal("accepted", sut.Admit("C1", "acct-a2", "room-01", "player").Outcome);
+        sut.Manager.Tick();
+        _ = sut.Manager.DrainOutbox();
+        NetEntityId id = NetEntityId.Parse(sut.ResolveByConnection("room-01", "C1").Binding!.Value.NetEntityId);
+
+        sut.Manager.Enqueue(new ResolveBindingMessage("resolve-1", "room-01", id.ToHex(), connection: "C1"));
+        sut.Manager.Enqueue(new AttributeQueryMessage("attribute-1", "server-authoritative", "room-01", id.ToHex(), "IdentityComponent.name"));
+
+        Assert.Empty(sut.Manager.DrainQueries());
+        sut.Manager.Tick();
+
+        IReadOnlyList<WorldMessage> frames = sut.Manager.DrainOutbox();
+        IReadOnlyList<WorldMessage> queries = sut.Manager.DrainQueries();
+        Assert.DoesNotContain(frames, static message => message is ResolveBindingResult or AttributeQueryResult);
+        ResolveBindingResult resolve = Assert.IsType<ResolveBindingResult>(Assert.Single(queries, static message => message is ResolveBindingResult));
+        AttributeQueryResult attribute = Assert.IsType<AttributeQueryResult>(Assert.Single(queries, static message => message is AttributeQueryResult));
+        Assert.Equal("resolve-1", resolve.RequestId);
+        Assert.Equal("ok", resolve.Outcome);
+        Assert.Equal(id.ToHex(), resolve.Binding!.Value.NetEntityId);
+        Assert.Equal("attribute-1", attribute.RequestId);
+        Assert.Equal("ok", attribute.Outcome);
+        Assert.Equal(sut.Manager.World.Revision, attribute.ObservedRevision);
+        Assert.Equal(sut.Manager.World.Tick - 1, attribute.ObservedTick);
+    }
+
+    [Fact]
+    public void ExpiryIsOwnerThreadOrderedAndRepeatedExpiryReturnsTombstoned()
+    {
+        using EntityBindingQuery sut = TestBindingFactory.Create();
+        Assert.Equal("accepted", sut.Admit("C1", "acct-expire", "room-01", "player").Outcome);
+        sut.Manager.Tick();
+        _ = sut.Manager.DrainOutbox();
+        NetEntityId id = NetEntityId.Parse(sut.ResolveByConnection("room-01", "C1").Binding!.Value.NetEntityId);
+
+        sut.Manager.Enqueue(new ExpireEntityMessage("expire-1", id.ToHex(), "C1"));
+        Assert.True(sut.Manager.World.IsLive(id));
+        sut.Manager.Tick();
+        ExpireEntityResult first = Assert.IsType<ExpireEntityResult>(Assert.Single(sut.Manager.DrainQueries()));
+        Assert.Equal("expire-1", first.RequestId);
+        Assert.Equal("accepted", first.Outcome);
+        Assert.Contains(sut.Manager.DrainOutbox(), message => message is WorldChangeMessage change && change.Destroys.Any(destroyed => destroyed == id));
+
+        sut.Manager.Enqueue(new ExpireEntityMessage("expire-2", id.ToHex()));
+        sut.Manager.Tick();
+        ExpireEntityResult second = Assert.IsType<ExpireEntityResult>(Assert.Single(sut.Manager.DrainQueries()));
+        Assert.Equal("tombstoned", second.Outcome);
+    }
+
+    [Fact]
+    public void QueryControlsReturnCorrelationAndClosedOutcomeMatrix()
+    {
+        using EntityBindingQuery sut = TestBindingFactory.Create();
+        Assert.Equal("accepted", sut.Admit("C1", "acct-query", "room-01", "player").Outcome);
+        sut.Manager.Tick();
+        _ = sut.Manager.DrainOutbox();
+        NetEntityId id = NetEntityId.Parse(sut.ResolveByConnection("room-01", "C1").Binding!.Value.NetEntityId);
+
+        sut.Manager.Enqueue(new ResolveBindingMessage("bad", "room-01", "malformed"));
+        sut.Manager.Enqueue(new ResolveBindingMessage("cross", "room-02", id.ToHex()));
+        sut.Manager.Enqueue(new ResolveBindingMessage("stale", "room-01", id.ToHex(), connectionGeneration: 99));
+        sut.Manager.Enqueue(new AttributeQueryMessage("invalid", "server-authoritative", "room-01", id.ToHex(), "SELECT *"));
+        sut.Manager.Enqueue(new AttributeQueryMessage("invisible", "client-replica", "room-01", id.ToHex(), "ChatComponent.lastMessageText", connection: "C1"));
+        sut.Manager.Enqueue(new AttributeQueryMessage("unauthorized", "client-replica", "room-01", id.ToHex(), "IdentityComponent.realName", connection: "unknown"));
+        sut.Manager.Enqueue(new AttributeQueryMessage("missing", "server-authoritative", "room-01", new NetEntityId(id.InstanceId, id.Counter + 100).ToHex(), "IdentityComponent.name"));
+        sut.Manager.Enqueue(new ExpireEntityMessage("expire", id.ToHex()));
+
+        sut.Manager.Tick();
+
+        IReadOnlyList<WorldMessage> queries = sut.Manager.DrainQueries();
+        Assert.Equal(8, queries.Count);
+        Assert.Equal("request_error", Assert.IsType<ResolveBindingResult>(queries[0]).Outcome);
+        Assert.Equal("invalid_binding_shape", Assert.IsType<ResolveBindingResult>(queries[0]).Code);
+        Assert.Equal("request_error", Assert.IsType<ResolveBindingResult>(queries[1]).Outcome);
+        Assert.Equal("cross_room_reference", Assert.IsType<ResolveBindingResult>(queries[1]).Code);
+        Assert.Equal("stale_generation", Assert.IsType<ResolveBindingResult>(queries[2]).Outcome);
+        Assert.Equal("request_error", Assert.IsType<AttributeQueryResult>(queries[3]).Outcome);
+        Assert.Equal("invisible", Assert.IsType<AttributeQueryResult>(queries[4]).Outcome);
+        Assert.Equal("unauthorized", Assert.IsType<AttributeQueryResult>(queries[5]).Outcome);
+        Assert.Equal("non_existent", Assert.IsType<AttributeQueryResult>(queries[6]).Outcome);
+        Assert.Equal("accepted", Assert.IsType<ExpireEntityResult>(queries[7]).Outcome);
+
+        sut.Manager.DrainOutbox();
+        sut.Manager.Enqueue(new AttributeQueryMessage("after", "server-authoritative", "room-01", id.ToHex(), "IdentityComponent.name"));
+        sut.Manager.Tick();
+        AttributeQueryResult after = Assert.IsType<AttributeQueryResult>(Assert.Single(sut.Manager.DrainQueries()));
+        Assert.Equal("tombstoned", after.Outcome);
     }
 
     private static byte[] Encode(string text)

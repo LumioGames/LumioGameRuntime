@@ -9,7 +9,7 @@ namespace Lumio.GameRuntime.Ecs;
 /// </summary>
 public abstract class WorldMessage
 {
-    private protected WorldMessage()
+    protected WorldMessage()
     {
     }
 
@@ -53,6 +53,99 @@ public sealed class RebindConnectionMessage : WorldMessage
     public string AccountId { get; }
     public string RoomId { get; }
     public string Mode { get; }
+}
+
+/// <summary>Owner-thread request to queue an entity for expiry.</summary>
+public sealed class ExpireEntityMessage : WorldMessage
+{
+    public ExpireEntityMessage(string requestId, string netEntityId, string? connection = null)
+    {
+        RequestId = requestId ?? throw new ArgumentNullException(nameof(requestId));
+        NetEntityId = netEntityId ?? throw new ArgumentNullException(nameof(netEntityId));
+        Connection = connection;
+    }
+
+    public ExpireEntityMessage(string requestId, NetEntityId netEntityId, string? connection = null)
+        : this(requestId, netEntityId.ToHex(), connection)
+    {
+    }
+
+    public string RequestId { get; }
+    public string NetEntityId { get; }
+}
+
+/// <summary>Owner-thread request to resolve a binding by network entity identity.</summary>
+public sealed class ResolveBindingMessage : WorldMessage
+{
+    public ResolveBindingMessage(
+        string requestId,
+        string roomId,
+        string netEntityId,
+        ulong? connectionGeneration = null,
+        string? connection = null)
+    {
+        RequestId = requestId ?? throw new ArgumentNullException(nameof(requestId));
+        RoomId = roomId ?? throw new ArgumentNullException(nameof(roomId));
+        NetEntityId = netEntityId ?? throw new ArgumentNullException(nameof(netEntityId));
+        ConnectionGeneration = connectionGeneration;
+        Connection = connection;
+    }
+
+    public ResolveBindingMessage(
+        string requestId,
+        string roomId,
+        NetEntityId netEntityId,
+        ulong? connectionGeneration = null,
+        string? connection = null)
+        : this(requestId, roomId, netEntityId.ToHex(), connectionGeneration, connection)
+    {
+    }
+
+    public string RequestId { get; }
+    public string RoomId { get; }
+    public string NetEntityId { get; }
+    public ulong? ConnectionGeneration { get; }
+}
+
+/// <summary>Owner-thread request to read one declared attribute.</summary>
+public sealed class AttributeQueryMessage : WorldMessage
+{
+    public AttributeQueryMessage(
+        string requestId,
+        string callerScope,
+        string roomId,
+        string netEntityId,
+        string attributeId,
+        ulong? connectionGeneration = null,
+        string? connection = null)
+    {
+        RequestId = requestId ?? throw new ArgumentNullException(nameof(requestId));
+        CallerScope = callerScope ?? throw new ArgumentNullException(nameof(callerScope));
+        RoomId = roomId ?? throw new ArgumentNullException(nameof(roomId));
+        NetEntityId = netEntityId ?? throw new ArgumentNullException(nameof(netEntityId));
+        AttributeId = attributeId ?? throw new ArgumentNullException(nameof(attributeId));
+        ConnectionGeneration = connectionGeneration;
+        Connection = connection;
+    }
+
+    public AttributeQueryMessage(
+        string requestId,
+        string callerScope,
+        string roomId,
+        NetEntityId netEntityId,
+        string attributeId,
+        ulong? connectionGeneration = null,
+        string? connection = null)
+        : this(requestId, callerScope, roomId, netEntityId.ToHex(), attributeId, connectionGeneration, connection)
+    {
+    }
+
+    public string RequestId { get; }
+    public string CallerScope { get; }
+    public string RoomId { get; }
+    public string NetEntityId { get; }
+    public string AttributeId { get; }
+    public ulong? ConnectionGeneration { get; }
 }
 
 /// <summary>Client-to-server input: <c>chat.input</c>, <c>field.write</c>, or a ServerRpc envelope.</summary>
@@ -307,4 +400,17 @@ public sealed class WorldChangeMessage : WorldMessage
 
     /// <summary>Observer identity addressed by this pack. Zero means broadcast/unaddressed.</summary>
     public NetEntityId ObserverId { get; }
+}
+
+/// <summary>Frames and internal owner-thread query records returned by one drain.</summary>
+public sealed class WorldDrainResponse
+{
+    public WorldDrainResponse(IReadOnlyList<WorldMessage> frames, IReadOnlyList<WorldMessage> queries)
+    {
+        Frames = frames ?? throw new ArgumentNullException(nameof(frames));
+        Queries = queries ?? throw new ArgumentNullException(nameof(queries));
+    }
+
+    public IReadOnlyList<WorldMessage> Frames { get; }
+    public IReadOnlyList<WorldMessage> Queries { get; }
 }

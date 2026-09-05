@@ -40,9 +40,13 @@ public sealed class EntityBindingQuery : IDisposable, IWorldControlAdapter
     public static EntityBindingQuery Create(WorldManager manager) => new(manager ?? throw new ArgumentNullException(nameof(manager)));
 
     public bool TryHandle(WorldMessage message, out ErrorMessage? failure)
+        => TryHandle(message, out failure, out _);
+
+    public bool TryHandle(WorldMessage message, out ErrorMessage? failure, out WorldMessage? queryResult)
     {
         if (message is null) throw new ArgumentNullException(nameof(message));
 
+        queryResult = null;
         BindingQueryResult result;
         switch (message)
         {
@@ -60,6 +64,23 @@ public sealed class EntityBindingQuery : IDisposable, IWorldControlAdapter
                 }
                 result = Rebind(rebind.Connection!, rebind.AccountId, rebind.RoomId, mode);
                 break;
+            case ExpireEntityMessage expire:
+                result = string.IsNullOrEmpty(expire.RequestId)
+                    ? BindingQueryResult.RequestError("invalid_request_id", "requestId is required")
+                    : Expire(expire.NetEntityId);
+                queryResult = ToExpireResult(expire, result);
+                failure = null;
+                return true;
+            case ResolveBindingMessage resolve:
+                result = Resolve(resolve);
+                queryResult = ToResolveResult(resolve, result);
+                failure = null;
+                return true;
+            case AttributeQueryMessage attribute:
+                result = Query(attribute);
+                queryResult = ToAttributeResult(attribute, result);
+                failure = null;
+                return true;
             default:
                 failure = null;
                 return true;
@@ -298,6 +319,70 @@ public sealed class EntityBindingQuery : IDisposable, IWorldControlAdapter
         }
     }
 
+    private BindingQueryResult Query(AttributeQueryMessage message)
+    {
+        if (string.IsNullOrEmpty(message.RequestId)) return BindingQueryResult.RequestError("invalid_request_id", "requestId is required");
+        if (message.CallerScope is not ("server-authoritative" or "client-replica"))
+            return BindingQueryResult.RequestError("scope_violation", "callerScope must be server-authoritative or client-replica");
+        if (string.IsNullOrEmpty(message.RoomId)) return BindingQueryResult.RequestError("invalid_binding_shape", "roomId is required");
+        if (string.IsNullOrEmpty(message.NetEntityId)) return BindingQueryResult.RequestError("invalid_binding_shape", "netEntityId is required");
+        return QueryAttribute(
+            new AttributeQueryRequest
+            {
+                CallerScope = message.CallerScope,
+                RoomId = message.RoomId,
+                NetEntityId = message.NetEntityId,
+                AttributeId = message.AttributeId,
+                ConnectionGeneration = message.ConnectionGeneration,
+            },
+            message.Connection);
+    }
+
+    private BindingQueryResult Resolve(ResolveBindingMessage message)
+    {
+        if (string.IsNullOrEmpty(message.RequestId)) return BindingQueryResult.RequestError("invalid_request_id", "requestId is required");
+        if (string.IsNullOrEmpty(message.RoomId)) return BindingQueryResult.RequestError("invalid_binding_shape", "roomId is required");
+        if (!NetEntityId.TryParse(message.NetEntityId, out NetEntityId id))
+            return BindingQueryResult.RequestError("invalid_binding_shape", "netEntityId must be 128-bit hex");
+
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            if (!_manager.IsOwnerThread) return BindingQueryResult.RequestError("owner_thread_required", "world reads must run on the WorldManager owner thread");
+            SynchronizePending();
+            if (_manager.World.IsTombstoned(id)) return BindingQueryResult.OutcomeFailure("tombstoned");
+            if (!_manager.World.IsLive(id)) return BindingQueryResult.OutcomeFailure("non_existent");
+            if (message.Connection is not null && _connectionToEntity.TryGetValue(message.Connection, out NetEntityId connectionEntity) && connectionEntity != id)
+                return BindingQueryResult.OutcomeFailure("unauthorized");
+            if (!TryBinding(id, out ConnectionBinding binding, out string boundRoom))
+                return BindingQueryResult.OutcomeFailure("invisible");
+            if (!string.Equals(boundRoom, message.RoomId, StringComparison.Ordinal))
+                return BindingQueryResult.RequestError("cross_room_reference", "entity is not in the requested room");
+            if (message.ConnectionGeneration.HasValue && binding.ConnectionGeneration != message.ConnectionGeneration.Value)
+                return BindingQueryResult.OutcomeFailure("stale_generation");
+            return BindingQueryResult.OkBinding(binding, _manager.World.Revision);
+        }
+    }
+
+    private static ExpireEntityResult ToExpireResult(ExpireEntityMessage request, BindingQueryResult result) =>
+        result.Outcome == "request_error"
+            ? new ExpireEntityResult(request.RequestId, result.Outcome, result.Code, result.Detail)
+            : new ExpireEntityResult(request.RequestId, result.Outcome);
+
+    private static ResolveBindingResult ToResolveResult(ResolveBindingMessage request, BindingQueryResult result) =>
+        result.Outcome == "ok"
+            ? new ResolveBindingResult(request.RequestId, result.Outcome, result.Binding, result.AuthoritativeRevision)
+            : result.Outcome == "request_error"
+                ? new ResolveBindingResult(request.RequestId, result.Outcome, code: result.Code, detail: result.Detail)
+                : new ResolveBindingResult(request.RequestId, result.Outcome);
+
+    private static AttributeQueryResult ToAttributeResult(AttributeQueryMessage request, BindingQueryResult result) =>
+        result.Outcome == "ok"
+            ? new AttributeQueryResult(request.RequestId, result.Outcome, result.NetEntityId, result.RoomId, result.AttributeId, result.Value, result.ObservedRevision, result.ObservedTick)
+            : result.Outcome == "request_error"
+                ? new AttributeQueryResult(request.RequestId, result.Outcome, code: result.Code, detail: result.Detail)
+                : new AttributeQueryResult(request.RequestId, result.Outcome);
+
     public void Dispose()
     {
         lock (_gate)
@@ -378,6 +463,35 @@ public sealed class EntityBindingQuery : IDisposable, IWorldControlAdapter
         string account = World.TryReadAccountId(identity!) ?? string.Empty;
         ObserverComponent observer = _manager.World.Get<ObserverComponent>(id);
         return new ConnectionBinding(account, _roomByConnection.TryGetValue(connection, out string? room) ? room : string.Empty, id.ToHex(), _manager.World.Registry.WireName(_manager.World.TypeOf(id).ClrType), observer.ConnectionGeneration);
+    }
+
+    private bool TryBinding(NetEntityId id, out ConnectionBinding binding, out string room)
+    {
+        foreach (KeyValuePair<string, NetEntityId> pair in _connectionToEntity)
+        {
+            if (pair.Value != id) continue;
+            room = _roomByConnection.TryGetValue(pair.Key, out string? mappedRoom) ? mappedRoom : string.Empty;
+            binding = BindingOf(pair.Key, id);
+            return true;
+        }
+
+        Component? identity = _manager.World.NamedComponent(id, "IdentityComponent");
+        if (identity is null)
+        {
+            binding = default;
+            room = string.Empty;
+            return false;
+        }
+
+        ObserverComponent observer = _manager.World.Get<ObserverComponent>(id);
+        room = string.Empty;
+        binding = new ConnectionBinding(
+            World.TryReadAccountId(identity) ?? string.Empty,
+            room,
+            id.ToHex(),
+            _manager.World.Registry.WireName(_manager.World.TypeOf(id).ClrType),
+            observer.ConnectionGeneration);
+        return true;
     }
 
     private void SynchronizePending()

@@ -10,6 +10,7 @@ public sealed class WorldManager : IDisposable
     private readonly object _inboxLock = new();
     private readonly Queue<WorldMessage> _inbox = new();
     private readonly List<WorldMessage> _outbox = new();
+    private readonly List<WorldMessage> _queries = new();
     private readonly Dictionary<NetEntityId, int> _initialCreateCursors = new();
     private Thread? _ownerThread;
     private bool _started;
@@ -138,6 +139,32 @@ public sealed class WorldManager : IDisposable
         return copy;
     }
 
+    /// <summary>Drains internal owner-thread query results without consuming C-1 frames.</summary>
+    public IReadOnlyList<WorldMessage> DrainQueries()
+    {
+        EnsureOwner();
+        WorldMessage[] copy = _queries.ToArray();
+        _queries.Clear();
+        return copy;
+    }
+
+    /// <summary>Drains C-1 frames and internal query results as one bridge response.</summary>
+    public WorldDrainResponse Drain()
+    {
+        EnsureOwner();
+        WorldMessage[] frames = _outbox.ToArray();
+        WorldMessage[] queries = _queries.ToArray();
+        _outbox.Clear();
+        _queries.Clear();
+        return new WorldDrainResponse(frames, queries);
+    }
+
+    /// <summary>Alias for hosts that name the bridge operation explicitly.</summary>
+    public WorldDrainResponse DrainResponse() => Drain();
+
+    /// <summary>Explicitly named alias for the bridge drain response.</summary>
+    public WorldDrainResponse DrainOutboxResponse() => Drain();
+
     public byte[] CaptureSnapshot()
     {
         EnsureOwner();
@@ -210,12 +237,13 @@ public sealed class WorldManager : IDisposable
     {
         for (int i = 0; i < batch.Count; i++)
         {
-            if (batch[i] is not (AdmitConnectionMessage or DisconnectConnectionMessage or RebindConnectionMessage)) continue;
+            if (batch[i] is not (AdmitConnectionMessage or DisconnectConnectionMessage or RebindConnectionMessage or ExpireEntityMessage or ResolveBindingMessage or AttributeQueryMessage)) continue;
             if (_controlAdapter is null) continue;
-            if (!_controlAdapter.TryHandle(batch[i], out ErrorMessage? error))
+            if (!_controlAdapter.TryHandle(batch[i], out ErrorMessage? error, out WorldMessage? queryResult))
             {
                 if (error is not null) _outbox.Add(error);
             }
+            if (queryResult is not null) _queries.Add(queryResult);
         }
         var inputs = new List<InputCommandMessage>();
         for (int i = 0; i < batch.Count; i++) if (batch[i] is InputCommandMessage input) inputs.Add(input);
@@ -334,6 +362,7 @@ public sealed class WorldManager : IDisposable
     private void Project()
     {
         var stampedRpcs = new List<ClientRpcRecord>(World.PendingRpcs.Count);
+        bool destroyProjected = false;
         for (int i = 0; i < World.PendingRpcs.Count; i++)
         {
             ClientRpcRecord rpc = World.PendingRpcs[i];
@@ -393,12 +422,15 @@ public sealed class WorldManager : IDisposable
             }
 
             var destroys = new List<NetEntityId>(World.DestroyedThisTick);
+            if (destroys.Count > 0) destroyProjected = true;
             string? connection = null;
             if (_controlAdapter is not null && _controlAdapter.TryResolveConnection(observerId, out string resolved)) connection = resolved;
             if (initial) _outbox.Add(new WelcomeMessage(World.InstanceId, observerId, observer.ConnectionGeneration, connection));
             _outbox.Add(new WorldChangeMessage(World.Tick, creates, fields, destroys, rpcs, connection, observerId));
             if (fullComplete) observer.ProjectedTick = World.Tick;
         }
+        if (!destroyProjected && World.DestroyedThisTick.Count > 0)
+            _outbox.Add(new WorldChangeMessage(World.Tick, Array.Empty<CreateRecord>(), Array.Empty<FieldChange>(), World.DestroyedThisTick.ToArray(), stampedRpcs));
         FireLocalHooks();
     }
 
