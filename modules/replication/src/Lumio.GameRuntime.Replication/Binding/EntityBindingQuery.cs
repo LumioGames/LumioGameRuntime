@@ -133,8 +133,6 @@ public sealed class EntityBindingQuery : IDisposable, IWorldControlAdapter
             ThrowIfDisposed();
             if (!_manager.IsOwnerThread) return BindingQueryResult.RequestError("owner_thread_required", "world mutation must run on the WorldManager owner thread");
             if (!ValidAdmission(request)) return BindingQueryResult.RequestError("invalid_binding_shape", "admission requires connection, account, room and entity type");
-            if (string.Equals(request.EntityType, "bot", StringComparison.Ordinal))
-                return BindingQueryResult.OutcomeFailure("bot_namespace_admission_forbidden");
             foreach (KeyValuePair<string, PendingAdmission> pending in _pending)
             {
                 if (string.Equals(pending.Value.AccountId, request.AccountId, StringComparison.Ordinal))

@@ -52,12 +52,28 @@ public sealed class EntityBindingQueryTests
     }
 
     [Fact]
-    public void BotNamespaceCannotBeAdmittedThroughAccountBinding()
+    public void BotEntityTypeCanBeAdmittedThroughAccountBinding()
     {
         using EntityBindingQuery sut = TestBindingFactory.Create();
         BindingQueryResult result = sut.Admit("C1", "acct-bot", "room-01", "bot");
-        Assert.Equal("bot_namespace_admission_forbidden", result.Outcome);
-        Assert.Null(result.Binding);
+        Assert.Equal("accepted", result.Outcome);
+
+        sut.Manager.Tick();
+        BindingQueryResult resolved = sut.ResolveByConnection("room-01", "C1");
+        Assert.Equal("ok", resolved.Outcome);
+        Assert.True(resolved.Binding.HasValue);
+        Assert.Equal("bot", resolved.Binding.Value.EntityType);
+    }
+
+    [Fact]
+    public void UnsupportedEntityTypeRemainsInvalidBindingShape()
+    {
+        using EntityBindingQuery sut = TestBindingFactory.Create();
+        BindingQueryResult result = sut.Admit("C1", "acct-invalid", "room-01", "npc");
+
+        Assert.Equal("request_error", result.Outcome);
+        Assert.Equal("invalid_binding_shape", result.Code);
+        Assert.False(sut.Manager.World.TryGetAccount("acct-invalid", out _));
     }
 
     [Fact]
