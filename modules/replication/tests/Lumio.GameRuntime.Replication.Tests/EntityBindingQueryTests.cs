@@ -442,6 +442,22 @@ public sealed class EntityBindingQueryTests
     }
 
     [Fact]
+    public void ResolveByNetEntityIdSynchronizesBindingAfterAdmissionCommit()
+    {
+        using EntityBindingQuery sut = TestBindingFactory.Create();
+        Assert.Equal("accepted", sut.Admit("C1", "acct-pending", "room-pending", "player").Outcome);
+        _ = sut.Manager.CaptureSnapshot();
+
+        Assert.True(sut.Manager.World.TryGetAccount("acct-pending", out NetEntityId id));
+        BindingQueryResult result = sut.ResolveByNetEntityId("room-pending", id.ToHex(), 1, "server-authoritative");
+
+        Assert.Equal("ok", result.Outcome);
+        Assert.True(result.Binding.HasValue);
+        Assert.Equal("room-pending", result.Binding.Value.RoomId);
+        Assert.Equal(id.ToHex(), result.Binding.Value.NetEntityId);
+    }
+
+    [Fact]
     public void ResultConstructorsRejectOpenOrMismatchedOutcomeShapes()
     {
         Assert.Throws<ArgumentException>(() => new ExpireEntityResult("r", "accepted", "unexpected", "detail"));

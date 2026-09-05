@@ -286,6 +286,7 @@ public sealed class EntityBindingQuery : IDisposable, IWorldControlAdapter
         {
             ThrowIfDisposed();
             if (!_manager.IsOwnerThread) return BindingQueryResult.RequestError("owner_thread_required", "world reads must run on the WorldManager owner thread");
+            SynchronizePending();
             return QueryCore(new AttributeQueryRequest { CallerScope = callerScope, RoomId = roomId, NetEntityId = netEntityId, AttributeId = "EntityIdentity.entityType", ConnectionGeneration = generation }, null, true);
         }
     }
