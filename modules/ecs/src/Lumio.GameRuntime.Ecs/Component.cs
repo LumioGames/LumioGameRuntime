@@ -160,3 +160,31 @@ public interface IPersistReader
         return false;
     }
 }
+
+internal sealed class TransformSyncField : ISyncField
+{
+    private readonly LogicTransform _owner;
+    private readonly string _fieldId;
+    private readonly Func<string> _read;
+    private readonly Action<string> _assign;
+
+    internal TransformSyncField(LogicTransform owner, int ordinal, string fieldId, Func<string> read, Action<string> assign)
+    {
+        _owner = owner;
+        Ordinal = ordinal;
+        _fieldId = fieldId;
+        _read = read;
+        _assign = assign;
+    }
+
+    public int Ordinal { get; }
+    public string AttributeId => "LogicTransform." + _fieldId;
+    public Scope Scope => Scope.Room;
+    public Authority Authority => Authority.Server;
+    public Notify Notify => Notify.Remote;
+    public string? ClaimBy => null;
+    public Type ValueType => typeof(string);
+    public object? BoxedValue => _read();
+    public Component Owner => _owner;
+    public void AssignFromRemote(object? value) => _assign(value?.ToString() ?? string.Empty);
+}

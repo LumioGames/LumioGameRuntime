@@ -24,6 +24,7 @@ public sealed class World : ISyncHost
         AccountIndex = new Dictionary<string, NetEntityId>(StringComparer.Ordinal);
         CreationOrder = new List<NetEntityId>();
         ComponentPools = new Dictionary<Type, Stack<Component[]>>();
+        TransformControllers = new Dictionary<NetEntityId, TransformController>();
     }
 
     public WorldManager Manager { get; internal set; }
@@ -51,6 +52,7 @@ public sealed class World : ISyncHost
     internal Dictionary<string, NetEntityId> AccountIndex { get; }
     internal List<NetEntityId> CreationOrder { get; }
     private Dictionary<Type, Stack<Component[]>> ComponentPools { get; }
+    private Dictionary<NetEntityId, TransformController> TransformControllers { get; }
     internal ulong NextCounter = 1;
     internal ulong NextMessageId = 1;
     internal ulong NextRoomSequence = 1;
@@ -128,6 +130,24 @@ public sealed class World : ISyncHost
     public void QueueDestroy(NetEntityId id) => PendingDestroys.Add(id);
     internal void RequestSave(string slot) => PendingSaveSlot = slot;
 
+    /// <summary>Registers the sole logical pose writer for an entity.</summary>
+    public TransformController RegisterTransformController(NetEntityId entity, string source)
+    {
+        if (string.IsNullOrWhiteSpace(source)) throw new ArgumentException("Transform controller source is required.", nameof(source));
+        LogicTransform logic = Get<LogicTransform>(entity);
+        if (TransformControllers.TryGetValue(entity, out TransformController? existing))
+        {
+            if (!string.Equals(existing.Source, source, StringComparison.Ordinal))
+                throw new TransformWriteException($"LogicTransform on {entity.ToHex()} already has controller '{existing.Source}', cannot add '{source}'.");
+            return existing;
+        }
+
+        TransformController controller = TransformController.Create(entity, source);
+        logic.ClaimController(controller);
+        TransformControllers.Add(entity, controller);
+        return controller;
+    }
+
     internal NetEntityId IssueId()
     {
         if (!IsServer) throw new InvalidOperationException("Client worlds do not issue NetEntityId.");
@@ -166,6 +186,7 @@ public sealed class World : ISyncHost
         }
         foreach (KeyValuePair<string, NetEntityId> pair in new List<KeyValuePair<string, NetEntityId>>(AccountIndex))
             if (pair.Value == id) AccountIndex.Remove(pair.Key);
+        TransformControllers.Remove(id);
     }
 
     internal Component[] RentComponents(Type entityType)
@@ -187,6 +208,8 @@ public sealed class World : ISyncHost
                 observer.DisconnectedAtTick = 0;
                 observer.ProjectedTick = 0;
             }
+            if (component is LogicTransform logic) logic.ResetForReuse();
+            if (component is ModelTransform model) model.ResetForReuse();
             IGeneratedComponent? generated = EcsRegistry.Generated(component);
             if (generated is null) continue;
             string prefix = component.GetType().Name + ".";
@@ -236,6 +259,38 @@ public sealed class World : ISyncHost
 
     public static string? TryReadAccountId(Component component) =>
         EcsRegistry.Generated(component)?.ReadField("accountId") as string;
+
+    internal void PrepareTransformDestroy(NetEntityId id)
+    {
+        EntityRecord? record = Record(id);
+        if (record is null) return;
+        for (int i = 0; i < record.Components.Length; i++)
+            if (record.Components[i] is LogicTransform logic) logic.HandleOwnerDestroyed();
+    }
+
+    internal void MarkTransformChange(LogicTransform owner, string fieldId, object? oldValue, object? newValue)
+    {
+        if (ApplyingRemote) return;
+        if (owner is not IGeneratedSyncMetadata metadata || !metadata.TryGetSyncField(fieldId, out ISyncField field)) return;
+        Dirty.Add(new DirtyEntry(owner.Entity, field, oldValue, newValue, ChangeReason.Local));
+        Revision++;
+    }
+
+    internal void ResolvePendingTransformParents()
+    {
+        for (int i = 0; i < CreationOrder.Count; i++)
+        {
+            EntityRecord? record = Record(CreationOrder[i]);
+            if (record is null) continue;
+            for (int c = 0; c < record.Components.Length; c++)
+            {
+                if (record.Components[c] is not LogicTransform logic || !logic.PendingParentSet) continue;
+                LogicTransform? parent = logic.PendingParentId.IsDefault ? null : Record(logic.PendingParentId)?.Get<LogicTransform>();
+                if (!logic.PendingParentId.IsDefault && parent is null) throw new InvalidOperationException("LogicTransform parent is not live: " + logic.PendingParentId.ToHex());
+                logic.ResolveParent(parent);
+            }
+        }
+    }
 
     void ISyncHost.OnLocalWrite(Component owner, ISyncField field, object? oldValue, object? newValue)
     {
