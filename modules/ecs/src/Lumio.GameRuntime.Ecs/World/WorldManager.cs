@@ -90,6 +90,7 @@ public sealed class WorldManager : IDisposable
             record.Started = true;
             for (int c = 0; c < record.Components.Length; c++) record.Components[c].OnHydrate();
         }
+        manager.World.ResolvePendingTransformParents();
         manager.World.RebuildAccountIndex();
         return manager;
     }
@@ -326,6 +327,7 @@ public sealed class WorldManager : IDisposable
     {
         EntityRecord? record = World.Record(id);
         if (record is null) return;
+        World.PrepareTransformDestroy(id);
         for (int i = 0; i < record.Components.Length; i++) { record.Components[i].OnDisable(); record.Components[i].OnDestroy(); }
         World.DestroyedThisTick.Add(id);
         World.Detach(id);
@@ -523,6 +525,7 @@ public sealed class WorldManager : IDisposable
             record.Started = true;
             record.Appeared = true;
         }
+        World.ResolvePendingTransformParents();
 
         var hooks = new List<HookEntry>();
         for (int i = 0; i < change.Fields.Count; i++)
@@ -540,6 +543,7 @@ public sealed class WorldManager : IDisposable
             EcsRegistry.Generated(component)?.WriteField(value.FieldId, ConvertValue(field.ValueType, value.Value), true);
             if (value.Reason == ChangeReason.Correction || !Equals(old, value.Value)) hooks.Add(new HookEntry(component, field.Ordinal, old, value.Value, value.Reason));
         }
+        World.ResolvePendingTransformParents();
         for (int i = 0; i < change.Destroys.Count; i++) Destroy(change.Destroys[i]);
         for (int i = 0; i < hooks.Count; i++)
         {
