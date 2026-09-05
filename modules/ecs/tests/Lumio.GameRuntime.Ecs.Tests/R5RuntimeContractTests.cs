@@ -110,6 +110,43 @@ public sealed class R5RuntimeContractTests
     }
 
     [Fact]
+    public void ServerA2ControlsWithoutAdapterReturnExplicitQueries()
+    {
+        var registry = new TestRegistry();
+        using WorldManager manager = WorldManager.Create(registry, 7UL);
+        manager.Start(Thread.CurrentThread);
+        manager.Enqueue(new ExpireEntityMessage("expire", "malformed"));
+        manager.Enqueue(new ResolveBindingMessage("resolve", "room-a", "malformed"));
+        manager.Enqueue(new AttributeQueryMessage("attribute", "server-authoritative", "room-a", "malformed", "IdentityComponent.name"));
+
+        manager.Tick();
+
+        WorldDrainResponse response = manager.DrainOutbox();
+        Assert.Empty(response.Frames);
+        Assert.Equal(3, response.Queries.Count);
+        Assert.Collection(
+            response.Queries,
+            query =>
+            {
+                WorldControlRequestErrorResult error = Assert.IsType<WorldControlRequestErrorResult>(query);
+                Assert.Equal("expire", error.RequestId);
+                Assert.Equal("request_error", error.Outcome);
+            },
+            query =>
+            {
+                WorldControlRequestErrorResult error = Assert.IsType<WorldControlRequestErrorResult>(query);
+                Assert.Equal("resolve", error.RequestId);
+                Assert.Equal("request_error", error.Outcome);
+            },
+            query =>
+            {
+                WorldControlRequestErrorResult error = Assert.IsType<WorldControlRequestErrorResult>(query);
+                Assert.Equal("attribute", error.RequestId);
+                Assert.Equal("request_error", error.Outcome);
+            });
+    }
+
+    [Fact]
     public async Task RuntimeControlRunsOnOwnerTickAndPreservesReturnedErrorConnection()
     {
         var registry = new TestRegistry();

@@ -215,7 +215,12 @@ public sealed class WorldManager : IDisposable
         for (int i = 0; i < batch.Count; i++)
         {
             if (batch[i] is not (AdmitConnectionMessage or DisconnectConnectionMessage or RebindConnectionMessage or ExpireEntityMessage or ResolveBindingMessage or AttributeQueryMessage)) continue;
-            if (_controlAdapter is null) continue;
+            if (_controlAdapter is null)
+            {
+                if (IsA2Control(batch[i]))
+                    _queries.Add(new WorldControlRequestErrorResult(RequestIdOf(batch[i]), batch[i].GetType().Name, "scope_violation", "A2 controls require an attached world control adapter."));
+                continue;
+            }
             bool handled = _controlAdapter.TryHandle(batch[i], out ErrorMessage? error, out WorldMessage? queryResult);
             if (!handled)
             {
